@@ -1,4 +1,5 @@
 discord.py
 groq
-duckduckgo-search
+duckduckgo_search
+ddgs
 flask
