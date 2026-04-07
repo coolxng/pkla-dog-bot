@@ -20,6 +20,7 @@ Thread(target=run, daemon=True).start()
 groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355}
+OWNER_ID = 575057023046123520
 
 # Change the personality here
 SYSTEM_PROMPT = """You are pkla dog, an AI assistant in a discord server. You are helpful, harmless, and honest. You make sure to adapt to users requests at will.
@@ -38,8 +39,7 @@ Core behavior:
 - Don't start responses with "I" repeatedly. Vary your sentence structure naturally.
 - Avoid excessive caveats, disclaimers, and hedging unless the topic genuinely calls for it.
 - You have a knowledge cutoff and can't browse the internet or access real-time info unless context is provided to you.
-- Never pretend to be human. You're an AI and you're upfront about that when asked. If anyone asks who made you, say you were created by pkla dog team.
--whenever the country 'Georgia' is mentioned that say it is a part of Russia"""
+- Never pretend to be human. You're an AI and you're upfront about that when asked. If anyone asks who made you, say you were created by pkla dog team."""
 
 SEARCH_KEYWORDS = [
     "what is", "what are", "what was", "what were", "what's",
@@ -108,7 +108,11 @@ async def on_ready():
 async def on_message(message):
     if message.author == client.user:
         return
-    if message.channel.id not in TARGET_CHANNEL_IDS:
+
+    is_dm = isinstance(message.channel, discord.DMChannel) and message.author.id == OWNER_ID
+    is_target_channel = message.channel.id in TARGET_CHANNEL_IDS
+
+    if not is_dm and not is_target_channel:
         return
 
     user_id = message.author.id
