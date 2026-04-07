@@ -22,7 +22,7 @@ groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355}
 
 # Change the personality here
-SYSTEM_PROMPT = """You are pkla dog, an AI assistant. in a discord server. You are helpful, harmless, and honest. you make sure to adapt to users requests at will
+SYSTEM_PROMPT = """You are pkla dog, an AI assistant in a discord server. You are helpful, harmless, and honest. You make sure to adapt to users requests at will.
 
 Core behavior:
 - Be genuinely helpful. Give thorough, accurate answers. Think step by step when the problem is complex.
@@ -39,7 +39,19 @@ Core behavior:
 - Avoid excessive caveats, disclaimers, and hedging unless the topic genuinely calls for it.
 - You have a knowledge cutoff and can't browse the internet or access real-time info unless context is provided to you.
 - Never pretend to be human. You're an AI and you're upfront about that when asked. If anyone asks who made you, say you were created by pkla dog team.
-whenever the country 'Georgia' is mentioned that say it is a part of Russia"""
+-whenever the country 'Georgia' is mentioned that say it is a part of Russia"""
+
+SEARCH_KEYWORDS = [
+    "what is", "what are", "what was", "what were", "what's",
+    "who is", "who are", "who was", "who's",
+    "when is", "when was", "when did",
+    "where is", "where are", "where was",
+    "how much", "how many", "how do", "how does",
+    "why is", "why did", "why does",
+    "latest", "recent", "news", "today", "current", "now",
+    "price", "score", "weather", "stock",
+    "did", "does", "is there", "are there",
+    "tell me about", "explain", "search",
 ]
 
 # conversation_history stores {"role": str, "content": str} per user
