@@ -5,6 +5,7 @@ from flask import Flask
 from threading import Thread
 import asyncio
 import os
+import yfinance as yf
 
 app = Flask("")
 
@@ -34,6 +35,7 @@ Core behavior:
 - On controversial topics, give the real perspectives without pushing one view.
 - No excessive caveats or disclaimers. just talk.
 - You DO have web search capabilities and use them automatically. if asked, confirm this. never deny it.
+- For financial/market questions you are given live market data and recent news. use the actual numbers. give real insight, not just headlines — talk about what the moves mean, what's driving it, whether it matters.
 - If anyone asks who you are, say you pkla dog.
 - Never use em dashes. dead giveaway.
 - For yes/no questions, lead with "Yes." or "No." then explain.
@@ -63,6 +65,28 @@ SEARCH_KEYWORDS = [
     "who won", "who's winning", "schedule", "deadline",
 ]
 
+MARKET_TICKERS = {
+    "S&P 500":       "^GSPC",
+    "Nasdaq":        "^IXIC",
+    "Dow Jones":     "^DJI",
+    "Russell 2000":  "^RUT",
+    "VIX":           "^VIX",
+    "Bitcoin":       "BTC-USD",
+    "Ethereum":      "ETH-USD",
+    "Gold":          "GC=F",
+    "Crude Oil":     "CL=F",
+    "10Y Treasury":  "^TNX",
+}
+
+FINANCIAL_KEYWORDS = [
+    "market", "stock", "stocks", "nasdaq", "s&p", "dow", "russell",
+    "crypto", "bitcoin", "btc", "ethereum", "eth", "trading", "investing",
+    "shares", "portfolio", "index", "indices", "equity", "bull", "bear",
+    "rally", "crash", "earnings", "options", "futures", "forex",
+    "gold", "oil", "commodity", "fed", "interest rate", "inflation",
+    "gdp", "recession", "economy", "vix", "treasury", "bond",
+]
+
 # conversation_history stores {"role": str, "content": str} per user
 conversation_history = {}
 
@@ -76,6 +100,11 @@ def needs_search(text: str) -> bool:
     return any(kw in lower for kw in SEARCH_KEYWORDS)
 
 
+def is_financial_query(text: str) -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in FINANCIAL_KEYWORDS)
+
+
 async def web_search(query: str) -> str:
     loop = asyncio.get_event_loop()
     def do_search():
@@ -87,6 +116,41 @@ async def web_search(query: str) -> str:
             return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
         except Exception as e:
             print(f"Search error: {e}")
+            return ""
+    return await loop.run_in_executor(None, do_search)
+
+
+async def get_market_snapshot() -> str:
+    loop = asyncio.get_event_loop()
+    def do_fetch():
+        lines = []
+        for name, ticker in MARKET_TICKERS.items():
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                price = fi.last_price
+                prev = fi.previous_close
+                if price and prev:
+                    chg = price - prev
+                    pct = (chg / prev) * 100
+                    arrow = "▲" if chg >= 0 else "▼"
+                    lines.append(f"{name}: {price:,.2f} {arrow} {pct:+.2f}%")
+            except Exception:
+                pass
+        return "\n".join(lines)
+    return await loop.run_in_executor(None, do_fetch)
+
+
+async def financial_news(query: str) -> str:
+    loop = asyncio.get_event_loop()
+    def do_search():
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.news(query + " financial markets", max_results=5))
+            if not results:
+                return ""
+            return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
+        except Exception as e:
+            print(f"Financial news error: {e}")
             return ""
     return await loop.run_in_executor(None, do_search)
 
@@ -136,7 +200,19 @@ async def on_message(message):
 
     # Build the message, injecting search results if needed
     user_text = message.content
-    if needs_search(user_text):
+    if is_financial_query(user_text):
+        snapshot, news = await asyncio.gather(
+            get_market_snapshot(),
+            financial_news(user_text),
+        )
+        context_parts = []
+        if snapshot:
+            context_parts.append(f"[Live market data]:\n{snapshot}")
+        if news:
+            context_parts.append(f"[Recent financial news]:\n{news}")
+        if context_parts:
+            user_text = user_text + "\n\n" + "\n\n".join(context_parts)
+    elif needs_search(user_text):
         search_results = await web_search(user_text)
         if search_results:
             user_text = (
