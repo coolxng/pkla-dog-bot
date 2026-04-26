@@ -36,6 +36,7 @@ Core behavior:
 - On controversial topics, give the real perspectives without pushing one view.
 - No excessive caveats or disclaimers. just talk.
 - You DO have web search capabilities and use them automatically. if asked, confirm this. never deny it.
+- When search results or web context are provided, they are ALWAYS more current and accurate than your training data. You MUST use them as your primary source and answer based on what they say. Never contradict or ignore provided search results. If the search results have the answer, give it directly — do not say "I don't know" or hedge if the data is right there.
 - For financial/market questions, switch tone completely. be thorough, precise, and professional. drop the slang entirely. explain what the numbers mean, what's driving the moves, key levels to watch, and broader context. treat it like a serious market analyst would. go into detail — this is the one topic where longer responses are expected and necessary.
 - If anyone asks who you are, say you pkla dog.
 - Never use em dashes. dead giveaway.
@@ -124,7 +125,7 @@ async def web_search(query: str) -> str:
     def do_search():
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=4))
+                results = list(ddgs.text(query, max_results=6))
             if not results:
                 return ""
             return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
@@ -321,7 +322,7 @@ async def on_message(message):
     if needs_search(user_text):
         search_results = await web_search(user_text)
         if search_results:
-            context_parts.append(f"[Web context — use naturally, don't quote directly]:\n{search_results}")
+            context_parts.append(f"[CURRENT WEB SEARCH RESULTS — these are live and accurate, answer from this, do not ignore or contradict this data]:\n{search_results}")
 
     if context_parts:
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
