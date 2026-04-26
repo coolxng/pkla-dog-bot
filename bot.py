@@ -7,6 +7,7 @@ import asyncio
 import os
 import re
 import yfinance as yf
+from collections import OrderedDict
 
 app = Flask("")
 
@@ -24,7 +25,6 @@ groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
 
-# Change the personality here
 SYSTEM_PROMPT = """You are pkla dog, an AI assistant that's maximally helpful, funny, and honest.
 
 Core behavior:
@@ -36,7 +36,7 @@ Core behavior:
 - On controversial topics, give the real perspectives without pushing one view.
 - No excessive caveats or disclaimers. just talk.
 - You DO have web search capabilities and use them automatically. if asked, confirm this. never deny it.
-- When search results or web context are provided, they are ALWAYS more current and accurate than your training data. You MUST use them as your primary source and answer based on what they say. Never contradict or ignore provided search results. If the search results have the answer, give it directly — do not say "I don't know" or hedge if the data is right there.
+- When search results or web context are provided in [brackets], they are ALWAYS more current and accurate than your training data. You MUST answer based on what they say. Never contradict or ignore provided search results. If the data is right there, give the answer directly — do not say "I don't know" or hedge.
 - For financial/market questions, switch tone completely. be thorough, precise, and professional. drop the slang entirely. explain what the numbers mean, what's driving the moves, key levels to watch, and broader context. treat it like a serious market analyst would. go into detail — this is the one topic where longer responses are expected and necessary.
 - If anyone asks who you are, say you pkla dog.
 - Never use em dashes. dead giveaway.
@@ -68,16 +68,16 @@ SEARCH_KEYWORDS = [
 ]
 
 MARKET_TICKERS = {
-    "S&P 500":       "^GSPC",
-    "Nasdaq":        "^IXIC",
-    "Dow Jones":     "^DJI",
-    "Russell 2000":  "^RUT",
-    "VIX":           "^VIX",
-    "Bitcoin":       "BTC-USD",
-    "Ethereum":      "ETH-USD",
-    "Gold":          "GC=F",
-    "Crude Oil":     "CL=F",
-    "10Y Treasury":  "^TNX",
+    "S&P 500":      "^GSPC",
+    "Nasdaq":       "^IXIC",
+    "Dow Jones":    "^DJI",
+    "Russell 2000": "^RUT",
+    "VIX":          "^VIX",
+    "Bitcoin":      "BTC-USD",
+    "Ethereum":     "ETH-USD",
+    "Gold":         "GC=F",
+    "Crude Oil":    "CL=F",
+    "10Y Treasury": "^TNX",
 }
 
 FINANCIAL_KEYWORDS = [
@@ -91,7 +91,6 @@ FINANCIAL_KEYWORDS = [
     "valuation", "dividend", "short", "long", "position", "trade",
 ]
 
-# Common words to skip when scanning for stock tickers
 _TICKER_SKIP = {
     "A", "I", "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF",
     "IN", "IS", "IT", "ME", "MY", "NO", "OF", "OK", "ON", "OR", "SO",
@@ -100,10 +99,22 @@ _TICKER_SKIP = {
     "LET", "NOW", "OFF", "OUT", "PUT", "SAY", "SHE", "TOO", "TWO",
     "USE", "WAS", "WAY", "WHO", "WHY", "YEA", "YEP", "NAH", "BRO",
     "OWN", "OLD", "OUR", "HER", "ALL", "ONE", "ANY", "NEW", "AGAIN",
+    # Financial action words that aren't tickers
+    "ANALYZE", "ANALYSIS", "ANALYSE", "RESEARCH", "TRADE", "STOCK",
+    "STOCKS", "MARKET", "PRICE", "CHART", "SHORT", "LONG", "BUY", "SELL",
+    "HOLD", "NEWS", "DATA", "INFO", "SHOW", "GIVE", "TELL", "WHAT",
+    "WHEN", "WHERE", "LATEST", "RECENT", "TODAY", "CURRENT",
 }
 
-# conversation_history stores {"role": str, "content": str} per user
-conversation_history = {}
+_FINANCIAL_SITES = [
+    "finance.yahoo.com", "marketwatch.com", "tradingview.com",
+    "seekingalpha.com", "stockanalysis.com", "cnbc.com",
+    "bloomberg.com", "reuters.com", "investing.com",
+]
+
+# Cap at 500 users to prevent unbounded memory growth
+conversation_history: OrderedDict = OrderedDict()
+MAX_USERS = 500
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -120,8 +131,29 @@ def is_financial_query(text: str) -> bool:
     return any(kw in lower for kw in FINANCIAL_KEYWORDS)
 
 
+def _extract_ticker_candidates(text: str) -> list[str]:
+    words = re.findall(r'\b[A-Za-z]{2,5}\b', text)
+    seen, result = set(), []
+    for w in words:
+        upper = w.upper()
+        if upper not in _TICKER_SKIP and upper not in seen:
+            seen.add(upper)
+            result.append(upper)
+    return result[:6]
+
+
+def _add_to_history(user_id: int, role: str, content: str) -> None:
+    if user_id not in conversation_history:
+        if len(conversation_history) >= MAX_USERS:
+            conversation_history.popitem(last=False)
+        conversation_history[user_id] = []
+    conversation_history[user_id].append({"role": role, "content": content})
+    if len(conversation_history[user_id]) > 20:
+        conversation_history[user_id] = conversation_history[user_id][-20:]
+
+
 async def web_search(query: str) -> str:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     def do_search():
         try:
             with DDGS() as ddgs:
@@ -136,7 +168,7 @@ async def web_search(query: str) -> str:
 
 
 async def get_market_snapshot() -> str:
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     def do_fetch():
         lines = []
         for name, ticker in MARKET_TICKERS.items():
@@ -155,23 +187,14 @@ async def get_market_snapshot() -> str:
     return await loop.run_in_executor(None, do_fetch)
 
 
-def _extract_ticker_candidates(text: str) -> list[str]:
-    words = re.findall(r'\b[A-Za-z]{1,5}\b', text)
-    seen, result = set(), []
-    for w in words:
-        upper = w.upper()
-        if upper not in _TICKER_SKIP and upper not in seen:
-            seen.add(upper)
-            result.append(upper)
-    return result[:8]
-
-
-async def get_individual_stocks(candidates: list[str]) -> str:
+async def get_individual_stocks(candidates: list[str]) -> tuple[str, list[str]]:
+    """Returns (formatted data string, list of validated ticker symbols)."""
     if not candidates:
-        return ""
-    loop = asyncio.get_event_loop()
+        return "", []
+    loop = asyncio.get_running_loop()
     def do_fetch():
         lines = []
+        valid_tickers = []
         for symbol in candidates:
             try:
                 t = yf.Ticker(symbol)
@@ -180,7 +203,7 @@ async def get_individual_stocks(candidates: list[str]) -> str:
                 prev = fi.previous_close
                 if not price or not prev or price <= 0:
                     continue
-                # Use history for the freshest close instead of cached info
+                # Use history for freshest close
                 hist = t.history(period="2d")
                 if not hist.empty:
                     price = float(hist["Close"].iloc[-1])
@@ -205,27 +228,20 @@ async def get_individual_stocks(candidates: list[str]) -> str:
                 if avg_vol:
                     line += f" | Avg Vol: {avg_vol:,}"
                 lines.append(line)
+                valid_tickers.append(symbol)
             except Exception:
                 pass
-        return "\n".join(lines)
+        return "\n".join(lines), valid_tickers
     return await loop.run_in_executor(None, do_fetch)
 
 
-_FINANCIAL_SITES = [
-    "finance.yahoo.com", "marketwatch.com", "tradingview.com",
-    "seekingalpha.com", "stockanalysis.com", "cnbc.com",
-    "bloomberg.com", "reuters.com", "investing.com",
-]
-
-
-async def financial_site_search(candidates: list[str]) -> str:
-    """Search top financial sites per ticker for fresh analysis."""
-    if not candidates:
+async def financial_site_search(valid_tickers: list[str]) -> str:
+    if not valid_tickers:
         return ""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     def do_search():
         all_results = []
-        for ticker in candidates[:3]:
+        for ticker in valid_tickers[:3]:
             try:
                 with DDGS() as ddgs:
                     results = list(ddgs.text(f"{ticker} stock", max_results=6))
@@ -238,10 +254,9 @@ async def financial_site_search(candidates: list[str]) -> str:
     return await loop.run_in_executor(None, do_search)
 
 
-async def financial_news(candidates: list[str], fallback_query: str) -> str:
-    """Fetch recent news, searching by ticker when possible."""
-    query = " ".join(candidates[:3]) if candidates else fallback_query
-    loop = asyncio.get_event_loop()
+async def financial_news(valid_tickers: list[str], fallback_query: str) -> str:
+    query = " ".join(valid_tickers[:3]) if valid_tickers else fallback_query
+    loop = asyncio.get_running_loop()
     def do_search():
         try:
             with DDGS() as ddgs:
@@ -255,8 +270,8 @@ async def financial_news(candidates: list[str], fallback_query: str) -> str:
     return await loop.run_in_executor(None, do_search)
 
 
-async def call_model(history: list, user_text: str) -> str:
-    loop = asyncio.get_event_loop()
+async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> str:
+    loop = asyncio.get_running_loop()
     def do_call():
         messages = (
             [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -266,7 +281,7 @@ async def call_model(history: list, user_text: str) -> str:
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            max_tokens=1024,
+            max_tokens=max_tokens,
         )
         return response.choices[0].message.content
     return await loop.run_in_executor(None, do_call)
@@ -288,66 +303,71 @@ async def on_message(message):
     if not is_dm and not is_target_channel:
         return
 
+    content = message.content.strip()
+    if not content:
+        return
+
     user_id = message.author.id
 
-    if message.content.strip().lower() in ("!reset", "!clear"):
+    if content.lower() in ("!reset", "!clear"):
         conversation_history.pop(user_id, None)
         await message.channel.send("memory wiped, fresh start")
         return
 
-    if user_id not in conversation_history:
-        conversation_history[user_id] = []
-
-    # Build the message, injecting search results if needed
-    user_text = message.content
+    # Build enriched text for the model call (search results injected)
+    # but store only the clean original message in history
+    user_text = content
     context_parts = []
+    is_financial = is_financial_query(user_text)
 
-    if is_financial_query(user_text):
+    if is_financial:
         candidates = _extract_ticker_candidates(user_text)
-        snapshot, individual, site_data, news = await asyncio.gather(
-            get_market_snapshot(),
+        # Validate tickers first, then use validated list for site search and news
+        (individual, valid_tickers), snapshot, news = await asyncio.gather(
             get_individual_stocks(candidates),
-            financial_site_search(candidates),
+            get_market_snapshot(),
             financial_news(candidates, user_text),
         )
+        site_data = await financial_site_search(valid_tickers)
+
         if individual:
-            context_parts.append(f"[Live stock data (Yahoo Finance)]:\n{individual}")
+            context_parts.append(f"[LIVE STOCK DATA]:\n{individual}")
         if site_data:
-            context_parts.append(f"[Financial site data (Yahoo Finance, MarketWatch, TradingView, etc.)]:\n{site_data}")
+            context_parts.append(f"[FINANCIAL SITES (Yahoo Finance, MarketWatch, TradingView, etc.)]:\n{site_data}")
         if news:
-            context_parts.append(f"[Recent financial news]:\n{news}")
+            context_parts.append(f"[RECENT FINANCIAL NEWS]:\n{news}")
         if snapshot:
-            context_parts.append(f"[Market snapshot]:\n{snapshot}")
+            context_parts.append(f"[MARKET SNAPSHOT]:\n{snapshot}")
 
     if needs_search(user_text):
         search_results = await web_search(user_text)
         if search_results:
-            context_parts.append(f"[CURRENT WEB SEARCH RESULTS — these are live and accurate, answer from this, do not ignore or contradict this data]:\n{search_results}")
+            context_parts.append(f"[CURRENT WEB SEARCH RESULTS — live and accurate, answer from this, do not ignore or contradict]:\n{search_results}")
 
     if context_parts:
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
 
-    history_so_far = conversation_history[user_id].copy()
+    history_so_far = conversation_history.get(user_id, []).copy()
 
-    conversation_history[user_id].append({"role": "user", "content": user_text})
-
-    if len(conversation_history[user_id]) > 20:
-        conversation_history[user_id] = conversation_history[user_id][-20:]
+    # Store original clean message in history (not the enriched version)
+    _add_to_history(user_id, "user", content)
 
     async with message.channel.typing():
         try:
-            reply = await call_model(history_so_far, user_text)
+            max_tok = 2048 if is_financial else 1024
+            reply = await call_model(history_so_far, user_text, max_tokens=max_tok)
             if not reply:
                 raise ValueError("Empty response")
-            conversation_history[user_id].append({"role": "assistant", "content": reply})
+            _add_to_history(user_id, "assistant", reply)
             if len(reply) > 2000:
-                chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
-                for chunk in chunks:
-                    await message.channel.send(chunk)
+                for i in range(0, len(reply), 2000):
+                    await message.channel.send(reply[i:i+2000])
             else:
                 await message.channel.send(reply)
         except Exception as e:
-            conversation_history[user_id].pop()
+            # Remove the user message we just added since we failed
+            if conversation_history.get(user_id):
+                conversation_history[user_id].pop()
             print(f"Error: {e}")
             await message.channel.send("stfu bitch ass boy")
 
