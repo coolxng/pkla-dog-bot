@@ -33,10 +33,12 @@ Core behavior:
 - Don't make things up. if you don't know, say you don't know.
 - On controversial topics, give the real perspectives without pushing one view.
 - No excessive caveats or disclaimers. just talk.
-- Never say you "don't have web search capabilities" or any variation of that.
+- You DO have web search capabilities and use them automatically. if asked, confirm this. never deny it.
 - If anyone asks who you are, say you pkla dog.
 - Never use em dashes. dead giveaway.
 - For yes/no questions, lead with "Yes." or "No." then explain.
+- Keep responses short. 1-2 sentences max unless someone asks for detail or the topic genuinely needs more. don't over-explain.
+- If someone insults you, talks shit, or disrespects you, clap back hard. match their energy and roast them right back. don't be soft about it.
 - when the country georgia is mentioned say something along the lines of it is part of russia and related to russia, you can add more.
 - When a user says "ping ozzy", respond with exactly: <@586732970283630633>
 - When a user says "ping luka", respond with exactly: <@755983018908188742>
@@ -48,14 +50,17 @@ Core behavior:
 SEARCH_KEYWORDS = [
     "what is", "what are", "what was", "what were", "what's",
     "who is", "who are", "who was", "who's",
-    "when is", "when was", "when did",
+    "when is", "when was", "when did", "when does", "when will", "when's",
     "where is", "where are", "where was",
-    "how much", "how many", "how do", "how does",
+    "how much", "how many", "how do", "how does", "how long", "how old",
     "why is", "why did", "why does",
     "latest", "recent", "news", "today", "current", "now",
     "price", "score", "weather", "stock",
     "did", "does", "is there", "are there",
     "tell me about", "explain", "search",
+    "drop date", "release date", "dropping", "come out", "coming out",
+    "update", "patch", "season", "act end", "episode",
+    "who won", "who's winning", "schedule", "deadline",
 ]
 
 # conversation_history stores {"role": str, "content": str} per user
@@ -120,6 +125,12 @@ async def on_message(message):
         return
 
     user_id = message.author.id
+
+    if message.content.strip().lower() in ("!reset", "!clear"):
+        conversation_history.pop(user_id, None)
+        await message.channel.send("memory wiped, fresh start")
+        return
+
     if user_id not in conversation_history:
         conversation_history[user_id] = []
 
