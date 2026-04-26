@@ -299,6 +299,8 @@ async def on_message(message):
 
     # Build the message, injecting search results if needed
     user_text = message.content
+    context_parts = []
+
     if is_financial_query(user_text):
         candidates = _extract_ticker_candidates(user_text)
         snapshot, individual, site_data, news = await asyncio.gather(
@@ -307,7 +309,6 @@ async def on_message(message):
             financial_site_search(candidates),
             financial_news(candidates, user_text),
         )
-        context_parts = []
         if individual:
             context_parts.append(f"[Live stock data (Yahoo Finance)]:\n{individual}")
         if site_data:
@@ -316,15 +317,14 @@ async def on_message(message):
             context_parts.append(f"[Recent financial news]:\n{news}")
         if snapshot:
             context_parts.append(f"[Market snapshot]:\n{snapshot}")
-        if context_parts:
-            user_text = user_text + "\n\n" + "\n\n".join(context_parts)
-    elif needs_search(user_text):
+
+    if needs_search(user_text):
         search_results = await web_search(user_text)
         if search_results:
-            user_text = (
-                f"{user_text}\n\n"
-                f"[Web context — use naturally, don't quote directly]:\n{search_results}"
-            )
+            context_parts.append(f"[Web context — use naturally, don't quote directly]:\n{search_results}")
+
+    if context_parts:
+        user_text = user_text + "\n\n" + "\n\n".join(context_parts)
 
     history_so_far = conversation_history[user_id].copy()
 
