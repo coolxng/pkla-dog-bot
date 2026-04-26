@@ -5,6 +5,7 @@ from flask import Flask
 from threading import Thread
 import asyncio
 import os
+import re
 import yfinance as yf
 
 app = Flask("")
@@ -85,7 +86,20 @@ FINANCIAL_KEYWORDS = [
     "rally", "crash", "earnings", "options", "futures", "forex",
     "gold", "oil", "commodity", "fed", "interest rate", "inflation",
     "gdp", "recession", "economy", "vix", "treasury", "bond",
+    "analyze", "analysis", "analyse", "research", "ticker", "chart",
+    "valuation", "dividend", "short", "long", "position", "trade",
 ]
+
+# Common words to skip when scanning for stock tickers
+_TICKER_SKIP = {
+    "A", "I", "AM", "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF",
+    "IN", "IS", "IT", "ME", "MY", "NO", "OF", "OK", "ON", "OR", "SO",
+    "TO", "UP", "US", "AND", "BUT", "FOR", "NOT", "THE", "YOU", "ARE",
+    "CAN", "DID", "GET", "GOT", "HAS", "HIM", "HIS", "HOW", "ITS",
+    "LET", "NOW", "OFF", "OUT", "PUT", "SAY", "SHE", "TOO", "TWO",
+    "USE", "WAS", "WAY", "WHO", "WHY", "YEA", "YEP", "NAH", "BRO",
+    "OWN", "OLD", "OUR", "HER", "ALL", "ONE", "ANY", "NEW", "AGAIN",
+}
 
 # conversation_history stores {"role": str, "content": str} per user
 conversation_history = {}
@@ -145,7 +159,7 @@ async def financial_news(query: str) -> str:
     def do_search():
         try:
             with DDGS() as ddgs:
-                results = list(ddgs.news(query + " financial markets", max_results=5))
+                results = list(ddgs.news(query, max_results=6))
             if not results:
                 return ""
             return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
@@ -153,6 +167,58 @@ async def financial_news(query: str) -> str:
             print(f"Financial news error: {e}")
             return ""
     return await loop.run_in_executor(None, do_search)
+
+
+def _extract_ticker_candidates(text: str) -> list[str]:
+    words = re.findall(r'\b[A-Za-z]{1,5}\b', text)
+    seen, result = set(), []
+    for w in words:
+        upper = w.upper()
+        if upper not in _TICKER_SKIP and upper not in seen:
+            seen.add(upper)
+            result.append(upper)
+    return result[:8]
+
+
+async def get_individual_stocks(text: str) -> str:
+    candidates = _extract_ticker_candidates(text)
+    if not candidates:
+        return ""
+    loop = asyncio.get_event_loop()
+    def do_fetch():
+        lines = []
+        for symbol in candidates:
+            try:
+                t = yf.Ticker(symbol)
+                fi = t.fast_info
+                price = fi.last_price
+                prev = fi.previous_close
+                if not price or not prev or price <= 0:
+                    continue
+                info = t.info
+                name = info.get("longName") or info.get("shortName") or symbol
+                chg = price - prev
+                pct = (chg / prev) * 100
+                arrow = "▲" if chg >= 0 else "▼"
+                line = f"{name} ({symbol}): ${price:,.2f} {arrow} {pct:+.2f}%"
+                mkt_cap = info.get("marketCap")
+                if mkt_cap:
+                    line += f" | Mkt Cap: ${mkt_cap/1e9:.2f}B"
+                pe = info.get("trailingPE")
+                if pe:
+                    line += f" | P/E: {pe:.1f}"
+                hi52 = info.get("fiftyTwoWeekHigh")
+                lo52 = info.get("fiftyTwoWeekLow")
+                if hi52 and lo52:
+                    line += f" | 52W: ${lo52:,.2f} - ${hi52:,.2f}"
+                avg_vol = info.get("averageVolume")
+                if avg_vol:
+                    line += f" | Avg Vol: {avg_vol:,}"
+                lines.append(line)
+            except Exception:
+                pass
+        return "\n".join(lines)
+    return await loop.run_in_executor(None, do_fetch)
 
 
 async def call_model(history: list, user_text: str) -> str:
@@ -201,13 +267,16 @@ async def on_message(message):
     # Build the message, injecting search results if needed
     user_text = message.content
     if is_financial_query(user_text):
-        snapshot, news = await asyncio.gather(
+        snapshot, individual, news = await asyncio.gather(
             get_market_snapshot(),
+            get_individual_stocks(user_text),
             financial_news(user_text),
         )
         context_parts = []
+        if individual:
+            context_parts.append(f"[Individual stock data]:\n{individual}")
         if snapshot:
-            context_parts.append(f"[Live market data]:\n{snapshot}")
+            context_parts.append(f"[Market snapshot]:\n{snapshot}")
         if news:
             context_parts.append(f"[Recent financial news]:\n{news}")
         if context_parts:
