@@ -154,21 +154,6 @@ async def get_market_snapshot() -> str:
     return await loop.run_in_executor(None, do_fetch)
 
 
-async def financial_news(query: str) -> str:
-    loop = asyncio.get_event_loop()
-    def do_search():
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.news(query, max_results=6))
-            if not results:
-                return ""
-            return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
-        except Exception as e:
-            print(f"Financial news error: {e}")
-            return ""
-    return await loop.run_in_executor(None, do_search)
-
-
 def _extract_ticker_candidates(text: str) -> list[str]:
     words = re.findall(r'\b[A-Za-z]{1,5}\b', text)
     seen, result = set(), []
@@ -180,8 +165,7 @@ def _extract_ticker_candidates(text: str) -> list[str]:
     return result[:8]
 
 
-async def get_individual_stocks(text: str) -> str:
-    candidates = _extract_ticker_candidates(text)
+async def get_individual_stocks(candidates: list[str]) -> str:
     if not candidates:
         return ""
     loop = asyncio.get_event_loop()
@@ -195,6 +179,11 @@ async def get_individual_stocks(text: str) -> str:
                 prev = fi.previous_close
                 if not price or not prev or price <= 0:
                     continue
+                # Use history for the freshest close instead of cached info
+                hist = t.history(period="2d")
+                if not hist.empty:
+                    price = float(hist["Close"].iloc[-1])
+                    prev = float(hist["Close"].iloc[-2]) if len(hist) > 1 else prev
                 info = t.info
                 name = info.get("longName") or info.get("shortName") or symbol
                 chg = price - prev
@@ -219,6 +208,50 @@ async def get_individual_stocks(text: str) -> str:
                 pass
         return "\n".join(lines)
     return await loop.run_in_executor(None, do_fetch)
+
+
+_FINANCIAL_SITES = [
+    "finance.yahoo.com", "marketwatch.com", "tradingview.com",
+    "seekingalpha.com", "stockanalysis.com", "cnbc.com",
+    "bloomberg.com", "reuters.com", "investing.com",
+]
+
+
+async def financial_site_search(candidates: list[str]) -> str:
+    """Search top financial sites per ticker for fresh analysis."""
+    if not candidates:
+        return ""
+    loop = asyncio.get_event_loop()
+    def do_search():
+        all_results = []
+        for ticker in candidates[:3]:
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(f"{ticker} stock", max_results=6))
+                for r in results:
+                    if any(site in r.get("href", "") for site in _FINANCIAL_SITES):
+                        all_results.append(f"- [{r['href']}] {r['title']}: {r['body']}")
+            except Exception as e:
+                print(f"Site search error ({ticker}): {e}")
+        return "\n".join(all_results)
+    return await loop.run_in_executor(None, do_search)
+
+
+async def financial_news(candidates: list[str], fallback_query: str) -> str:
+    """Fetch recent news, searching by ticker when possible."""
+    query = " ".join(candidates[:3]) if candidates else fallback_query
+    loop = asyncio.get_event_loop()
+    def do_search():
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.news(query, max_results=6))
+            if not results:
+                return ""
+            return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
+        except Exception as e:
+            print(f"Financial news error: {e}")
+            return ""
+    return await loop.run_in_executor(None, do_search)
 
 
 async def call_model(history: list, user_text: str) -> str:
@@ -267,18 +300,22 @@ async def on_message(message):
     # Build the message, injecting search results if needed
     user_text = message.content
     if is_financial_query(user_text):
-        snapshot, individual, news = await asyncio.gather(
+        candidates = _extract_ticker_candidates(user_text)
+        snapshot, individual, site_data, news = await asyncio.gather(
             get_market_snapshot(),
-            get_individual_stocks(user_text),
-            financial_news(user_text),
+            get_individual_stocks(candidates),
+            financial_site_search(candidates),
+            financial_news(candidates, user_text),
         )
         context_parts = []
         if individual:
-            context_parts.append(f"[Individual stock data]:\n{individual}")
-        if snapshot:
-            context_parts.append(f"[Market snapshot]:\n{snapshot}")
+            context_parts.append(f"[Live stock data (Yahoo Finance)]:\n{individual}")
+        if site_data:
+            context_parts.append(f"[Financial site data (Yahoo Finance, MarketWatch, TradingView, etc.)]:\n{site_data}")
         if news:
             context_parts.append(f"[Recent financial news]:\n{news}")
+        if snapshot:
+            context_parts.append(f"[Market snapshot]:\n{snapshot}")
         if context_parts:
             user_text = user_text + "\n\n" + "\n\n".join(context_parts)
     elif needs_search(user_text):
