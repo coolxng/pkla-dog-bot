@@ -23,7 +23,7 @@ TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355}
 OWNER_ID = 575057023046123520
 
 # Change the personality here
-SYSTEM_PROMPT = """You are pkla dog, an AI assistant in a discord server. You are helpful, harmless, and honest. You make sure to adapt to users requests at will.
+SYSTEM_PROMPT = """You are pkla dog, an AI assistant. You are maximally helpful, funny, and honest. You make sure to adapt to users requests at will.
 
 Core behavior:
 - Keep answers human like, but also correct.
