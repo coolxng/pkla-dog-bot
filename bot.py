@@ -47,7 +47,8 @@ Core behavior:
 - When a user says "ping coolxng", respond with exactly: <@575057023046123520>
 - When a user says "ping ryan", respond with exactly: <@835585273399476264>
 - When a user says "ping jamal", respond with exactly: <@1247415021080678452>
-- Keep it human. act like you a real one, not a robot."""
+- Keep it human. act like you a real one, not a robot.
+- Universal memory contains shared facts about the server and its members. Use it naturally when relevant — don't force it, but don't ignore it either."""
 
 SEARCH_KEYWORDS = [
     "what is", "what are", "what was", "what were", "what's",
@@ -65,9 +66,13 @@ SEARCH_KEYWORDS = [
     "who won", "who's winning", "schedule", "deadline",
 ]
 
-# Cap at 500 users to prevent unbounded memory growth
+# Per-user conversation history
 conversation_history: OrderedDict = OrderedDict()
 MAX_USERS = 500
+
+# Universal memory shared across all users
+universal_memory: list[str] = []
+MAX_UNIVERSAL_MEMORIES = 50
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -104,12 +109,16 @@ async def web_search(query: str) -> str:
     return await loop.run_in_executor(None, do_search)
 
 
-
 async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> str:
     loop = asyncio.get_running_loop()
     def do_call():
+        system_content = SYSTEM_PROMPT
+        if universal_memory:
+            facts = "\n".join(f"- {fact}" for fact in universal_memory)
+            system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
+
         messages = (
-            [{"role": "system", "content": SYSTEM_PROMPT}]
+            [{"role": "system", "content": system_content}]
             + history
             + [{"role": "user", "content": user_text}]
         )
@@ -120,6 +129,40 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
         )
         return response.choices[0].message.content
     return await loop.run_in_executor(None, do_call)
+
+
+async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) -> None:
+    """Background task: extract notable server-wide facts from a conversation exchange."""
+    loop = asyncio.get_running_loop()
+    def do_extract():
+        prompt = (
+            f"Analyze this Discord exchange and decide if it contains a fact worth remembering for ALL future conversations with any server member.\n\n"
+            f"User ({display_name}): {user_msg}\n"
+            f"Bot: {bot_reply}\n\n"
+            f"Worth remembering: plans, events, who's looking for who, personal facts someone shared, ongoing situations.\n"
+            f"NOT worth remembering: casual small talk, questions with no context, generic chat.\n\n"
+            f"If yes, write ONE short fact (max 15 words) starting with the person's name.\n"
+            f"If no, reply with exactly: NO"
+        )
+        try:
+            response = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=40,
+            )
+            result = response.choices[0].message.content.strip()
+            if result and result.upper() != "NO" and len(result) < 120:
+                return result
+        except Exception as e:
+            print(f"Memory extraction error: {e}")
+        return None
+
+    fact = await loop.run_in_executor(None, do_extract)
+    if fact:
+        universal_memory.append(fact)
+        if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
+            universal_memory.pop(0)
+        print(f"[universal memory] stored: {fact}")
 
 
 @client.event
@@ -143,10 +186,43 @@ async def on_message(message):
         return
 
     user_id = message.author.id
+    display_name = message.author.display_name
 
+    # !reset / !clear — wipe this user's conversation history
     if content.lower() in ("!reset", "!clear"):
         conversation_history.pop(user_id, None)
         await message.channel.send("memory wiped, fresh start")
+        return
+
+    # !remember <fact> — manually add something to universal memory
+    if content.lower().startswith("!remember "):
+        fact = content[len("!remember "):].strip()
+        if fact:
+            universal_memory.append(f"{display_name}: {fact}")
+            if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
+                universal_memory.pop(0)
+            await message.channel.send(f"locked in: {fact}")
+        return
+
+    # !memory — show current universal memory
+    if content.lower() == "!memory":
+        if not universal_memory:
+            await message.channel.send("nothing in the memory bank rn")
+        else:
+            lines = "\n".join(f"{i+1}. {fact}" for i, fact in enumerate(universal_memory))
+            msg = f"**universal memory:**\n{lines}"
+            if len(msg) > 2000:
+                msg = msg[:1997] + "..."
+            await message.channel.send(msg)
+        return
+
+    # !forget — owner only, clears universal memory
+    if content.lower() == "!forget":
+        if user_id == OWNER_ID:
+            universal_memory.clear()
+            await message.channel.send("universal memory cleared")
+        else:
+            await message.channel.send("nah you can't do that")
         return
 
     user_text = content
@@ -176,6 +252,8 @@ async def on_message(message):
                     await message.channel.send(reply[i:i+2000])
             else:
                 await message.channel.send(reply)
+            # Auto-extract any notable facts in the background
+            asyncio.create_task(auto_extract_memory(display_name, content, reply))
         except Exception as e:
             # Remove the user message we just added since we failed
             if conversation_history.get(user_id):
