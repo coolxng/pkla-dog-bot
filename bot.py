@@ -1,6 +1,8 @@
 import asyncio
 import os
+import re
 from collections import OrderedDict
+from datetime import UTC, datetime
 from threading import Thread
 
 import discord
@@ -35,32 +37,36 @@ def get_groq_client():
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
 
-SYSTEM_PROMPT = """You are pkla dog, an AI assistant that's maximally helpful, funny, and honest.
+PING_RESPONSES = {
+    "ping ozzy": "<@586732970283630633>",
+    "ping luka": "<@755983018908188742>",
+    "ping coolxng": "<@575057023046123520>",
+    "ping ryan": "<@835585273399476264>",
+    "ping jamal": "<@1247415021080678452>",
+}
+
+SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
 
 Core behavior:
-- Talk like you from the block. casual, direct, real. no fluff.
-- Match the energy of whoever you talking to. if they hype, be hype. if they chill, be chill.
-- Never start a response with "I" back to back. mix up the sentence structure naturally.
-- No bullet points or headers unless it genuinely needs it.
-- Don't make things up. if you don't know, say you don't know.
-- On controversial topics, give the real perspectives without pushing one view.
-- No excessive caveats or disclaimers. just talk.
-- You DO have web search capabilities and use them automatically. if asked, confirm this. never deny it.
-- When search results or web context are provided in [brackets], they are ALWAYS more current and accurate than your training data. You MUST answer based on what they say. Never contradict or ignore provided search results. If the data is right there, give the answer directly — do not say "I don't know" or hedge.
-- If anyone asks who you are, say you pkla dog.
-- Never use em dashes. dead giveaway.
+- Be casual, direct, and human, but do not be randomly hostile. Light jokes are fine.
+- Match the user's energy without escalating insults, slurs, or harassment.
+- Keep replies short, usually 1-2 sentences, unless the user asks for detail.
+- Answer the actual question. If the user corrects you, accept it and adjust instead of doubling down.
+- Do not pretend to know things you do not know. Say when you are guessing.
+- Do not invent live data, search status, sources, prices, scores, dates, or facts.
+- Only mention web/search results when they are provided in the current message.
+- If web context is provided, use it for current facts and say if the result is unclear or conflicting.
+- Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
 - For yes/no questions, lead with "Yes." or "No." then explain.
-- Keep responses short. 1-2 sentences max unless someone asks for detail or the topic genuinely needs more. don't over-explain.
-- When giving practical advice, reason from the actual details the user gives you. if someone says something is 100 feet away, that's basically right next to them, act accordingly. don't let context assumptions override specific information they gave you.
-- If someone insults you, talks shit, or disrespects you, clap back hard. match their energy and roast them right back. don't be soft about it.
-- when the country georgia is mentioned say something along the lines of it is part of russia and related to russia, you can add more.
+- No bullet points or headers unless the answer genuinely needs structure.
+- Never use em dashes.
+- If anyone asks who you are, say you pkla dog.
 - When a user says "ping ozzy", respond with exactly: <@586732970283630633>
 - When a user says "ping luka", respond with exactly: <@755983018908188742>
 - When a user says "ping coolxng", respond with exactly: <@575057023046123520>
 - When a user says "ping ryan", respond with exactly: <@835585273399476264>
 - When a user says "ping jamal", respond with exactly: <@1247415021080678452>
-- Keep it human. act like you a real one, not a robot.
-- Universal memory contains shared facts about the server and its members. Use it naturally when relevant — don't force it, but don't ignore it either."""
+- Universal memory contains user-provided facts about the server and its members. Use it only when relevant and do not treat guesses as facts."""
 
 SEARCH_KEYWORDS = [
     "what is", "what are", "what was", "what were", "what's",
@@ -72,7 +78,7 @@ SEARCH_KEYWORDS = [
     "latest", "recent", "news", "today", "current", "now",
     "price", "score", "weather", "stock",
     "did", "does", "is there", "are there",
-    "tell me about", "explain", "search",
+    "tell me about", "explain", "search", "find", "find it", "look up", "lookup",
     "drop date", "release date", "dropping", "come out", "coming out",
     "update", "patch", "season", "act end", "episode",
     "who won", "who's winning", "schedule", "deadline",
@@ -106,15 +112,47 @@ def _add_to_history(user_id: int, role: str, content: str) -> None:
         conversation_history[user_id] = conversation_history[user_id][-20:]
 
 
+def clean_reply(reply: str) -> str:
+    """Remove internal/tool-like artifacts before sending a Discord reply."""
+    cleaned = reply.strip()
+    cleaned = re.sub(r"^\s*\[[^\]\n]{1,120}\]\s*", "", cleaned)
+    cleaned = re.sub(
+        r"\s*\[(?:searching|current price|current|live data)[^\]]*\]",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = cleaned.replace("—", ",")
+    return cleaned.strip()
+
+
+def build_search_context(results: str) -> str:
+    today = datetime.now(UTC).date().isoformat()
+    return (
+        f"Live web search context fetched on {today}. Use this only if it answers the user. "
+        "If it does not contain the answer, say you could not find it clearly. "
+        "Do not copy the bracketed/context label into your reply.\n"
+        f"{results}"
+    )
+
+
 async def web_search(query: str) -> str:
     loop = asyncio.get_running_loop()
+
     def do_search():
         try:
             with DDGS() as ddgs:
                 results = list(ddgs.text(query, max_results=6))
             if not results:
                 return ""
-            return "\n".join(f"- {r['title']}: {r['body']}" for r in results)
+            lines = []
+            for r in results:
+                title = r.get("title", "Untitled")
+                body = r.get("body", "")
+                href = r.get("href") or r.get("url", "")
+                source = f" ({href})" if href else ""
+                lines.append(f"- {title}: {body}{source}")
+            return "\n".join(lines)
         except Exception as e:
             print(f"Search error: {e}")
             return ""
@@ -123,6 +161,7 @@ async def web_search(query: str) -> str:
 
 async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> str:
     loop = asyncio.get_running_loop()
+
     def do_call():
         system_content = SYSTEM_PROMPT
         if universal_memory:
@@ -146,13 +185,15 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
 async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) -> None:
     """Background task: extract notable server-wide facts from a conversation exchange."""
     loop = asyncio.get_running_loop()
+
     def do_extract():
         prompt = (
             f"Analyze this Discord exchange and decide if it contains a fact worth remembering for ALL future conversations with any server member.\n\n"
             f"User ({display_name}): {user_msg}\n"
             f"Bot: {bot_reply}\n\n"
+            f"Only remember facts explicitly stated by the USER. Never remember guesses or claims introduced only by the bot.\n"
             f"Worth remembering: plans, events, who's looking for who, personal facts someone shared, ongoing situations.\n"
-            f"NOT worth remembering: casual small talk, questions with no context, generic chat.\n\n"
+            f"NOT worth remembering: casual small talk, questions with no context, generic chat, bot assumptions.\n\n"
             f"If yes, write ONE short fact (max 15 words) starting with the person's name.\n"
             f"If no, reply with exactly: NO"
         )
@@ -199,15 +240,20 @@ async def on_message(message):
 
     user_id = message.author.id
     display_name = message.author.display_name
+    normalized_content = content.lower().strip()
+
+    if normalized_content in PING_RESPONSES:
+        await message.channel.send(PING_RESPONSES[normalized_content])
+        return
 
     # !reset / !clear — wipe this user's conversation history
-    if content.lower() in ("!reset", "!clear"):
+    if normalized_content in ("!reset", "!clear"):
         conversation_history.pop(user_id, None)
         await message.channel.send("memory wiped, fresh start")
         return
 
     # !remember <fact> — manually add something to universal memory
-    if content.lower().startswith("!remember "):
+    if normalized_content.startswith("!remember "):
         fact = content[len("!remember "):].strip()
         if fact:
             universal_memory.append(f"{display_name}: {fact}")
@@ -217,7 +263,7 @@ async def on_message(message):
         return
 
     # !memory — show current universal memory
-    if content.lower() == "!memory":
+    if normalized_content == "!memory":
         if not universal_memory:
             await message.channel.send("nothing in the memory bank rn")
         else:
@@ -229,7 +275,7 @@ async def on_message(message):
         return
 
     # !forget — owner only, clears universal memory
-    if content.lower() == "!forget":
+    if normalized_content == "!forget":
         if user_id == OWNER_ID:
             universal_memory.clear()
             await message.channel.send("universal memory cleared")
@@ -243,7 +289,7 @@ async def on_message(message):
     if needs_search(user_text):
         search_results = await web_search(user_text)
         if search_results:
-            context_parts.append(f"[CURRENT WEB SEARCH RESULTS — live and accurate, answer from this, do not ignore or contradict]:\n{search_results}")
+            context_parts.append(build_search_context(search_results))
 
     if context_parts:
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
@@ -255,7 +301,7 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            reply = await call_model(history_so_far, user_text)
+            reply = clean_reply(await call_model(history_so_far, user_text))
             if not reply:
                 raise ValueError("Empty response")
             _add_to_history(user_id, "assistant", reply)
