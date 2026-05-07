@@ -1,24 +1,36 @@
-import discord
-from groq import Groq
-from ddgs import DDGS
-from flask import Flask
-from threading import Thread
 import asyncio
 import os
 from collections import OrderedDict
+from threading import Thread
 
-app = Flask("")
+import discord
+from ddgs import DDGS
+from flask import Flask
+from groq import Groq
+
+_groq_client = None
+
+app = Flask(__name__)
+
 
 @app.route("/")
 def home():
     return "alive"
 
-def run():
-    app.run(host="0.0.0.0", port=3000)
 
-Thread(target=run, daemon=True).start()
+def run_web_server():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
 
-groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+def start_web_server():
+    Thread(target=run_web_server, daemon=True).start()
+
+
+def get_groq_client():
+    global _groq_client
+    if _groq_client is None:
+        _groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
+    return _groq_client
 
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
@@ -122,7 +134,7 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             + history
             + [{"role": "user", "content": user_text}]
         )
-        response = groq_client.chat.completions.create(
+        response = get_groq_client().chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
             max_tokens=max_tokens,
@@ -145,7 +157,7 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
             f"If no, reply with exactly: NO"
         )
         try:
-            response = groq_client.chat.completions.create(
+            response = get_groq_client().chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=40,
@@ -262,4 +274,10 @@ async def on_message(message):
             await message.channel.send("stfu bitch ass boy")
 
 
-client.run(os.environ["DISCORD_TOKEN"])
+def main():
+    start_web_server()
+    client.run(os.environ["DISCORD_TOKEN"])
+
+
+if __name__ == "__main__":
+    main()
