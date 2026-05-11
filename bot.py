@@ -37,6 +37,39 @@ def get_groq_client():
         _groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
     return _groq_client
 
+
+def get_llm_provider() -> str:
+    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if provider in {"openai", "groq"}:
+        return provider
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return "groq"
+
+
+def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
+    provider = get_llm_provider()
+    if provider == "openai":
+        model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
+        model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        response = post_json(
+            "https://api.openai.com/v1/chat/completions",
+            {"model": model, "messages": messages, "max_tokens": max_tokens},
+            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        )
+        return response["choices"][0]["message"]["content"]
+
+    model_env = "GROQ_MEMORY_MODEL" if memory_task else "GROQ_MODEL"
+    model = os.environ.get(model_env) or (
+        "llama-3.1-8b-instant" if memory_task else "llama-3.3-70b-versatile"
+    )
+    response = get_groq_client().chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content
+
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
 
@@ -152,6 +185,14 @@ def format_search_results(results: list[dict]) -> str:
 
 def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> dict:
     request = Request(url, headers=headers or {})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: int = 30) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    request_headers = {"Content-Type": "application/json", **(headers or {})}
+    request = Request(url, data=body, headers=request_headers, method="POST")
     with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -330,12 +371,7 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             + history
             + [{"role": "user", "content": f"Today is {today}.\n\n{user_text}"}]
         )
-        response = get_groq_client().chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content
+        return create_chat_completion(messages, max_tokens=max_tokens)
     return await loop.run_in_executor(None, do_call)
 
 
@@ -355,12 +391,11 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
             f"If no, reply with exactly: NO"
         )
         try:
-            response = get_groq_client().chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
+            result = create_chat_completion(
+                [{"role": "user", "content": prompt}],
                 max_tokens=40,
-            )
-            result = response.choices[0].message.content.strip()
+                memory_task=True,
+            ).strip()
             if result and result.upper() != "NO" and len(result) < 120:
                 return result
         except Exception as e:
