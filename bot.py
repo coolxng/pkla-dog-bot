@@ -11,9 +11,7 @@ from urllib.request import Request, urlopen
 import discord
 from ddgs import DDGS
 from flask import Flask
-from groq import Groq
 
-_groq_client = None
 
 app = Flask(__name__)
 
@@ -31,11 +29,15 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-def get_groq_client():
-    global _groq_client
-    if _groq_client is None:
-        _groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
-    return _groq_client
+def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
+    model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
+    model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    response = post_json(
+        "https://api.openai.com/v1/chat/completions",
+        {"model": model, "messages": messages, "max_tokens": max_tokens},
+        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+    )
+    return response["choices"][0]["message"]["content"]
 
 
 def get_llm_provider() -> str:
