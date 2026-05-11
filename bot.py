@@ -1,9 +1,12 @@
 import asyncio
+import json
 import os
 import re
 from collections import OrderedDict
 from datetime import UTC, datetime
 from threading import Thread
+from urllib.parse import urlencode, urlparse
+from urllib.request import Request, urlopen
 
 import discord
 from ddgs import DDGS
@@ -34,6 +37,39 @@ def get_groq_client():
         _groq_client = Groq(api_key=os.environ["GROQ_API_KEY"])
     return _groq_client
 
+
+def get_llm_provider() -> str:
+    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    if provider in {"openai", "groq"}:
+        return provider
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    return "groq"
+
+
+def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
+    provider = get_llm_provider()
+    if provider == "openai":
+        model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
+        model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        response = post_json(
+            "https://api.openai.com/v1/chat/completions",
+            {"model": model, "messages": messages, "max_tokens": max_tokens},
+            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        )
+        return response["choices"][0]["message"]["content"]
+
+    model_env = "GROQ_MEMORY_MODEL" if memory_task else "GROQ_MODEL"
+    model = os.environ.get(model_env) or (
+        "llama-3.1-8b-instant" if memory_task else "llama-3.3-70b-versatile"
+    )
+    response = get_groq_client().chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+    return response.choices[0].message.content
+
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
 
@@ -54,8 +90,9 @@ Core behavior:
 - Answer the actual question. If the user corrects you, accept it and adjust instead of doubling down.
 - Do not pretend to know things you do not know. Say when you are guessing.
 - Do not invent live data, search status, sources, prices, scores, dates, or facts.
-- Only mention web/search results when they are provided in the current message.
-- If web context is provided, use it for current facts and say if the result is unclear or conflicting.
+- When live web context is provided, prefer it for current facts and mention the source site or URL when useful.
+- If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
+- For current questions, respect the explicit current date in the prompt.
 - Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
 - For yes/no questions, lead with "Yes." or "No." then explain.
 - No bullet points or headers unless the answer genuinely needs structure.
@@ -84,6 +121,16 @@ SEARCH_KEYWORDS = [
     "who won", "who's winning", "schedule", "deadline",
 ]
 
+RECENT_SEARCH_KEYWORDS = [
+    "latest", "recent", "news", "today", "current", "now", "score", "weather",
+    "stock", "price", "schedule", "deadline", "update", "patch", "season",
+    "release date", "drop date", "who won", "who's winning",
+]
+
+SEARCH_RESULT_LIMIT = 8
+# Optional API-backed providers are tried before DDGS when these keys exist.
+SEARCH_PROVIDER_ENV_VARS = ("TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "SERPAPI_API_KEY")
+
 # Per-user conversation history
 conversation_history: OrderedDict = OrderedDict()
 MAX_USERS = 500
@@ -100,6 +147,134 @@ client = discord.Client(intents=intents)
 def needs_search(text: str) -> bool:
     lower = text.lower()
     return any(kw in lower for kw in SEARCH_KEYWORDS)
+
+
+def needs_recent_search(text: str) -> bool:
+    lower = text.lower()
+    return any(kw in lower for kw in RECENT_SEARCH_KEYWORDS)
+
+
+def clean_search_query(text: str) -> str:
+    query = text.strip()
+    query = re.sub(r"^!search\s+", "", query, flags=re.IGNORECASE).strip()
+    return query[:300]
+
+
+def source_name(url: str) -> str:
+    if not url:
+        return "unknown source"
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return host or url
+
+
+def format_search_results(results: list[dict]) -> str:
+    lines = []
+    for i, r in enumerate(results, start=1):
+        title = r.get("title") or "Untitled"
+        body = r.get("body") or r.get("snippet") or r.get("description") or ""
+        url = r.get("href") or r.get("url") or r.get("link") or ""
+        date = r.get("date") or r.get("published") or r.get("published_date") or ""
+        date_part = f" | date: {date}" if date else ""
+        lines.append(
+            f"Source {i}: {title} ({source_name(url)}{date_part})\n"
+            f"URL: {url}\n"
+            f"Snippet: {body}"
+        )
+    return "\n\n".join(lines)
+
+
+def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> dict:
+    request = Request(url, headers=headers or {})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: int = 30) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    request_headers = {"Content-Type": "application/json", **(headers or {})}
+    request = Request(url, data=body, headers=request_headers, method="POST")
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def brave_search(query: str, *, recent: bool) -> list[dict]:
+    api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    if not api_key:
+        return []
+
+    params = {
+        "q": query,
+        "count": SEARCH_RESULT_LIMIT,
+        "country": "US",
+        "search_lang": "en",
+        "safesearch": "moderate",
+        "freshness": "pm" if recent else "py",
+    }
+    data = fetch_json(
+        f"https://api.search.brave.com/res/v1/web/search?{urlencode(params)}",
+        headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+    )
+    return [
+        {"title": item.get("title"), "body": item.get("description"), "href": item.get("url")}
+        for item in data.get("web", {}).get("results", [])
+    ]
+
+
+def tavily_search(query: str, *, recent: bool) -> list[dict]:
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
+        return []
+
+    params = {
+        "api_key": api_key,
+        "query": query,
+        "max_results": SEARCH_RESULT_LIMIT,
+        "search_depth": "advanced" if recent else "basic",
+        "topic": "news" if recent else "general",
+    }
+    data = fetch_json(f"https://api.tavily.com/search?{urlencode(params)}")
+    return [
+        {"title": item.get("title"), "body": item.get("content"), "href": item.get("url")}
+        for item in data.get("results", [])
+    ]
+
+
+def serpapi_search(query: str, *, recent: bool) -> list[dict]:
+    api_key = os.environ.get("SERPAPI_API_KEY")
+    if not api_key:
+        return []
+
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": api_key,
+        "num": SEARCH_RESULT_LIMIT,
+        "safe": "active",
+    }
+    if recent:
+        params["tbs"] = "qdr:m"
+    data = fetch_json(f"https://serpapi.com/search.json?{urlencode(params)}")
+    return [
+        {
+            "title": item.get("title"),
+            "body": item.get("snippet"),
+            "href": item.get("link"),
+            "date": item.get("date"),
+        }
+        for item in data.get("organic_results", [])
+    ]
+
+
+def ddgs_search(query: str, *, recent: bool) -> list[dict]:
+    with DDGS(timeout=10) as ddgs:
+        text_kwargs = {
+            "region": "us-en",
+            "safesearch": "moderate",
+            "max_results": SEARCH_RESULT_LIMIT,
+        }
+        if recent:
+            text_kwargs["timelimit"] = "m"
+        return list(ddgs.text(query, **text_kwargs))
 
 
 def _add_to_history(user_id: int, role: str, content: str) -> None:
@@ -126,36 +301,58 @@ def clean_reply(reply: str) -> str:
     return cleaned.strip()
 
 
-def build_search_context(results: str) -> str:
+def build_search_context(results: str, query: str) -> str:
     today = datetime.now(UTC).date().isoformat()
     return (
-        f"Live web search context fetched on {today}. Use this only if it answers the user. "
-        "If it does not contain the answer, say you could not find it clearly. "
-        "Do not copy the bracketed/context label into your reply.\n"
+        f"Live web search context fetched on {today} for query: {query!r}. "
+        "Use these sources only if they answer the user. "
+        "If they do not contain the answer, or sources disagree, say you could not verify it clearly. "
+        "For current facts, do not rely on older conversation memory over these search results. "
+        "When giving factual claims from search, include the relevant source site name or URL in plain text.\n\n"
         f"{results}"
     )
 
 
-async def web_search(query: str) -> str:
+async def web_search(query: str, *, recent: bool = False) -> str:
     loop = asyncio.get_running_loop()
 
     def do_search():
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=6))
-            if not results:
+            query_clean = clean_search_query(query)
+            if not query_clean:
                 return ""
-            lines = []
-            for r in results:
-                title = r.get("title", "Untitled")
-                body = r.get("body", "")
-                href = r.get("href") or r.get("url", "")
-                source = f" ({href})" if href else ""
-                lines.append(f"- {title}: {body}{source}")
-            return "\n".join(lines)
+
+            seen_urls = set()
+            combined_results = []
+
+            def add_results(items):
+                for item in items:
+                    url = item.get("href") or item.get("url") or item.get("link") or ""
+                    body = item.get("body") or item.get("snippet") or item.get("description") or ""
+                    dedupe_key = url or f"{item.get('title', '')}:{body}"
+                    if dedupe_key in seen_urls:
+                        continue
+                    seen_urls.add(dedupe_key)
+                    combined_results.append(item)
+                    if len(combined_results) >= SEARCH_RESULT_LIMIT:
+                        break
+
+            providers = (tavily_search, brave_search, serpapi_search, ddgs_search)
+            for provider in providers:
+                if len(combined_results) >= SEARCH_RESULT_LIMIT:
+                    break
+                try:
+                    add_results(provider(query_clean, recent=recent))
+                except Exception as provider_error:
+                    print(f"Search provider {provider.__name__} error: {provider_error}")
+
+            if not combined_results:
+                return ""
+            return format_search_results(combined_results[:SEARCH_RESULT_LIMIT])
         except Exception as e:
             print(f"Search error: {e}")
             return ""
+
     return await loop.run_in_executor(None, do_search)
 
 
@@ -168,17 +365,13 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             facts = "\n".join(f"- {fact}" for fact in universal_memory)
             system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
 
+        today = datetime.now(UTC).date().isoformat()
         messages = (
             [{"role": "system", "content": system_content}]
             + history
-            + [{"role": "user", "content": user_text}]
+            + [{"role": "user", "content": f"Today is {today}.\n\n{user_text}"}]
         )
-        response = get_groq_client().chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            max_tokens=max_tokens,
-        )
-        return response.choices[0].message.content
+        return create_chat_completion(messages, max_tokens=max_tokens)
     return await loop.run_in_executor(None, do_call)
 
 
@@ -198,12 +391,11 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
             f"If no, reply with exactly: NO"
         )
         try:
-            response = get_groq_client().chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
+            result = create_chat_completion(
+                [{"role": "user", "content": prompt}],
                 max_tokens=40,
-            )
-            result = response.choices[0].message.content.strip()
+                memory_task=True,
+            ).strip()
             if result and result.upper() != "NO" and len(result) < 120:
                 return result
         except Exception as e:
@@ -274,6 +466,19 @@ async def on_message(message):
             await message.channel.send(msg)
         return
 
+    # !search <query> — run a direct web search and show sources
+    if normalized_content.startswith("!search "):
+        query = clean_search_query(content)
+        search_results = await web_search(query, recent=True)
+        if not search_results:
+            await message.channel.send("couldn't find clear web results for that")
+            return
+        msg = f"web results for: {query}\n\n{search_results}"
+        if len(msg) > 2000:
+            msg = msg[:1997] + "..."
+        await message.channel.send(msg)
+        return
+
     # !forget — owner only, clears universal memory
     if normalized_content == "!forget":
         if user_id == OWNER_ID:
@@ -287,9 +492,15 @@ async def on_message(message):
     context_parts = []
 
     if needs_search(user_text):
-        search_results = await web_search(user_text)
+        query = clean_search_query(user_text)
+        search_results = await web_search(query, recent=needs_recent_search(user_text))
         if search_results:
-            context_parts.append(build_search_context(search_results))
+            context_parts.append(build_search_context(search_results, query))
+        elif any(kw in normalized_content for kw in ("search", "look up", "lookup", "latest", "current", "today", "news")):
+            context_parts.append(
+                "Live web search was attempted but returned no usable results. "
+                "Tell the user you could not verify this clearly instead of guessing."
+            )
 
     if context_parts:
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
