@@ -81,6 +81,7 @@ PING_RESPONSES = {
     "ping coolxng": "<@575057023046123520>",
     "ping ryan": "<@835585273399476264>",
     "ping jamal": "<@1247415021080678452>",
+    "ping Jaedon": "<@1149829095958528020>",
 }
 
 SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
