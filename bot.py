@@ -3,7 +3,8 @@ import json
 import os
 import re
 from collections import OrderedDict
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from threading import Thread
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -29,7 +30,8 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5.4-nano"
+CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search_preview"
 
 
@@ -213,7 +215,7 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
     if not os.environ.get("OPENAI_API_KEY"):
         return []
 
-    today = datetime.now(UTC).date().isoformat()
+    today = datetime.now(CENTRAL_TIME).date().isoformat()
     recency_hint = (
         f"Prioritize sources published or updated close to {today}."
         if recent
@@ -366,7 +368,7 @@ def clean_reply(reply: str) -> str:
 
 
 def build_search_context(results: str, query: str) -> str:
-    today = datetime.now(UTC).date().isoformat()
+    today = datetime.now(CENTRAL_TIME).date().isoformat()
     return (
         f"Live web search context fetched on {today} for query: {query!r}. "
         "Use these sources only if they answer the user. "
@@ -435,7 +437,7 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             facts = "\n".join(f"- {fact}" for fact in universal_memory)
             system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
 
-        today = datetime.now(UTC).date().isoformat()
+        today = datetime.now(CENTRAL_TIME).date().isoformat()
         messages = (
             [{"role": "system", "content": system_content}]
             + history
