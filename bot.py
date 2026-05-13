@@ -29,48 +29,19 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search_preview"
+
+
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
-    model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    del memory_task  # All bot processes use the same OpenAI model.
+    model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     response = post_json(
         "https://api.openai.com/v1/chat/completions",
         {"model": model, "messages": messages, "max_tokens": max_tokens},
         headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
     )
     return response["choices"][0]["message"]["content"]
-
-
-def get_llm_provider() -> str:
-    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if provider in {"openai", "groq"}:
-        return provider
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    return "groq"
-
-
-def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    provider = get_llm_provider()
-    if provider == "openai":
-        model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
-        model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        response = post_json(
-            "https://api.openai.com/v1/chat/completions",
-            {"model": model, "messages": messages, "max_tokens": max_tokens},
-            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-        )
-        return response["choices"][0]["message"]["content"]
-
-    model_env = "GROQ_MEMORY_MODEL" if memory_task else "GROQ_MODEL"
-    model = os.environ.get(model_env) or (
-        "llama-3.1-8b-instant" if memory_task else "llama-3.3-70b-versatile"
-    )
-    response = get_groq_client().chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content
 
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
@@ -131,8 +102,14 @@ RECENT_SEARCH_KEYWORDS = [
 ]
 
 SEARCH_RESULT_LIMIT = 8
-# Optional API-backed providers are tried before DDGS when these keys exist.
-SEARCH_PROVIDER_ENV_VARS = ("TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "SERPAPI_API_KEY")
+# OpenAI web search is tried first when OPENAI_API_KEY exists.
+# Other optional API-backed providers remain as fallbacks before DDGS.
+SEARCH_PROVIDER_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "TAVILY_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "SERPAPI_API_KEY",
+)
 
 # Per-user conversation history
 conversation_history: OrderedDict = OrderedDict()
@@ -198,6 +175,101 @@ def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: 
     request = Request(url, data=body, headers=request_headers, method="POST")
     with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def extract_openai_text(response: dict) -> str:
+    if response.get("output_text"):
+        return response["output_text"].strip()
+
+    text_parts = []
+    for item in response.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            text = content.get("text")
+            if text:
+                text_parts.append(text)
+    return "\n".join(text_parts).strip()
+
+
+def collect_openai_urls(value, *, seen: set[str] | None = None) -> list[dict]:
+    if seen is None:
+        seen = set()
+
+    results = []
+    if isinstance(value, dict):
+        url = value.get("url")
+        if url and url not in seen:
+            seen.add(url)
+            results.append(
+                {
+                    "title": value.get("title") or value.get("name") or source_name(url),
+                    "body": value.get("snippet")
+                    or value.get("text")
+                    or value.get("content")
+                    or "",
+                    "href": url,
+                }
+            )
+        for child in value.values():
+            results.extend(collect_openai_urls(child, seen=seen))
+    elif isinstance(value, list):
+        for child in value:
+            results.extend(collect_openai_urls(child, seen=seen))
+
+    return results
+
+
+def openai_web_search(query: str, *, recent: bool) -> list[dict]:
+    if not os.environ.get("OPENAI_API_KEY"):
+        return []
+
+    today = datetime.now(UTC).date().isoformat()
+    recency_hint = (
+        f"Prioritize sources published or updated close to {today}."
+        if recent
+        else "Use reliable sources that directly answer the query."
+    )
+    model = os.environ.get("OPENAI_SEARCH_MODEL") or os.environ.get(
+        "OPENAI_MODEL", DEFAULT_OPENAI_MODEL
+    )
+    tool_type = os.environ.get("OPENAI_WEB_SEARCH_TOOL", DEFAULT_OPENAI_WEB_SEARCH_TOOL)
+    response = post_json(
+        "https://api.openai.com/v1/responses",
+        {
+            "model": model,
+            "input": (
+                f"Search the web for this query: {query!r}. {recency_hint} "
+                f"Return concise findings with source URLs."
+            ),
+            "tools": [
+                {
+                    "type": tool_type,
+                    "user_location": {"type": "approximate", "country": "US"},
+                }
+            ],
+            "tool_choice": "auto",
+            "include": ["web_search_call.action.sources"],
+            "max_output_tokens": 900,
+        },
+        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+    )
+
+    results = collect_openai_urls(response)
+    if results:
+        return results[:SEARCH_RESULT_LIMIT]
+
+    text = extract_openai_text(response)
+    if not text:
+        return []
+
+    return [
+        {
+            "title": "OpenAI web search summary",
+            "body": text,
+            "href": "https://platform.openai.com/docs/guides/tools-web-search",
+        }
+    ]
 
 
 def brave_search(query: str, *, recent: bool) -> list[dict]:
@@ -340,7 +412,13 @@ async def web_search(query: str, *, recent: bool = False) -> str:
                     if len(combined_results) >= SEARCH_RESULT_LIMIT:
                         break
 
-            providers = (tavily_search, brave_search, serpapi_search, ddgs_search)
+            providers = (
+                openai_web_search,
+                tavily_search,
+                brave_search,
+                serpapi_search,
+                ddgs_search,
+            )
             for provider in providers:
                 if len(combined_results) >= SEARCH_RESULT_LIMIT:
                     break
