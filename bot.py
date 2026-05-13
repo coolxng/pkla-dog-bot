@@ -96,7 +96,7 @@ Core behavior:
 - Answer the actual question.
 - Do not pretend to know things you do not know. Say when you are guessing.
 - Do not invent live data, search status, sources, prices, scores, dates, or facts.
-- When live web context is provided, prefer it for current facts and mention the source site or URL when useful.
+- When live web context is provided, use it for current facts, but do not list sources or URLs unless the user asks for links or sources.
 - If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
 - Use the Central Time current date only when the user asks about dates, time, or current events.
 - Do not restate today's date in casual greetings or unrelated replies.
@@ -124,7 +124,8 @@ SEARCH_KEYWORDS = [
     "price", "score", "weather", "stock",
     "did", "does", "is there", "are there",
     "tell me about", "explain", "search", "find", "find it", "look up", "lookup",
-    "drop date", "release date", "dropping", "come out", "coming out",
+    "album", "song", "single", "mixtape", "release",
+    "drop", "drops", "drop date", "release date", "dropping", "come out", "coming out",
     "update", "patch", "season", "act end", "episode",
     "who won", "who's winning", "schedule", "deadline",
 ]
@@ -132,7 +133,7 @@ SEARCH_KEYWORDS = [
 RECENT_SEARCH_KEYWORDS = [
     "latest", "recent", "news", "today", "current", "now", "score", "weather",
     "stock", "price", "schedule", "deadline", "update", "patch", "season",
-    "release date", "drop date", "who won", "who's winning",
+    "release", "drop", "drops", "release date", "drop date", "who won", "who's winning",
 ]
 
 SEARCH_RESULT_LIMIT = 8
@@ -186,7 +187,34 @@ def current_time_reply() -> str:
 def clean_search_query(text: str) -> str:
     query = text.strip()
     query = re.sub(r"^!search\s+", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(r"^search\s+(?:for\s+)?(?:it|that)\s*", "", query, flags=re.IGNORECASE).strip()
     return query[:300]
+
+
+def build_search_query(text: str, history: list[dict] | None = None) -> str:
+    query = clean_search_query(text)
+    if not history:
+        return query
+
+    previous_user_messages = [
+        item.get("content", "").strip()
+        for item in history[-6:]
+        if item.get("role") == "user" and item.get("content", "").strip()
+    ]
+    if not previous_user_messages:
+        return query
+
+    normalized = query.lower()
+    vague_reference = any(
+        phrase in normalized
+        for phrase in (" it", "that", "the album", "the song", "the drop", "release date")
+    )
+    if not vague_reference and len(query.split()) >= 4:
+        return query
+
+    combined_parts = previous_user_messages[-3:] + [query]
+    combined = " ".join(dict.fromkeys(combined_parts))
+    return clean_search_query(combined)
 
 
 def source_name(url: str) -> str:
@@ -205,9 +233,8 @@ def format_search_results(results: list[dict]) -> str:
         date = r.get("date") or r.get("published") or r.get("published_date") or ""
         date_part = f" | date: {date}" if date else ""
         lines.append(
-            f"Source {i}: {title} ({source_name(url)}{date_part})\n"
-            f"URL: {url}\n"
-            f"Snippet: {body}"
+            f"Web result {i}: {title} ({source_name(url)}{date_part})\n"
+            f"Summary: {body}"
         )
     return "\n\n".join(lines)
 
@@ -445,10 +472,10 @@ def build_search_context(results: str, query: str) -> str:
     today = current_date_text()
     return (
         f"Live web search context fetched on {today} for query: {query!r}. "
-        "Use these sources only if they answer the user. "
-        "If they do not contain the answer, or sources disagree, say you could not verify it clearly. "
+        "Use these results only if they answer the user. "
+        "If they do not contain the answer, or results disagree, say you could not verify it clearly. "
         "For current facts, do not rely on older conversation memory over these search results. "
-        "When giving factual claims from search, include the relevant source site name or URL in plain text.\n\n"
+        "Answer naturally and do not list sources, URLs, or links unless the user explicitly asks for them.\n\n"
         f"{results}"
     )
 
@@ -613,17 +640,27 @@ async def on_message(message):
             await message.channel.send(msg)
         return
 
-    # !search <query> — run a direct web search and show sources
+    # !search <query> — run a direct web search and answer without dumping links
     if normalized_content.startswith("!search "):
         query = clean_search_query(content)
         search_results = await web_search(query, recent=True)
         if not search_results:
             await message.channel.send("couldn't find clear web results for that")
             return
-        msg = f"web results for: {query}\n\n{search_results}"
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await message.channel.send(msg)
+        search_context = build_search_context(search_results, query)
+        prompt = (
+            "Answer this using the live web context. Do not list links or sources."
+            f"\n\n{query}\n\n{search_context}"
+        )
+        async with message.channel.typing():
+            try:
+                reply = clean_reply(await call_model([], prompt))
+            except Exception as e:
+                print(f"Search answer error: {e}")
+                reply = "I found some results, but hit an error summarizing them."
+        if len(reply) > 2000:
+            reply = reply[:1997] + "..."
+        await message.channel.send(reply)
         return
 
     # !forget — owner only, clears universal memory
@@ -639,11 +676,12 @@ async def on_message(message):
         await message.channel.send(current_time_reply())
         return
 
+    history_so_far = conversation_history.get(user_id, []).copy()
     user_text = content
     context_parts = []
 
     if needs_search(user_text):
-        query = clean_search_query(user_text)
+        query = build_search_query(user_text, history_so_far)
         search_results = await web_search(query, recent=needs_recent_search(user_text))
         if search_results:
             context_parts.append(build_search_context(search_results, query))
@@ -655,8 +693,6 @@ async def on_message(message):
 
     if context_parts:
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
-
-    history_so_far = conversation_history.get(user_id, []).copy()
 
     # Store original clean message in history (not the enriched version)
     _add_to_history(user_id, "user", content)
