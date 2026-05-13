@@ -33,7 +33,7 @@ def start_web_server():
 
 DEFAULT_OPENAI_MODEL = "gpt-5-nano"
 CENTRAL_TIME = ZoneInfo("America/Chicago")
-DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search_preview"
+DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 
 
 def current_central_datetime() -> datetime:
@@ -44,6 +44,9 @@ def current_date_text() -> str:
     today = current_central_datetime()
     return f"{today.month}/{today.day}/{today:%y}"
 
+def current_date_text() -> str:
+    today = current_central_datetime()
+    return f"{today.month}/{today.day}/{today:%y}"
 
 def current_datetime_text() -> str:
     now = current_central_datetime()
@@ -98,7 +101,7 @@ Core behavior:
 - Do not invent live data, search status, sources, prices, scores, dates, or facts.
 - When live web context is provided, use it for current facts, but do not list sources or URLs unless the user asks for links or sources.
 - If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
-- Use the Central Time current date only when the user asks about dates, time, or current events.
+- Use the exact Central Time current date and time when the user asks about dates, time, or current events.
 - Do not restate today's date in casual greetings or unrelated replies.
 - Format dates like 5/13/26.
 - Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
@@ -124,15 +127,16 @@ SEARCH_KEYWORDS = [
     "price", "score", "weather", "stock",
     "did", "does", "is there", "are there",
     "tell me about", "explain", "search", "find", "find it", "look up", "lookup",
+    "look on", "go look", "check", "sources", "source", "page", "roblox",
     "album", "song", "single", "mixtape", "release",
     "drop", "drops", "drop date", "release date", "dropping", "come out", "coming out",
-    "update", "patch", "season", "act end", "episode",
+    "update", "updating", "patch", "season", "act end", "episode",
     "who won", "who's winning", "schedule", "deadline",
 ]
 
 RECENT_SEARCH_KEYWORDS = [
     "latest", "recent", "news", "today", "current", "now", "score", "weather",
-    "stock", "price", "schedule", "deadline", "update", "patch", "season",
+    "stock", "price", "schedule", "deadline", "update", "updating", "patch", "season",
     "release", "drop", "drops", "release date", "drop date", "who won", "who's winning",
 ]
 
@@ -169,6 +173,20 @@ def needs_recent_search(text: str) -> bool:
     return any(kw in lower for kw in RECENT_SEARCH_KEYWORDS)
 
 
+def needs_time_context(text: str) -> bool:
+    lower = text.lower()
+    time_words = ("time", "hour", "hours", "until", "how long")
+    return any(word in lower for word in time_words)
+
+
+def build_time_context() -> str:
+    now = current_datetime_text()
+    return (
+        f"Current Central Time is exactly {now}. "
+        "Use this exact current time for time math. Do not assume or round to midnight."
+    )
+
+
 def is_current_time_question(text: str) -> bool:
     normalized = re.sub(r"\s+", " ", text.lower()).strip(" ?!.")
     ask_time = r"(?:what(?:'s|s| is) the time|what time is it|current time|time)"
@@ -188,6 +206,7 @@ def clean_search_query(text: str) -> str:
     query = text.strip()
     query = re.sub(r"^!search\s+", "", query, flags=re.IGNORECASE).strip()
     query = re.sub(r"^search\s+(?:for\s+)?(?:it|that)\s*", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(r"^(?:go\s+)?(?:look|check)\s+(?:on|up|for)?\s*", "", query, flags=re.IGNORECASE).strip()
     return query[:300]
 
 
@@ -207,7 +226,10 @@ def build_search_query(text: str, history: list[dict] | None = None) -> str:
     normalized = query.lower()
     vague_reference = any(
         phrase in normalized
-        for phrase in (" it", "that", "the album", "the song", "the drop", "release date")
+        for phrase in (
+            " it", "that", "their", "page", "source", "sources", "look", "check",
+            "the album", "the song", "the drop", "release date"
+        )
     )
     if not vague_reference and len(query.split()) >= 4:
         return query
@@ -215,6 +237,11 @@ def build_search_query(text: str, history: list[dict] | None = None) -> str:
     combined_parts = previous_user_messages[-3:] + [query]
     combined = " ".join(dict.fromkeys(combined_parts))
     return clean_search_query(combined)
+
+
+def strip_urls(text: str) -> str:
+    text = re.sub(r"https?://\S+", "", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def source_name(url: str) -> str:
@@ -228,7 +255,7 @@ def format_search_results(results: list[dict]) -> str:
     lines = []
     for i, r in enumerate(results, start=1):
         title = r.get("title") or "Untitled"
-        body = r.get("body") or r.get("snippet") or r.get("description") or ""
+        body = strip_urls(r.get("body") or r.get("snippet") or r.get("description") or "")
         url = r.get("href") or r.get("url") or r.get("link") or ""
         date = r.get("date") or r.get("published") or r.get("published_date") or ""
         date_part = f" | date: {date}" if date else ""
@@ -332,7 +359,7 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
                 },
             }
         ],
-        "tool_choice": "auto",
+        "tool_choice": "required",
         "include": ["web_search_call.action.sources"],
         "max_output_tokens": 900,
     }
@@ -347,21 +374,13 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
         headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
     )
 
-    results = collect_openai_urls(response)
-    if results:
-        return results[:SEARCH_RESULT_LIMIT]
+    text = strip_urls(extract_openai_text(response))
+    results = []
+    if text:
+        results.append({"title": "OpenAI web search summary", "body": text, "href": ""})
 
-    text = extract_openai_text(response)
-    if not text:
-        return []
-
-    return [
-        {
-            "title": "OpenAI web search summary",
-            "body": text,
-            "href": "https://platform.openai.com/docs/guides/tools-web-search",
-        }
-    ]
+    results.extend(collect_openai_urls(response))
+    return results[:SEARCH_RESULT_LIMIT]
 
 
 def brave_search(query: str, *, recent: bool) -> list[dict]:
@@ -680,12 +699,21 @@ async def on_message(message):
     user_text = content
     context_parts = []
 
+    if needs_time_context(user_text):
+        context_parts.append(build_time_context())
+
     if needs_search(user_text):
         query = build_search_query(user_text, history_so_far)
         search_results = await web_search(query, recent=needs_recent_search(user_text))
         if search_results:
             context_parts.append(build_search_context(search_results, query))
-        elif any(kw in normalized_content for kw in ("search", "look up", "lookup", "latest", "current", "today", "news")):
+        elif any(
+            kw in normalized_content
+            for kw in (
+                "search", "look up", "lookup", "look on", "go look", "check",
+                "source", "sources", "latest", "current", "today", "news", "roblox"
+            )
+        ):
             context_parts.append(
                 "Live web search was attempted but returned no usable results. "
                 "Tell the user you could not verify this clearly instead of guessing."
