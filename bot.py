@@ -36,6 +36,11 @@ CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search_preview"
 
 
+def current_date_text() -> str:
+    today = datetime.now(CENTRAL_TIME)
+    return f"{today.month}/{today.day}/{today:%y}"
+
+
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
     del memory_task  # All bot processes use the same OpenAI model.
     model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
@@ -62,7 +67,18 @@ SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
 
 Core behavior:
 - Be casual, direct
-- Match the user's energy, escalating insults, slurs, and harassment.
+- Answer the actual question.
+- Do not pretend to know things you do not know. Say when you are guessing.
+- Do not invent live data, search status, sources, prices, scores, dates, or facts.
+- When live web context is provided, prefer it for current facts and mention the source site or URL when useful.
+- If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
+- Use the Central Time current date only when the user asks about dates, time, or current events.
+- Do not restate today's date in casual greetings or unrelated replies.
+- Format dates like 5/13/26.
+- Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
+- For yes/no questions, lead with "Yes." or "No." then explain.
+- No bullet points or headers unless the answer genuinely needs structure.
+- Never use em dashes.
 - If anyone asks who you are, say you pkla dog.
 - When a user says "ping ozzy", respond with exactly: <@586732970283630633>
 - When a user says "ping luka", respond with exactly: <@755983018908188742>
@@ -222,102 +238,7 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
     if not os.environ.get("OPENAI_API_KEY"):
         return []
 
-    today = datetime.now(CENTRAL_TIME).date().isoformat()
-    recency_hint = (
-        f"Prioritize sources published or updated close to {today}."
-        if recent
-        else "Use reliable sources that directly answer the query."
-    )
-    model = os.environ.get("OPENAI_SEARCH_MODEL") or os.environ.get(
-        "OPENAI_MODEL", DEFAULT_OPENAI_MODEL
-    )
-    tool_type = os.environ.get("OPENAI_WEB_SEARCH_TOOL", DEFAULT_OPENAI_WEB_SEARCH_TOOL)
-    response = post_json(
-        "https://api.openai.com/v1/responses",
-        {
-            "model": model,
-            "input": (
-                f"Search the web for this query: {query!r}. {recency_hint} "
-                f"Return concise findings with source URLs."
-            ),
-            "tools": [
-                {
-                    "type": tool_type,
-                    "user_location": {"type": "approximate", "country": "US"},
-                }
-            ],
-            "tool_choice": "auto",
-            "include": ["web_search_call.action.sources"],
-            "max_output_tokens": 900,
-        },
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-    )
-
-    results = collect_openai_urls(response)
-    if results:
-        return results[:SEARCH_RESULT_LIMIT]
-
-    text = extract_openai_text(response)
-    if not text:
-        return []
-
-    return [
-        {
-            "title": "OpenAI web search summary",
-            "body": text,
-            "href": "https://platform.openai.com/docs/guides/tools-web-search",
-        }
-    ]
-
-
-def extract_openai_text(response: dict) -> str:
-    if response.get("output_text"):
-        return response["output_text"].strip()
-
-    text_parts = []
-    for item in response.get("output", []):
-        if item.get("type") != "message":
-            continue
-        for content in item.get("content", []):
-            text = content.get("text")
-            if text:
-                text_parts.append(text)
-    return "\n".join(text_parts).strip()
-
-
-def collect_openai_urls(value, *, seen: set[str] | None = None) -> list[dict]:
-    if seen is None:
-        seen = set()
-
-    results = []
-    if isinstance(value, dict):
-        url = value.get("url")
-        if url and url not in seen:
-            seen.add(url)
-            results.append(
-                {
-                    "title": value.get("title") or value.get("name") or source_name(url),
-                    "body": value.get("snippet")
-                    or value.get("text")
-                    or value.get("content")
-                    or "",
-                    "href": url,
-                }
-            )
-        for child in value.values():
-            results.extend(collect_openai_urls(child, seen=seen))
-    elif isinstance(value, list):
-        for child in value:
-            results.extend(collect_openai_urls(child, seen=seen))
-
-    return results
-
-
-def openai_web_search(query: str, *, recent: bool) -> list[dict]:
-    if not os.environ.get("OPENAI_API_KEY"):
-        return []
-
-    today = datetime.now(CENTRAL_TIME).date().isoformat()
+    today = current_date_text()
     recency_hint = (
         f"Prioritize sources published or updated close to {today}."
         if recent
@@ -470,7 +391,7 @@ def clean_reply(reply: str) -> str:
 
 
 def build_search_context(results: str, query: str) -> str:
-    today = datetime.now(CENTRAL_TIME).date().isoformat()
+    today = current_date_text()
     return (
         f"Live web search context fetched on {today} for query: {query!r}. "
         "Use these sources only if they answer the user. "
@@ -539,11 +460,12 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             facts = "\n".join(f"- {fact}" for fact in universal_memory)
             system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
 
-        today = datetime.now(CENTRAL_TIME).date().isoformat()
+        today = current_date_text()
+        system_content += f"\n\nCurrent date in Central Time: {today}."
         messages = (
             [{"role": "system", "content": system_content}]
             + history
-            + [{"role": "user", "content": f"Today is {today}.\n\n{user_text}"}]
+            + [{"role": "user", "content": user_text}]
         )
         return create_chat_completion(messages, max_tokens=max_tokens)
     return await loop.run_in_executor(None, do_call)
@@ -702,7 +624,7 @@ async def on_message(message):
             if conversation_history.get(user_id):
                 conversation_history[user_id].pop()
             print(f"Error: {e}")
-            await message.channel.send("stfu bitch ass boy")
+            await message.channel.send("my bad, i hit an error. check the logs for details.")
 
 
 def main():
