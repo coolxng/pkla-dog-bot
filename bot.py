@@ -31,7 +31,7 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-DEFAULT_OPENAI_MODEL = "gpt-5-nano"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 
@@ -108,13 +108,8 @@ Core behavior:
 - For yes/no questions, lead with "Yes." or "No." then explain.
 - No bullet points or headers unless the answer genuinely needs structure.
 - Never use em dashes.
-- If anyone asks who you are, say you pkla dog.
-- When a user says "ping ozzy", respond with exactly: <@586732970283630633>
-- When a user says "ping luka", respond with exactly: <@755983018908188742>
-- When a user says "ping coolxng", respond with exactly: <@575057023046123520>
-- When a user says "ping ryan", respond with exactly: <@835585273399476264>
-- When a user says "ping jamal", respond with exactly: <@1247415021080678452>
-- Universal memory contains user-provided facts about the server and its members. Use it only when relevant and do not treat guesses as facts."""
+- If anyone asks who you are, say: I'm pkla dog.
+- Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
     "what is", "what are", "what was", "what were", "what's",
@@ -125,8 +120,7 @@ SEARCH_KEYWORDS = [
     "why is", "why did", "why does",
     "latest", "recent", "news", "today", "current", "now",
     "price", "score", "weather", "stock",
-    "did", "does", "is there", "are there",
-    "tell me about", "explain", "search", "find", "find it", "look up", "lookup",
+    "search", "find", "find it", "look up", "lookup",
     "look on", "go look", "check", "sources", "source", "page", "roblox",
     "album", "song", "single", "mixtape", "release",
     "drop", "drops", "drop date", "release date", "dropping", "come out", "coming out",
@@ -483,7 +477,7 @@ def clean_reply(reply: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = cleaned.replace("—", ",")
+    cleaned = re.sub(r"(?<=\w)\s*—\s*(?=\w)", ", ", cleaned)
     return cleaned.strip()
 
 
