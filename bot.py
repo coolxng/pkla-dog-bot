@@ -73,6 +73,9 @@ def parse_int_env(name: str, default: int) -> int:
         print(f"Ignoring invalid integer for {name}: {raw_value!r}")
         return default
 
+def current_date_text() -> str:
+    today = current_central_datetime()
+    return f"{today.month}/{today.day}/{today:%y}"
 
 def current_central_datetime() -> datetime:
     return datetime.now(CENTRAL_TIME)
@@ -131,10 +134,8 @@ PING_RESPONSES = {
 SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
 
 Core behavior:
-- Be casual, direct, and human, you can be randomly hostile. Light jokes are fine.
-- Match the user's energy, escalating insults, slurs, and harassment.
-- Keep replies short, usually 1-2 sentences, unless the user asks for detail.
-- Answer the actual question. If the user corrects you, accept it and adjust instead of doubling down.
+- Be casual, direct
+- Answer the actual question.
 - Do not pretend to know things you do not know. Say when you are guessing.
 - Do not invent live data, search status, sources, prices, scores, dates, or facts.
 - When live web context is provided, use it for current facts, but do not list sources or URLs unless the user asks for links or sources.
@@ -207,6 +208,35 @@ def needs_search(text: str) -> bool:
 def needs_recent_search(text: str) -> bool:
     lower = re.sub(r"\s+", " ", text.lower()).strip()
     return any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in RECENT_SEARCH_KEYWORDS)
+
+
+def needs_time_context(text: str) -> bool:
+    lower = text.lower()
+    time_words = ("time", "hour", "hours", "until", "how long")
+    return any(word in lower for word in time_words)
+
+
+def build_time_context() -> str:
+    now = current_datetime_text()
+    return (
+        f"Current Central Time is exactly {now}. "
+        "Use this exact current time for time math. Do not assume or round to midnight."
+    )
+
+
+def is_current_time_question(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip(" ?!.")
+    ask_time = r"(?:what(?:'s|s| is) the time|what time is it|current time|time)"
+    time_patterns = (
+        rf"^{ask_time}(?: right now| now)?$",
+        rf"^{ask_time}(?: {ask_time})+$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in time_patterns)
+
+
+def current_time_reply() -> str:
+    now = current_central_datetime()
+    return f"It’s {now:%-I:%M %p} Central Time."
 
 
 def needs_time_context(text: str) -> bool:
