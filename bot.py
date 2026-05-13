@@ -31,7 +31,7 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-DEFAULT_OPENAI_MODEL = "gpt-5-nano"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search_preview"
 
