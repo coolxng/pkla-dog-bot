@@ -29,48 +29,18 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
+
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
-    model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    del memory_task  # All bot processes use the same OpenAI model.
+    model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     response = post_json(
         "https://api.openai.com/v1/chat/completions",
         {"model": model, "messages": messages, "max_tokens": max_tokens},
         headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
     )
     return response["choices"][0]["message"]["content"]
-
-
-def get_llm_provider() -> str:
-    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if provider in {"openai", "groq"}:
-        return provider
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    return "groq"
-
-
-def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    provider = get_llm_provider()
-    if provider == "openai":
-        model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
-        model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        response = post_json(
-            "https://api.openai.com/v1/chat/completions",
-            {"model": model, "messages": messages, "max_tokens": max_tokens},
-            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-        )
-        return response["choices"][0]["message"]["content"]
-
-    model_env = "GROQ_MEMORY_MODEL" if memory_task else "GROQ_MODEL"
-    model = os.environ.get(model_env) or (
-        "llama-3.1-8b-instant" if memory_task else "llama-3.3-70b-versatile"
-    )
-    response = get_groq_client().chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content
 
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
