@@ -3,8 +3,10 @@ import json
 import os
 import re
 from collections import OrderedDict
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from threading import Thread
+from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -29,48 +31,51 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
+DEFAULT_OPENAI_MODEL = "gpt-5-nano"
+CENTRAL_TIME = ZoneInfo("America/Chicago")
+DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
+
+
+def current_central_datetime() -> datetime:
+    return datetime.now(CENTRAL_TIME)
+
+
+def current_date_text() -> str:
+    today = current_central_datetime()
+    return f"{today.month}/{today.day}/{today:%y}"
+
+
+def current_datetime_text() -> str:
+    now = current_central_datetime()
+    return f"{now.month}/{now.day}/{now:%y} {now:%-I:%M %p} CT"
+
+
+def model_supports_reasoning_effort(model: str) -> bool:
+    return model.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
-    model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    del memory_task  # All bot processes use the same OpenAI model.
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    payload = {"model": model, "messages": messages, "max_completion_tokens": max_tokens}
+    if model_supports_reasoning_effort(model):
+        payload["reasoning_effort"] = os.environ.get("OPENAI_REASONING_EFFORT", "minimal")
+
     response = post_json(
         "https://api.openai.com/v1/chat/completions",
-        {"model": model, "messages": messages, "max_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        payload,
+        headers={"Authorization": f"Bearer {api_key}"},
     )
-    return response["choices"][0]["message"]["content"]
-
-
-def get_llm_provider() -> str:
-    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
-    if provider in {"openai", "groq"}:
-        return provider
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    return "groq"
-
-
-def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    provider = get_llm_provider()
-    if provider == "openai":
-        model_env = "OPENAI_MEMORY_MODEL" if memory_task else "OPENAI_MODEL"
-        model = os.environ.get(model_env) or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        response = post_json(
-            "https://api.openai.com/v1/chat/completions",
-            {"model": model, "messages": messages, "max_tokens": max_tokens},
-            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-        )
-        return response["choices"][0]["message"]["content"]
-
-    model_env = "GROQ_MEMORY_MODEL" if memory_task else "GROQ_MODEL"
-    model = os.environ.get(model_env) or (
-        "llama-3.1-8b-instant" if memory_task else "llama-3.3-70b-versatile"
-    )
-    response = get_groq_client().chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-    )
-    return response.choices[0].message.content
+    choice = response.get("choices", [{}])[0]
+    content = choice.get("message", {}).get("content") or ""
+    if not content.strip():
+        finish_reason = choice.get("finish_reason", "unknown")
+        raise RuntimeError(f"OpenAI returned an empty message; finish_reason={finish_reason}")
+    return content
 
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
@@ -93,9 +98,11 @@ Core behavior:
 - Answer the actual question. If the user corrects you, accept it and adjust instead of doubling down.
 - Do not pretend to know things you do not know. Say when you are guessing.
 - Do not invent live data, search status, sources, prices, scores, dates, or facts.
-- When live web context is provided, prefer it for current facts and mention the source site or URL when useful.
+- When live web context is provided, use it for current facts, but do not list sources or URLs unless the user asks for links or sources.
 - If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
-- For current questions, respect the explicit current date in the prompt.
+- Use the exact Central Time current date and time when the user asks about dates, time, or current events.
+- Do not restate today's date in casual greetings or unrelated replies.
+- Format dates like 5/13/26.
 - Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
 - For yes/no questions, lead with "Yes." or "No." then explain.
 - No bullet points or headers unless the answer genuinely needs structure.
@@ -119,20 +126,28 @@ SEARCH_KEYWORDS = [
     "price", "score", "weather", "stock",
     "did", "does", "is there", "are there",
     "tell me about", "explain", "search", "find", "find it", "look up", "lookup",
-    "drop date", "release date", "dropping", "come out", "coming out",
-    "update", "patch", "season", "act end", "episode",
+    "look on", "go look", "check", "sources", "source", "page", "roblox",
+    "album", "song", "single", "mixtape", "release",
+    "drop", "drops", "drop date", "release date", "dropping", "come out", "coming out",
+    "update", "updating", "patch", "season", "act end", "episode",
     "who won", "who's winning", "schedule", "deadline",
 ]
 
 RECENT_SEARCH_KEYWORDS = [
     "latest", "recent", "news", "today", "current", "now", "score", "weather",
-    "stock", "price", "schedule", "deadline", "update", "patch", "season",
-    "release date", "drop date", "who won", "who's winning",
+    "stock", "price", "schedule", "deadline", "update", "updating", "patch", "season",
+    "release", "drop", "drops", "release date", "drop date", "who won", "who's winning",
 ]
 
 SEARCH_RESULT_LIMIT = 8
-# Optional API-backed providers are tried before DDGS when these keys exist.
-SEARCH_PROVIDER_ENV_VARS = ("TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "SERPAPI_API_KEY")
+# OpenAI web search is tried first when OPENAI_API_KEY exists.
+# Other optional API-backed providers remain as fallbacks before DDGS.
+SEARCH_PROVIDER_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "TAVILY_API_KEY",
+    "BRAVE_SEARCH_API_KEY",
+    "SERPAPI_API_KEY",
+)
 
 # Per-user conversation history
 conversation_history: OrderedDict = OrderedDict()
@@ -157,10 +172,75 @@ def needs_recent_search(text: str) -> bool:
     return any(kw in lower for kw in RECENT_SEARCH_KEYWORDS)
 
 
+def needs_time_context(text: str) -> bool:
+    lower = text.lower()
+    time_words = ("time", "hour", "hours", "until", "how long")
+    return any(word in lower for word in time_words)
+
+
+def build_time_context() -> str:
+    now = current_datetime_text()
+    return (
+        f"Current Central Time is exactly {now}. "
+        "Use this exact current time for time math. Do not assume or round to midnight."
+    )
+
+
+def is_current_time_question(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip(" ?!.")
+    ask_time = r"(?:what(?:'s|s| is) the time|what time is it|current time|time)"
+    time_patterns = (
+        rf"^{ask_time}(?: right now| now)?$",
+        rf"^{ask_time}(?: {ask_time})+$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in time_patterns)
+
+
+def current_time_reply() -> str:
+    now = current_central_datetime()
+    return f"It’s {now:%-I:%M %p} Central Time."
+
+
 def clean_search_query(text: str) -> str:
     query = text.strip()
     query = re.sub(r"^!search\s+", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(r"^search\s+(?:for\s+)?(?:it|that)\s*", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(r"^(?:go\s+)?(?:look|check)\s+(?:on|up|for)?\s*", "", query, flags=re.IGNORECASE).strip()
     return query[:300]
+
+
+def build_search_query(text: str, history: list[dict] | None = None) -> str:
+    query = clean_search_query(text)
+    if not history:
+        return query
+
+    previous_user_messages = [
+        item.get("content", "").strip()
+        for item in history[-6:]
+        if item.get("role") == "user" and item.get("content", "").strip()
+    ]
+    if not previous_user_messages:
+        return query
+
+    normalized = query.lower()
+    vague_reference = any(
+        phrase in normalized
+        for phrase in (
+            " it", "that", "their", "page", "source", "sources", "look", "check",
+            "the album", "the song", "the drop", "release date"
+        )
+    )
+    if not vague_reference and len(query.split()) >= 4:
+        return query
+
+    combined_parts = previous_user_messages[-3:] + [query]
+    combined = " ".join(dict.fromkeys(combined_parts))
+    return clean_search_query(combined)
+
+
+def strip_urls(text: str) -> str:
+    text = re.sub(r"https?://\S+", "", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def source_name(url: str) -> str:
@@ -174,14 +254,13 @@ def format_search_results(results: list[dict]) -> str:
     lines = []
     for i, r in enumerate(results, start=1):
         title = r.get("title") or "Untitled"
-        body = r.get("body") or r.get("snippet") or r.get("description") or ""
+        body = strip_urls(r.get("body") or r.get("snippet") or r.get("description") or "")
         url = r.get("href") or r.get("url") or r.get("link") or ""
         date = r.get("date") or r.get("published") or r.get("published_date") or ""
         date_part = f" | date: {date}" if date else ""
         lines.append(
-            f"Source {i}: {title} ({source_name(url)}{date_part})\n"
-            f"URL: {url}\n"
-            f"Snippet: {body}"
+            f"Web result {i}: {title} ({source_name(url)}{date_part})\n"
+            f"Summary: {body}"
         )
     return "\n\n".join(lines)
 
@@ -196,8 +275,111 @@ def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: 
     body = json.dumps(payload).encode("utf-8")
     request_headers = {"Content-Type": "application/json", **(headers or {})}
     request = Request(url, data=body, headers=request_headers, method="POST")
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"POST {url} failed with HTTP {e.code} {e.reason}: {error_body}"
+        ) from e
+
+
+def extract_openai_text(response: dict) -> str:
+    if response.get("output_text"):
+        return response["output_text"].strip()
+
+    text_parts = []
+    for item in response.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            text = content.get("text")
+            if text:
+                text_parts.append(text)
+    return "\n".join(text_parts).strip()
+
+
+def collect_openai_urls(value, *, seen: set[str] | None = None) -> list[dict]:
+    if seen is None:
+        seen = set()
+
+    results = []
+    if isinstance(value, dict):
+        url = value.get("url")
+        if url and url not in seen:
+            seen.add(url)
+            results.append(
+                {
+                    "title": value.get("title") or value.get("name") or source_name(url),
+                    "body": value.get("snippet")
+                    or value.get("text")
+                    or value.get("content")
+                    or "",
+                    "href": url,
+                }
+            )
+        for child in value.values():
+            results.extend(collect_openai_urls(child, seen=seen))
+    elif isinstance(value, list):
+        for child in value:
+            results.extend(collect_openai_urls(child, seen=seen))
+
+    return results
+
+
+def openai_web_search(query: str, *, recent: bool) -> list[dict]:
+    if not os.environ.get("OPENAI_API_KEY"):
+        return []
+
+    today = current_date_text()
+    recency_hint = (
+        f"Prioritize sources published or updated close to {today}."
+        if recent
+        else "Use reliable sources that directly answer the query."
+    )
+    model = os.environ.get("OPENAI_SEARCH_MODEL") or os.environ.get(
+        "OPENAI_MODEL", DEFAULT_OPENAI_MODEL
+    )
+    tool_type = os.environ.get("OPENAI_WEB_SEARCH_TOOL", DEFAULT_OPENAI_WEB_SEARCH_TOOL)
+    payload = {
+        "model": model,
+        "input": (
+            f"Search the web for this query: {query!r}. {recency_hint} "
+            f"Return concise findings with source URLs."
+        ),
+        "tools": [
+            {
+                "type": tool_type,
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "timezone": "America/Chicago",
+                },
+            }
+        ],
+        "tool_choice": "required",
+        "include": ["web_search_call.action.sources"],
+        "max_output_tokens": 900,
+    }
+    if model_supports_reasoning_effort(model):
+        payload["reasoning"] = {
+            "effort": os.environ.get("OPENAI_SEARCH_REASONING_EFFORT", "low")
+        }
+
+    response = post_json(
+        "https://api.openai.com/v1/responses",
+        payload,
+        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+    )
+
+    text = strip_urls(extract_openai_text(response))
+    results = []
+    if text:
+        results.append({"title": "OpenAI web search summary", "body": text, "href": ""})
+
+    results.extend(collect_openai_urls(response))
+    return results[:SEARCH_RESULT_LIMIT]
 
 
 def brave_search(query: str, *, recent: bool) -> list[dict]:
@@ -305,13 +487,13 @@ def clean_reply(reply: str) -> str:
 
 
 def build_search_context(results: str, query: str) -> str:
-    today = datetime.now(UTC).date().isoformat()
+    today = current_date_text()
     return (
         f"Live web search context fetched on {today} for query: {query!r}. "
-        "Use these sources only if they answer the user. "
-        "If they do not contain the answer, or sources disagree, say you could not verify it clearly. "
+        "Use these results only if they answer the user. "
+        "If they do not contain the answer, or results disagree, say you could not verify it clearly. "
         "For current facts, do not rely on older conversation memory over these search results. "
-        "When giving factual claims from search, include the relevant source site name or URL in plain text.\n\n"
+        "Answer naturally and do not list sources, URLs, or links unless the user explicitly asks for them.\n\n"
         f"{results}"
     )
 
@@ -340,7 +522,13 @@ async def web_search(query: str, *, recent: bool = False) -> str:
                     if len(combined_results) >= SEARCH_RESULT_LIMIT:
                         break
 
-            providers = (tavily_search, brave_search, serpapi_search, ddgs_search)
+            providers = (
+                openai_web_search,
+                tavily_search,
+                brave_search,
+                serpapi_search,
+                ddgs_search,
+            )
             for provider in providers:
                 if len(combined_results) >= SEARCH_RESULT_LIMIT:
                     break
@@ -368,11 +556,12 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             facts = "\n".join(f"- {fact}" for fact in universal_memory)
             system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
 
-        today = datetime.now(UTC).date().isoformat()
+        now = current_datetime_text()
+        system_content += f"\n\nCurrent date and time in Central Time: {now}."
         messages = (
             [{"role": "system", "content": system_content}]
             + history
-            + [{"role": "user", "content": f"Today is {today}.\n\n{user_text}"}]
+            + [{"role": "user", "content": user_text}]
         )
         return create_chat_completion(messages, max_tokens=max_tokens)
     return await loop.run_in_executor(None, do_call)
@@ -469,17 +658,27 @@ async def on_message(message):
             await message.channel.send(msg)
         return
 
-    # !search <query> — run a direct web search and show sources
+    # !search <query> — run a direct web search and answer without dumping links
     if normalized_content.startswith("!search "):
         query = clean_search_query(content)
         search_results = await web_search(query, recent=True)
         if not search_results:
             await message.channel.send("couldn't find clear web results for that")
             return
-        msg = f"web results for: {query}\n\n{search_results}"
-        if len(msg) > 2000:
-            msg = msg[:1997] + "..."
-        await message.channel.send(msg)
+        search_context = build_search_context(search_results, query)
+        prompt = (
+            "Answer this using the live web context. Do not list links or sources."
+            f"\n\n{query}\n\n{search_context}"
+        )
+        async with message.channel.typing():
+            try:
+                reply = clean_reply(await call_model([], prompt))
+            except Exception as e:
+                print(f"Search answer error: {e}")
+                reply = "I found some results, but hit an error summarizing them."
+        if len(reply) > 2000:
+            reply = reply[:1997] + "..."
+        await message.channel.send(reply)
         return
 
     # !forget — owner only, clears universal memory
@@ -491,15 +690,29 @@ async def on_message(message):
             await message.channel.send("nah you can't do that")
         return
 
+    if is_current_time_question(content):
+        await message.channel.send(current_time_reply())
+        return
+
+    history_so_far = conversation_history.get(user_id, []).copy()
     user_text = content
     context_parts = []
 
+    if needs_time_context(user_text):
+        context_parts.append(build_time_context())
+
     if needs_search(user_text):
-        query = clean_search_query(user_text)
+        query = build_search_query(user_text, history_so_far)
         search_results = await web_search(query, recent=needs_recent_search(user_text))
         if search_results:
             context_parts.append(build_search_context(search_results, query))
-        elif any(kw in normalized_content for kw in ("search", "look up", "lookup", "latest", "current", "today", "news")):
+        elif any(
+            kw in normalized_content
+            for kw in (
+                "search", "look up", "lookup", "look on", "go look", "check",
+                "source", "sources", "latest", "current", "today", "news", "roblox"
+            )
+        ):
             context_parts.append(
                 "Live web search was attempted but returned no usable results. "
                 "Tell the user you could not verify this clearly instead of guessing."
@@ -507,8 +720,6 @@ async def on_message(message):
 
     if context_parts:
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
-
-    history_so_far = conversation_history.get(user_id, []).copy()
 
     # Store original clean message in history (not the enriched version)
     _add_to_history(user_id, "user", content)
@@ -531,7 +742,7 @@ async def on_message(message):
             if conversation_history.get(user_id):
                 conversation_history[user_id].pop()
             print(f"Error: {e}")
-            await message.channel.send("stfu bitch ass boy")
+            await message.channel.send("my bad, i hit an error. check the logs for details.")
 
 
 def main():
