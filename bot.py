@@ -34,7 +34,48 @@ def start_web_server():
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
+DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
+DEFAULT_OWNER_ID = 575057023046123520
+COOLDOWN_SECONDS = 2
 
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_int_set_env(name: str, default: set[int]) -> set[int]:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+
+    values = set()
+    for part in raw_value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            values.add(int(part))
+        except ValueError:
+            print(f"Ignoring invalid integer in {name}: {part!r}")
+    return values or default
+
+
+def parse_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        print(f"Ignoring invalid integer for {name}: {raw_value!r}")
+        return default
+
+def current_date_text() -> str:
+    today = current_central_datetime()
+    return f"{today.month}/{today.day}/{today:%y}"
 
 def current_central_datetime() -> datetime:
     return datetime.now(CENTRAL_TIME)
@@ -44,9 +85,6 @@ def current_date_text() -> str:
     today = current_central_datetime()
     return f"{today.month}/{today.day}/{today:%y}"
 
-def current_date_text() -> str:
-    today = current_central_datetime()
-    return f"{today.month}/{today.day}/{today:%y}"
 
 def current_datetime_text() -> str:
     now = current_central_datetime()
@@ -58,12 +96,11 @@ def model_supports_reasoning_effort(model: str) -> bool:
 
 
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
-    del memory_task  # All bot processes use the same OpenAI model.
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
 
-    model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    model = DEFAULT_OPENAI_MODEL if memory_task else os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     payload = {"model": model, "messages": messages, "max_completion_tokens": max_tokens}
     if model_supports_reasoning_effort(model):
         payload["reasoning_effort"] = os.environ.get("OPENAI_REASONING_EFFORT", "minimal")
@@ -80,8 +117,9 @@ def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task
         raise RuntimeError(f"OpenAI returned an empty message; finish_reason={finish_reason}")
     return content
 
-TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
-OWNER_ID = 575057023046123520
+# Defaults keep the existing server/channel behavior when env vars are not set.
+TARGET_CHANNEL_IDS = parse_int_set_env("TARGET_CHANNEL_IDS", DEFAULT_TARGET_CHANNEL_IDS)
+OWNER_ID = parse_int_env("OWNER_ID", DEFAULT_OWNER_ID)
 
 PING_RESPONSES = {
     "ping ozzy": "<@586732970283630633>",
@@ -104,7 +142,7 @@ Core behavior:
 - If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
 - Use the exact Central Time current date and time when the user asks about dates, time, or current events.
 - Do not restate today's date in casual greetings or unrelated replies.
-- Format dates like dd/mm/yy or yyyy.
+- Format dates like 5/13/26.
 - Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
 - For yes/no questions, lead with "Yes." or "No." then explain.
 - No bullet points or headers unless the answer genuinely needs structure.
@@ -113,16 +151,16 @@ Core behavior:
 - Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
-    "what is", "what are", "what was", "what were", "what's",
+    "what are", "what was", "what were",
     "who is", "who are", "who was", "who's",
     "when is", "when was", "when did", "when does", "when will", "when's",
     "where is", "where are", "where was",
-    "how much", "how many", "how do", "how does", "how long", "how old",
+    "how much", "how many", "how does", "how long", "how old",
     "why is", "why did", "why does",
     "latest", "recent", "news", "today", "current", "now",
     "price", "score", "weather", "stock",
     "search", "find", "find it", "look up", "lookup",
-    "look on", "go look", "check", "sources", "source", "page", "roblox",
+    "look on", "go look", "check", "sources", "source", "roblox page",
     "album", "song", "single", "mixtape", "release",
     "drop", "drops", "drop date", "release date", "dropping", "come out", "coming out",
     "update", "updating", "patch", "season", "act end", "episode",
@@ -145,11 +183,13 @@ SEARCH_PROVIDER_ENV_VARS = (
     "SERPAPI_API_KEY",
 )
 
-# Per-user conversation history
+# Per-user conversation history is RAM-only and is wiped on restart.
 conversation_history: OrderedDict = OrderedDict()
+# Users evicted by this LRU cap lose their conversation silently; no time-based expiry exists.
 MAX_USERS = 500
+last_message_at: dict[int, datetime] = {}
 
-# Universal memory shared across all users
+# Universal memory is RAM-only and is wiped on restart; it is not persistent storage.
 universal_memory: list[str] = []
 MAX_UNIVERSAL_MEMORIES = 50
 
@@ -159,13 +199,44 @@ client = discord.Client(intents=intents)
 
 
 def needs_search(text: str) -> bool:
-    lower = text.lower()
-    return any(kw in lower for kw in SEARCH_KEYWORDS)
+    lower = re.sub(r"\s+", " ", text.lower()).strip()
+    if lower in {"what's good", "whats good", "how do you do"}:
+        return False
+    return any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in SEARCH_KEYWORDS)
 
 
 def needs_recent_search(text: str) -> bool:
+    lower = re.sub(r"\s+", " ", text.lower()).strip()
+    return any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in RECENT_SEARCH_KEYWORDS)
+
+
+def needs_time_context(text: str) -> bool:
     lower = text.lower()
-    return any(kw in lower for kw in RECENT_SEARCH_KEYWORDS)
+    time_words = ("time", "hour", "hours", "until", "how long")
+    return any(word in lower for word in time_words)
+
+
+def build_time_context() -> str:
+    now = current_datetime_text()
+    return (
+        f"Current Central Time is exactly {now}. "
+        "Use this exact current time for time math. Do not assume or round to midnight."
+    )
+
+
+def is_current_time_question(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip(" ?!.")
+    ask_time = r"(?:what(?:'s|s| is) the time|what time is it|current time|time)"
+    time_patterns = (
+        rf"^{ask_time}(?: right now| now)?$",
+        rf"^{ask_time}(?: {ask_time})+$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in time_patterns)
+
+
+def current_time_reply() -> str:
+    now = current_central_datetime()
+    return f"It’s {now:%-I:%M %p} Central Time."
 
 
 def needs_time_context(text: str) -> bool:
@@ -363,11 +434,15 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
             "effort": os.environ.get("OPENAI_SEARCH_REASONING_EFFORT", "low")
         }
 
-    response = post_json(
-        "https://api.openai.com/v1/responses",
-        payload,
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-    )
+    try:
+        response = post_json(
+            "https://api.openai.com/v1/responses",
+            payload,
+            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        )
+    except Exception as e:
+        print(f"OpenAI web search failed for query {query!r}: {e}")
+        raise
 
     text = strip_urls(extract_openai_text(response))
     results = []
@@ -478,7 +553,6 @@ def clean_reply(reply: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    cleaned = re.sub(r"(?<=\w)\s*—\s*(?=\w)", ", ", cleaned)
     return cleaned.strip()
 
 
@@ -488,10 +562,65 @@ def build_search_context(results: str, query: str) -> str:
         f"Live web search context fetched on {today} for query: {query!r}. "
         "Use these results only if they answer the user. "
         "If they do not contain the answer, or results disagree, say you could not verify it clearly. "
-        "For current facts, do not rely on older conversation memory over these search results. "
-        "Answer naturally and do not list sources, URLs, or links unless the user explicitly asks for them.\n\n"
+        "For current facts, do not rely on older conversation memory over these search results.\n\n"
         f"{results}"
     )
+
+
+def normalize_memory_fact(fact: str) -> str:
+    return re.sub(r"\W+", " ", fact.lower()).strip()
+
+
+def memory_fact_exists(fact: str) -> bool:
+    normalized = normalize_memory_fact(fact)
+    if not normalized:
+        return True
+    return any(
+        normalized in normalize_memory_fact(existing)
+        or normalize_memory_fact(existing) in normalized
+        for existing in universal_memory
+    )
+
+
+def add_universal_memory(fact: str) -> bool:
+    fact = fact.strip()
+    if not fact or memory_fact_exists(fact):
+        return False
+    universal_memory.append(fact)
+    if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
+        universal_memory.pop(0)
+    return True
+
+
+def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = max(
+            remaining.rfind("\n", 0, limit),
+            remaining.rfind(". ", 0, limit),
+            remaining.rfind("! ", 0, limit),
+            remaining.rfind("? ", 0, limit),
+            remaining.rfind(" ", 0, limit),
+        )
+        if split_at < max(1, limit // 2):
+            split_at = limit
+        if split_at < limit and remaining[split_at:split_at + 1] in ".!?":
+            split_at += 1
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def error_reply(error: Exception, *, during_search: bool = False) -> str:
+    if during_search:
+        return "my bad, search failed while checking that."
+    error_text = str(error).lower()
+    if "openai" in error_text or "api_key" in error_text or "chat/completions" in error_text:
+        return "my bad, OpenAI failed to return a response."
+    return "my bad, something failed while handling that message."
 
 
 async def web_search(query: str, *, recent: bool = False) -> str:
@@ -565,6 +694,9 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
 
 async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) -> None:
     """Background task: extract notable server-wide facts from a conversation exchange."""
+    if not env_bool("AUTO_MEMORY_ENABLED", False):
+        return
+
     loop = asyncio.get_running_loop()
 
     def do_extract():
@@ -575,7 +707,7 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
             f"Only remember facts explicitly stated by the USER. Never remember guesses or claims introduced only by the bot.\n"
             f"Worth remembering: plans, events, who's looking for who, personal facts someone shared, ongoing situations.\n"
             f"NOT worth remembering: casual small talk, questions with no context, generic chat, bot assumptions.\n\n"
-            f"If yes, write ONE short fact (max 15 words) starting with the person's name.\n"
+            f"If yes, write ONE short fact (max 15 words) without the person's name.\n"
             f"If no, reply with exactly: NO"
         )
         try:
@@ -585,16 +717,13 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
                 memory_task=True,
             ).strip()
             if result and result.upper() != "NO" and len(result) < 120:
-                return result
+                return f"{display_name}: {result}"
         except Exception as e:
             print(f"Memory extraction error: {e}")
         return None
 
     fact = await loop.run_in_executor(None, do_extract)
-    if fact:
-        universal_memory.append(fact)
-        if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
-            universal_memory.pop(0)
+    if fact and add_universal_memory(fact):
         print(f"[universal memory] stored: {fact}")
 
 
@@ -626,6 +755,13 @@ async def on_message(message):
         await message.channel.send(PING_RESPONSES[normalized_content])
         return
 
+    now = current_central_datetime()
+    last_seen = last_message_at.get(user_id)
+    if last_seen and (now - last_seen).total_seconds() < COOLDOWN_SECONDS:
+        await message.channel.send("slow down a sec")
+        return
+    last_message_at[user_id] = now
+
     # !reset / !clear — wipe this user's conversation history
     if normalized_content in ("!reset", "!clear"):
         conversation_history.pop(user_id, None)
@@ -636,10 +772,11 @@ async def on_message(message):
     if normalized_content.startswith("!remember "):
         fact = content[len("!remember "):].strip()
         if fact:
-            universal_memory.append(f"{display_name}: {fact}")
-            if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
-                universal_memory.pop(0)
-            await message.channel.send(f"locked in: {fact}")
+            stored_fact = f"{display_name}: {fact}"
+            if add_universal_memory(stored_fact):
+                await message.channel.send(f"locked in: {fact}")
+            else:
+                await message.channel.send("already had that in memory")
         return
 
     # !memory — show current universal memory
@@ -671,10 +808,9 @@ async def on_message(message):
                 reply = clean_reply(await call_model([], prompt))
             except Exception as e:
                 print(f"Search answer error: {e}")
-                reply = "I found some results, but hit an error summarizing them."
-        if len(reply) > 2000:
-            reply = reply[:1997] + "..."
-        await message.channel.send(reply)
+                reply = error_reply(e, during_search=True)
+        for chunk in split_reply_chunks(reply):
+            await message.channel.send(chunk)
         return
 
     # !forget — owner only, clears universal memory
@@ -726,19 +862,17 @@ async def on_message(message):
             if not reply:
                 raise ValueError("Empty response")
             _add_to_history(user_id, "assistant", reply)
-            if len(reply) > 2000:
-                for i in range(0, len(reply), 2000):
-                    await message.channel.send(reply[i:i+2000])
-            else:
-                await message.channel.send(reply)
-            # Auto-extract any notable facts in the background
-            asyncio.create_task(auto_extract_memory(display_name, content, reply))
+            for chunk in split_reply_chunks(reply):
+                await message.channel.send(chunk)
+            # Auto-extract any notable facts in the background when explicitly enabled.
+            if env_bool("AUTO_MEMORY_ENABLED", False):
+                asyncio.create_task(auto_extract_memory(display_name, content, reply))
         except Exception as e:
             # Remove the user message we just added since we failed
             if conversation_history.get(user_id):
                 conversation_history[user_id].pop()
             print(f"Error: {e}")
-            await message.channel.send("my bad, i hit an error. check the logs for details.")
+            await message.channel.send(error_reply(e))
 
 
 def main():
