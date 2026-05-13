@@ -31,25 +31,51 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5-nano"
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search_preview"
 
 
+def current_central_datetime() -> datetime:
+    return datetime.now(CENTRAL_TIME)
+
+
 def current_date_text() -> str:
-    today = datetime.now(CENTRAL_TIME)
+    today = current_central_datetime()
     return f"{today.month}/{today.day}/{today:%y}"
+
+
+def current_datetime_text() -> str:
+    now = current_central_datetime()
+    return f"{now.month}/{now.day}/{now:%y} {now:%-I:%M %p} CT"
+
+
+def model_supports_reasoning_effort(model: str) -> bool:
+    return model.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
     del memory_task  # All bot processes use the same OpenAI model.
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
     model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    payload = {"model": model, "messages": messages, "max_completion_tokens": max_tokens}
+    if model_supports_reasoning_effort(model):
+        payload["reasoning_effort"] = os.environ.get("OPENAI_REASONING_EFFORT", "minimal")
+
     response = post_json(
         "https://api.openai.com/v1/chat/completions",
-        {"model": model, "messages": messages, "max_completion_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        payload,
+        headers={"Authorization": f"Bearer {api_key}"},
     )
-    return response["choices"][0]["message"]["content"]
+    choice = response.get("choices", [{}])[0]
+    content = choice.get("message", {}).get("content") or ""
+    if not content.strip():
+        finish_reason = choice.get("finish_reason", "unknown")
+        raise RuntimeError(f"OpenAI returned an empty message; finish_reason={finish_reason}")
+    return content
 
 TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 OWNER_ID = 575057023046123520
@@ -140,6 +166,21 @@ def needs_search(text: str) -> bool:
 def needs_recent_search(text: str) -> bool:
     lower = text.lower()
     return any(kw in lower for kw in RECENT_SEARCH_KEYWORDS)
+
+
+def is_current_time_question(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip(" ?!.")
+    ask_time = r"(?:what(?:'s|s| is) the time|what time is it|current time|time)"
+    time_patterns = (
+        rf"^{ask_time}(?: right now| now)?$",
+        rf"^{ask_time}(?: {ask_time})+$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in time_patterns)
+
+
+def current_time_reply() -> str:
+    now = current_central_datetime()
+    return f"It’s {now:%-I:%M %p} Central Time."
 
 
 def clean_search_query(text: str) -> str:
@@ -248,24 +289,34 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
         "OPENAI_MODEL", DEFAULT_OPENAI_MODEL
     )
     tool_type = os.environ.get("OPENAI_WEB_SEARCH_TOOL", DEFAULT_OPENAI_WEB_SEARCH_TOOL)
+    payload = {
+        "model": model,
+        "input": (
+            f"Search the web for this query: {query!r}. {recency_hint} "
+            f"Return concise findings with source URLs."
+        ),
+        "tools": [
+            {
+                "type": tool_type,
+                "user_location": {
+                    "type": "approximate",
+                    "country": "US",
+                    "timezone": "America/Chicago",
+                },
+            }
+        ],
+        "tool_choice": "auto",
+        "include": ["web_search_call.action.sources"],
+        "max_output_tokens": 900,
+    }
+    if model_supports_reasoning_effort(model):
+        payload["reasoning"] = {
+            "effort": os.environ.get("OPENAI_SEARCH_REASONING_EFFORT", "low")
+        }
+
     response = post_json(
         "https://api.openai.com/v1/responses",
-        {
-            "model": model,
-            "input": (
-                f"Search the web for this query: {query!r}. {recency_hint} "
-                f"Return concise findings with source URLs."
-            ),
-            "tools": [
-                {
-                    "type": tool_type,
-                    "user_location": {"type": "approximate", "country": "US"},
-                }
-            ],
-            "tool_choice": "auto",
-            "include": ["web_search_call.action.sources"],
-            "max_output_tokens": 900,
-        },
+        payload,
         headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
     )
 
@@ -460,8 +511,8 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
             facts = "\n".join(f"- {fact}" for fact in universal_memory)
             system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
 
-        today = current_date_text()
-        system_content += f"\n\nCurrent date in Central Time: {today}."
+        now = current_datetime_text()
+        system_content += f"\n\nCurrent date and time in Central Time: {now}."
         messages = (
             [{"role": "system", "content": system_content}]
             + history
@@ -582,6 +633,10 @@ async def on_message(message):
             await message.channel.send("universal memory cleared")
         else:
             await message.channel.send("nah you can't do that")
+        return
+
+    if is_current_time_question(content):
+        await message.channel.send(current_time_reply())
         return
 
     user_text = content
