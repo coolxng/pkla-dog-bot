@@ -38,5 +38,17 @@ class PingResponseTests(unittest.TestCase):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
 
+class OpenAIConfigTests(unittest.TestCase):
+    def test_default_model_uses_chatgpt_like_alias(self):
+        self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
+
+    def test_gpt5_reasoning_effort_defaults_to_none(self):
+        self.assertEqual(bot.default_reasoning_effort("gpt-5.5"), "none")
+
+    def test_system_prompt_keeps_chatgpt_like_behavior(self):
+        self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
+        self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()
