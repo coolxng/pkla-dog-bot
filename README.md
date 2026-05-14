@@ -1,6 +1,6 @@
 # Discord Bot
 
-A Python Discord bot with OpenAI-backed chat responses, optional web search, lightweight in-memory conversation history, and optional universal memory commands.
+A Python Discord bot with OpenAI-backed chat responses, optional web search, lightweight in-memory DM/channel conversation history, and optional universal memory commands.
 
 ## Required environment variables
 
@@ -47,7 +47,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `ping ryan` | Mentions Ryan. |
 | `ping jamal` | Mentions Jamal. |
 | `ping jaedon` / `ping j` | Mentions Jaedon. |
-| `!reset` or `!clear` | Clears your per-user conversation history. |
+| `!reset` or `!clear` | Clears the active conversation history: your DM history in DMs, or the current channel's shared history in server channels. |
 | `!remember <fact>` | Adds a shared memory fact manually. |
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
@@ -55,7 +55,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 
 ## Channel setup
 
-The bot only responds in channels listed in `TARGET_CHANNEL_IDS`, or in DMs from `OWNER_ID`. Set `TARGET_CHANNEL_IDS` as a comma-separated list, for example:
+The bot only responds in channels listed in `TARGET_CHANNEL_IDS`, or in DMs from `OWNER_ID`. In server channels, recent conversation history is shared by channel and labels each user's messages by display name so different people can continue the same ChatGPT-style group conversation. DMs keep separate per-user history. Set `TARGET_CHANNEL_IDS` as a comma-separated list, for example:
 
 ```text
 TARGET_CHANNEL_IDS=123456789012345678,234567890123456789
@@ -69,9 +69,9 @@ OpenAI is the primary provider for chat and web search. Set `OPENAI_API_KEY` and
 
 ## Known limitations
 
-- Conversation history is RAM-only and is wiped on restart.
+- Conversation history is RAM-only and is wiped on restart. Server-channel history is shared by channel, while DM history remains per user.
 - Universal memory is RAM-only and is wiped on restart.
 - Auto-memory extraction is disabled by default because it can store personal facts across users.
 - The bot should run as a single replica because in-memory history and memory are not shared across processes.
-- There is no time-based expiry for conversation history; users are evicted silently when the in-memory user cap is reached.
+- There is no time-based expiry for conversation history; users and channels are evicted silently when the in-memory caps are reached.
 - Live search quality depends on the configured providers and API availability.

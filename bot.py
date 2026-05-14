@@ -171,6 +171,7 @@ Core behavior:
 - If anyone asks who you are, say: I'm pkla dog.
 - You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
 - Configured Discord mention text like <@123> contains a user ID from the bot config. If asked about a mention you just sent, answer from chat context instead of claiming you do not store or use IDs.
+- In server channels, recent chat history can include multiple users labeled as "Name: message". Use that shared channel context so another user can naturally continue the same conversation.
 - Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
@@ -206,10 +207,13 @@ SEARCH_PROVIDER_ENV_VARS = (
     "SERPAPI_API_KEY",
 )
 
-# Per-user conversation history is RAM-only and is wiped on restart.
+# DM conversation history is keyed by user ID and wiped on restart.
 conversation_history: OrderedDict = OrderedDict()
-# Users evicted by this LRU cap lose their conversation silently; no time-based expiry exists.
+# Channel conversation history is keyed by Discord channel ID and shared by everyone in that channel.
+channel_conversation_history: OrderedDict = OrderedDict()
+# Users/channels evicted by these LRU caps lose their conversation silently; no time-based expiry exists.
 MAX_USERS = 500
+MAX_CHANNELS = 100
 last_message_at: dict[int, datetime] = {}
 
 # Universal memory is RAM-only and is wiped on restart; it is not persistent storage.
@@ -614,6 +618,10 @@ def ddgs_search(query: str, *, recent: bool) -> list[dict]:
         return list(ddgs.text(query, **text_kwargs))
 
 
+def format_user_history_content(display_name: str, content: str) -> str:
+    return f"{display_name}: {content}"
+
+
 def _add_to_history(user_id: int, role: str, content: str) -> None:
     if user_id not in conversation_history:
         if len(conversation_history) >= MAX_USERS:
@@ -622,6 +630,54 @@ def _add_to_history(user_id: int, role: str, content: str) -> None:
     conversation_history[user_id].append({"role": role, "content": content})
     if len(conversation_history[user_id]) > 20:
         conversation_history[user_id] = conversation_history[user_id][-20:]
+
+
+def _add_to_channel_history(channel_id: int, role: str, content: str, display_name: str | None = None) -> None:
+    if channel_id not in channel_conversation_history:
+        if len(channel_conversation_history) >= MAX_CHANNELS:
+            channel_conversation_history.popitem(last=False)
+        channel_conversation_history[channel_id] = []
+
+    if role == "user" and display_name:
+        content = format_user_history_content(display_name, content)
+
+    channel_conversation_history[channel_id].append({"role": role, "content": content})
+    if len(channel_conversation_history[channel_id]) > 20:
+        channel_conversation_history[channel_id] = channel_conversation_history[channel_id][-20:]
+
+
+def get_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> list:
+    if is_dm:
+        return conversation_history.get(user_id, []).copy()
+    return channel_conversation_history.get(channel_id, []).copy()
+
+
+def add_to_active_history(
+    channel_id: int,
+    user_id: int,
+    role: str,
+    content: str,
+    *,
+    is_dm: bool,
+    display_name: str | None = None,
+) -> None:
+    if is_dm:
+        _add_to_history(user_id, role, content)
+    else:
+        _add_to_channel_history(channel_id, role, content, display_name)
+
+
+def clear_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
+    if is_dm:
+        conversation_history.pop(user_id, None)
+    else:
+        channel_conversation_history.pop(channel_id, None)
+
+
+def pop_last_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
+    history = conversation_history.get(user_id) if is_dm else channel_conversation_history.get(channel_id)
+    if history:
+        history.pop()
 
 
 def clean_reply(reply: str) -> str:
@@ -753,7 +809,7 @@ async def web_search(query: str, *, recent: bool = False) -> str:
     return await loop.run_in_executor(None, do_search)
 
 
-async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> str:
+async def call_model(history: list, user_text: str, max_tokens: int = 1024, display_name: str | None = None) -> str:
     loop = asyncio.get_running_loop()
 
     def do_call():
@@ -764,6 +820,8 @@ async def call_model(history: list, user_text: str, max_tokens: int = 1024) -> s
 
         now = current_datetime_text()
         system_content += f"\n\nCurrent date and time in Central Time: {now}."
+        if display_name:
+            system_content += f"\nThe current Discord speaker is {display_name}. Recent channel messages may include other speakers as 'Name: message'."
         messages = (
             [{"role": "system", "content": system_content}]
             + history
@@ -834,8 +892,10 @@ async def on_message(message):
 
     ping_response = ping_response_for(content)
     if ping_response:
-        _add_to_history(user_id, "user", content)
-        _add_to_history(user_id, "assistant", ping_response)
+        add_to_active_history(
+            message.channel.id, user_id, "user", content, is_dm=is_dm, display_name=display_name
+        )
+        add_to_active_history(message.channel.id, user_id, "assistant", ping_response, is_dm=is_dm)
         await message.channel.send(ping_response)
         return
 
@@ -846,9 +906,9 @@ async def on_message(message):
         return
     last_message_at[user_id] = now
 
-    # !reset / !clear — wipe this user's conversation history
+    # !reset / !clear — wipe the active DM or channel conversation history.
     if normalized_content in ("!reset", "!clear"):
-        conversation_history.pop(user_id, None)
+        clear_active_history(message.channel.id, user_id, is_dm=is_dm)
         await message.channel.send("memory wiped, fresh start")
         return
 
@@ -910,16 +970,16 @@ async def on_message(message):
         await message.channel.send(current_time_reply())
         return
 
-    history_so_far = conversation_history.get(user_id, []).copy()
-    user_text = content
+    history_so_far = get_active_history(message.channel.id, user_id, is_dm=is_dm)
+    user_text = content if is_dm else format_user_history_content(display_name, content)
     context_parts = []
 
-    if needs_time_context(user_text):
+    if needs_time_context(content):
         context_parts.append(build_time_context())
 
-    if needs_search(user_text):
-        query = build_search_query(user_text, history_so_far)
-        search_results = await web_search(query, recent=needs_recent_search(user_text))
+    if needs_search(content):
+        query = build_search_query(content, history_so_far)
+        search_results = await web_search(query, recent=needs_recent_search(content))
         if search_results:
             context_parts.append(build_search_context(search_results, query))
         elif any(
@@ -938,14 +998,16 @@ async def on_message(message):
         user_text = user_text + "\n\n" + "\n\n".join(context_parts)
 
     # Store original clean message in history (not the enriched version)
-    _add_to_history(user_id, "user", content)
+    add_to_active_history(
+        message.channel.id, user_id, "user", content, is_dm=is_dm, display_name=display_name
+    )
 
     async with message.channel.typing():
         try:
-            reply = clean_reply(await call_model(history_so_far, user_text))
+            reply = clean_reply(await call_model(history_so_far, user_text, display_name=display_name))
             if not reply:
                 raise ValueError("Empty response")
-            _add_to_history(user_id, "assistant", reply)
+            add_to_active_history(message.channel.id, user_id, "assistant", reply, is_dm=is_dm)
             for chunk in split_reply_chunks(reply):
                 await message.channel.send(chunk)
             # Auto-extract any notable facts in the background when explicitly enabled.
@@ -953,8 +1015,7 @@ async def on_message(message):
                 asyncio.create_task(auto_extract_memory(display_name, content, reply))
         except Exception as e:
             # Remove the user message we just added since we failed
-            if conversation_history.get(user_id):
-                conversation_history[user_id].pop()
+            pop_last_active_history(message.channel.id, user_id, is_dm=is_dm)
             print(f"Error: {e}")
             await message.channel.send(error_reply(e))
 
