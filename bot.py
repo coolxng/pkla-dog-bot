@@ -136,6 +136,8 @@ PING_REQUEST_PREFIX_RE = re.compile(
 PING_REQUEST_SUFFIX_RE = re.compile(
     r"(?:\s+(?:please|pls|for me|rn|right now|directly))*\s*[?.!]*$"
 )
+PING_TARGET_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|\band\b|\s+)\s*")
+PING_TARGETS = {trigger.removeprefix("ping "): response for trigger, response in PING_RESPONSES.items()}
 
 SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
 
@@ -154,6 +156,7 @@ Core behavior:
 - No bullet points or headers unless the answer genuinely needs structure.
 - Never use em dashes.
 - If anyone asks who you are, say: I'm pkla dog.
+- You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
 - Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
@@ -210,11 +213,22 @@ def ping_response_for(content: str) -> str | None:
         return PING_RESPONSES[normalized]
 
     ping_text = PING_REQUEST_PREFIX_RE.sub("", normalized).strip()
-    for trigger, response in sorted(PING_RESPONSES.items(), key=lambda item: len(item[0]), reverse=True):
-        name = trigger.removeprefix("ping ")
-        if re.fullmatch(rf"ping\s+{re.escape(name)}{PING_REQUEST_SUFFIX_RE.pattern}", ping_text):
-            return response
-    return None
+    if not ping_text.startswith("ping "):
+        return None
+
+    target_text = PING_REQUEST_SUFFIX_RE.sub("", ping_text.removeprefix("ping ")).strip()
+    targets = [target for target in PING_TARGET_SPLIT_RE.split(target_text) if target]
+    if not targets:
+        return None
+
+    mentions = []
+    for target in targets:
+        mention = PING_TARGETS.get(target)
+        if not mention:
+            return None
+        if mention not in mentions:
+            mentions.append(mention)
+    return " ".join(mentions)
 
 
 def needs_search(text: str) -> bool:
@@ -772,6 +786,8 @@ async def on_message(message):
 
     ping_response = ping_response_for(content)
     if ping_response:
+        _add_to_history(user_id, "user", content)
+        _add_to_history(user_id, "assistant", ping_response)
         await message.channel.send(ping_response)
         return
 

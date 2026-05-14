@@ -13,6 +13,12 @@ class PingResponseTests(unittest.TestCase):
     def test_polite_ping_request_matches(self):
         self.assertEqual(bot.ping_response_for("can you ping jamal please"), "<@1247415021080678452>")
 
+    def test_multiple_ping_targets_match(self):
+        self.assertEqual(
+            bot.ping_response_for("ping ozzy and jamal"),
+            "<@586732970283630633> <@1247415021080678452>",
+        )
+
     def test_short_j_ping_still_matches_jaedon(self):
         self.assertEqual(bot.ping_response_for("ping j"), "<@1149829095958528020>")
 
