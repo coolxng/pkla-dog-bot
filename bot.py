@@ -31,7 +31,7 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_OPENAI_MODEL = "chat-latest"
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
@@ -95,6 +95,12 @@ def model_supports_reasoning_effort(model: str) -> bool:
     return model.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
+def default_reasoning_effort(model: str) -> str:
+    if model.startswith("gpt-5"):
+        return "none"
+    return "minimal"
+
+
 def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task: bool = False) -> str:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -103,7 +109,7 @@ def create_chat_completion(messages: list[dict], *, max_tokens: int, memory_task
     model = DEFAULT_OPENAI_MODEL if memory_task else os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     payload = {"model": model, "messages": messages, "max_completion_tokens": max_tokens}
     if model_supports_reasoning_effort(model):
-        payload["reasoning_effort"] = os.environ.get("OPENAI_REASONING_EFFORT", "minimal")
+        payload["reasoning_effort"] = os.environ.get("OPENAI_REASONING_EFFORT", default_reasoning_effort(model))
 
     response = post_json(
         "https://api.openai.com/v1/chat/completions",
@@ -130,11 +136,25 @@ PING_RESPONSES = {
     "ping jaedon": "<@1149829095958528020>",
     "ping j": "<@1149829095958528020>",
 }
+PING_REQUEST_PREFIX_RE = re.compile(
+    r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*",
+    flags=re.IGNORECASE,
+)
+PING_REQUEST_SUFFIX_RE = re.compile(
+    r"(?:\s+(?:please|pls|for me|rn|right now|directly))*\s*[?.!]*$"
+)
+PING_MESSAGE_RE = re.compile(
+    r"\s+(?:(?:and|to)\s+)?(?:say|tell(?:\s+(?:him|her|them))?)\s+",
+    flags=re.IGNORECASE,
+)
+PING_TARGET_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|\band\b|\s+)\s*")
+PING_TARGETS = {trigger.removeprefix("ping "): response for trigger, response in PING_RESPONSES.items()}
 
-SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
+SYSTEM_PROMPT = """You are pkla dog, a helpful assistant in a Discord server.
 
 Core behavior:
-- Be casual, direct
+- Respond like ChatGPT in a Discord chat: helpful, natural, clear, and conversational.
+- Keep casual replies concise, but give fuller explanations when the user asks for help, reasoning, or details.
 - Answer the actual question.
 - Do not pretend to know things you do not know. Say when you are guessing.
 - Do not invent live data, search status, sources, prices, scores, dates, or facts.
@@ -145,9 +165,11 @@ Core behavior:
 - Format dates like 5/13/26.
 - Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
 - For yes/no questions, lead with "Yes." or "No." then explain.
-- No bullet points or headers unless the answer genuinely needs structure.
+- Use bullets, steps, or short sections when they make the answer easier to read.
 - Never use em dashes.
 - If anyone asks who you are, say: I'm pkla dog.
+- You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
+- Configured Discord mention text like <@123> contains a user ID from the bot config. If asked about a mention you just sent, answer from chat context instead of claiming you do not store or use IDs.
 - Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
@@ -196,6 +218,64 @@ MAX_UNIVERSAL_MEMORIES = 50
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+
+
+def ping_message_text(message_text: str, *, single_target: bool) -> str:
+    message_text = message_text.strip()
+    if not single_target:
+        return message_text
+
+    replacements = {
+        "he ": "you ",
+        "she ": "you ",
+        "they ": "you ",
+        "him ": "you ",
+        "her ": "you ",
+        "them ": "you ",
+        "his ": "your ",
+        "their ": "your ",
+    }
+    lower_message = message_text.lower()
+    for source, replacement in replacements.items():
+        if lower_message.startswith(source):
+            return replacement + message_text[len(source):]
+    return message_text
+
+
+def ping_response_for(content: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", content.lower()).strip()
+    if normalized in PING_RESPONSES:
+        return PING_RESPONSES[normalized]
+
+    collapsed_content = re.sub(r"\s+", " ", content).strip()
+    ping_text = PING_REQUEST_PREFIX_RE.sub("", collapsed_content).strip()
+    if not ping_text.lower().startswith("ping "):
+        return None
+
+    target_text = ping_text[5:].strip()
+    message_text = ""
+    message_match = PING_MESSAGE_RE.search(target_text)
+    if message_match:
+        message_text = target_text[message_match.end():].strip()
+        target_text = target_text[:message_match.start()].strip()
+
+    target_text = PING_REQUEST_SUFFIX_RE.sub("", target_text.lower()).strip()
+    targets = [target for target in PING_TARGET_SPLIT_RE.split(target_text) if target]
+    if not targets:
+        return None
+
+    mentions = []
+    for target in targets:
+        mention = PING_TARGETS.get(target)
+        if not mention:
+            return None
+        if mention not in mentions:
+            mentions.append(mention)
+
+    response = " ".join(mentions)
+    if message_text:
+        response = f"{response}, {ping_message_text(message_text, single_target=len(mentions) == 1)}"
+    return response
 
 
 def needs_search(text: str) -> bool:
@@ -751,8 +831,11 @@ async def on_message(message):
     display_name = message.author.display_name
     normalized_content = content.lower().strip()
 
-    if normalized_content in PING_RESPONSES:
-        await message.channel.send(PING_RESPONSES[normalized_content])
+    ping_response = ping_response_for(content)
+    if ping_response:
+        _add_to_history(user_id, "user", content)
+        _add_to_history(user_id, "assistant", ping_response)
+        await message.channel.send(ping_response)
         return
 
     now = current_central_datetime()

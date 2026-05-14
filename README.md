@@ -17,10 +17,10 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model used for normal bot replies. |
-| `OPENAI_SEARCH_MODEL` | `OPENAI_MODEL` or `gpt-4o-mini` | Model used for OpenAI web search requests. |
+| `OPENAI_MODEL` | `chat-latest` | Model used for normal bot replies. `chat-latest` is the API model alias intended for chat-style behavior close to ChatGPT. Override this if you need a specific model or lower cost. |
+| `OPENAI_SEARCH_MODEL` | `OPENAI_MODEL` or `chat-latest` | Model used for OpenAI web search requests. |
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
-| `OPENAI_REASONING_EFFORT` | `minimal` for reasoning-capable models | Reasoning effort for chat completions when supported. |
+| `OPENAI_REASONING_EFFORT` | `none` for GPT-5 models, otherwise `minimal` | Reasoning effort for chat completions when supported. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
 | `AUTO_MEMORY_ENABLED` | `false` | Enables automatic extraction of shared memory facts from conversations. Off by default. |
 | `TAVILY_API_KEY` | unset | Optional fallback search provider. |
@@ -65,7 +65,7 @@ If `TARGET_CHANNEL_IDS` is unset or invalid, the bot falls back to the existing 
 
 ## API provider setup
 
-OpenAI is the primary provider for chat and web search. Set `OPENAI_API_KEY` and optionally override `OPENAI_MODEL`. OpenAI web search runs first when available. Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers if configured or available.
+OpenAI is the primary provider for chat and web search. Set `OPENAI_API_KEY` and optionally override `OPENAI_MODEL`. The default `chat-latest` model is chosen for ChatGPT-like chat behavior, while deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. OpenAI web search runs first when available. Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers if configured or available.
 
 ## Known limitations
 

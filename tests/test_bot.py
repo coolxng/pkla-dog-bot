@@ -1,0 +1,54 @@
+import unittest
+
+import bot
+
+
+class PingResponseTests(unittest.TestCase):
+    def test_exact_ping_matches_case_insensitively(self):
+        self.assertEqual(bot.ping_response_for("ping Jamal"), "<@1247415021080678452>")
+
+    def test_ping_with_bot_mention_matches(self):
+        self.assertEqual(bot.ping_response_for("<@1234567890> ping jamal"), "<@1247415021080678452>")
+
+    def test_polite_ping_request_matches(self):
+        self.assertEqual(bot.ping_response_for("can you ping jamal please"), "<@1247415021080678452>")
+
+    def test_multiple_ping_targets_match(self):
+        self.assertEqual(
+            bot.ping_response_for("ping ozzy and jamal"),
+            "<@586732970283630633> <@1247415021080678452>",
+        )
+
+    def test_ping_with_message_matches_without_model_fallback(self):
+        self.assertEqual(
+            bot.ping_response_for("ping jamal and say he finna go back to jail"),
+            "<@1247415021080678452>, you finna go back to jail",
+        )
+
+    def test_multiple_ping_targets_with_message_match(self):
+        self.assertEqual(
+            bot.ping_response_for("ping ozzy and jamal and say get on"),
+            "<@586732970283630633> <@1247415021080678452>, get on",
+        )
+
+    def test_short_j_ping_still_matches_jaedon(self):
+        self.assertEqual(bot.ping_response_for("ping j"), "<@1149829095958528020>")
+
+    def test_unrelated_text_does_not_ping(self):
+        self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
+
+
+class OpenAIConfigTests(unittest.TestCase):
+    def test_default_model_uses_chatgpt_like_alias(self):
+        self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
+
+    def test_gpt5_reasoning_effort_defaults_to_none(self):
+        self.assertEqual(bot.default_reasoning_effort("gpt-5.5"), "none")
+
+    def test_system_prompt_keeps_chatgpt_like_behavior(self):
+        self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
+        self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
+
+
+if __name__ == "__main__":
+    unittest.main()
