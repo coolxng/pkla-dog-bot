@@ -130,6 +130,12 @@ PING_RESPONSES = {
     "ping jaedon": "<@1149829095958528020>",
     "ping j": "<@1149829095958528020>",
 }
+PING_REQUEST_PREFIX_RE = re.compile(
+    r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*"
+)
+PING_REQUEST_SUFFIX_RE = re.compile(
+    r"(?:\s+(?:please|pls|for me|rn|right now|directly))*\s*[?.!]*$"
+)
 
 SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
 
@@ -196,6 +202,19 @@ MAX_UNIVERSAL_MEMORIES = 50
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+
+
+def ping_response_for(content: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", content.lower()).strip()
+    if normalized in PING_RESPONSES:
+        return PING_RESPONSES[normalized]
+
+    ping_text = PING_REQUEST_PREFIX_RE.sub("", normalized).strip()
+    for trigger, response in sorted(PING_RESPONSES.items(), key=lambda item: len(item[0]), reverse=True):
+        name = trigger.removeprefix("ping ")
+        if re.fullmatch(rf"ping\s+{re.escape(name)}{PING_REQUEST_SUFFIX_RE.pattern}", ping_text):
+            return response
+    return None
 
 
 def needs_search(text: str) -> bool:
@@ -751,8 +770,9 @@ async def on_message(message):
     display_name = message.author.display_name
     normalized_content = content.lower().strip()
 
-    if normalized_content in PING_RESPONSES:
-        await message.channel.send(PING_RESPONSES[normalized_content])
+    ping_response = ping_response_for(content)
+    if ping_response:
+        await message.channel.send(ping_response)
         return
 
     now = current_central_datetime()
