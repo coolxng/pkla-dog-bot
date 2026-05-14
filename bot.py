@@ -130,6 +130,14 @@ PING_RESPONSES = {
     "ping jaedon": "<@1149829095958528020>",
     "ping j": "<@1149829095958528020>",
 }
+PING_REQUEST_PREFIX_RE = re.compile(
+    r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*"
+)
+PING_REQUEST_SUFFIX_RE = re.compile(
+    r"(?:\s+(?:please|pls|for me|rn|right now|directly))*\s*[?.!]*$"
+)
+PING_TARGET_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|\band\b|\s+)\s*")
+PING_TARGETS = {trigger.removeprefix("ping "): response for trigger, response in PING_RESPONSES.items()}
 
 SYSTEM_PROMPT = """You are pkla dog, a helpful Discord bot with a casual voice.
 
@@ -148,6 +156,7 @@ Core behavior:
 - No bullet points or headers unless the answer genuinely needs structure.
 - Never use em dashes.
 - If anyone asks who you are, say: I'm pkla dog.
+- You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
 - Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
@@ -196,6 +205,30 @@ MAX_UNIVERSAL_MEMORIES = 50
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+
+
+def ping_response_for(content: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", content.lower()).strip()
+    if normalized in PING_RESPONSES:
+        return PING_RESPONSES[normalized]
+
+    ping_text = PING_REQUEST_PREFIX_RE.sub("", normalized).strip()
+    if not ping_text.startswith("ping "):
+        return None
+
+    target_text = PING_REQUEST_SUFFIX_RE.sub("", ping_text.removeprefix("ping ")).strip()
+    targets = [target for target in PING_TARGET_SPLIT_RE.split(target_text) if target]
+    if not targets:
+        return None
+
+    mentions = []
+    for target in targets:
+        mention = PING_TARGETS.get(target)
+        if not mention:
+            return None
+        if mention not in mentions:
+            mentions.append(mention)
+    return " ".join(mentions)
 
 
 def needs_search(text: str) -> bool:
@@ -751,8 +784,11 @@ async def on_message(message):
     display_name = message.author.display_name
     normalized_content = content.lower().strip()
 
-    if normalized_content in PING_RESPONSES:
-        await message.channel.send(PING_RESPONSES[normalized_content])
+    ping_response = ping_response_for(content)
+    if ping_response:
+        _add_to_history(user_id, "user", content)
+        _add_to_history(user_id, "assistant", ping_response)
+        await message.channel.send(ping_response)
         return
 
     now = current_central_datetime()
