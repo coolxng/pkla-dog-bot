@@ -129,6 +129,7 @@ PING_RESPONSES = {
     "ping jamal": "<@1247415021080678452>",
     "ping jaedon": "<@1149829095958528020>",
     "ping j": "<@1149829095958528020>",
+    "ping red": "<@375402301646700546>",
 }
 PING_REQUEST_PREFIX_RE = re.compile(
     r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*"
