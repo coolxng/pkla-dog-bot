@@ -132,10 +132,15 @@ PING_RESPONSES = {
     "ping red": "<@375402301646700546>",
 }
 PING_REQUEST_PREFIX_RE = re.compile(
-    r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*"
+    r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*",
+    flags=re.IGNORECASE,
 )
 PING_REQUEST_SUFFIX_RE = re.compile(
     r"(?:\s+(?:please|pls|for me|rn|right now|directly))*\s*[?.!]*$"
+)
+PING_MESSAGE_RE = re.compile(
+    r"\s+(?:(?:and|to)\s+)?(?:say|tell(?:\s+(?:him|her|them))?)\s+",
+    flags=re.IGNORECASE,
 )
 PING_TARGET_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|\band\b|\s+)\s*")
 PING_TARGETS = {trigger.removeprefix("ping "): response for trigger, response in PING_RESPONSES.items()}
@@ -158,6 +163,7 @@ Core behavior:
 - Never use em dashes.
 - If anyone asks who you are, say: I'm pkla dog.
 - You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
+- Configured Discord mention text like <@123> contains a user ID from the bot config. If asked about a mention you just sent, answer from chat context instead of claiming you do not store or use IDs.
 - Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
 
 SEARCH_KEYWORDS = [
@@ -208,16 +214,46 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 
+def ping_message_text(message_text: str, *, single_target: bool) -> str:
+    message_text = message_text.strip()
+    if not single_target:
+        return message_text
+
+    replacements = {
+        "he ": "you ",
+        "she ": "you ",
+        "they ": "you ",
+        "him ": "you ",
+        "her ": "you ",
+        "them ": "you ",
+        "his ": "your ",
+        "their ": "your ",
+    }
+    lower_message = message_text.lower()
+    for source, replacement in replacements.items():
+        if lower_message.startswith(source):
+            return replacement + message_text[len(source):]
+    return message_text
+
+
 def ping_response_for(content: str) -> str | None:
     normalized = re.sub(r"\s+", " ", content.lower()).strip()
     if normalized in PING_RESPONSES:
         return PING_RESPONSES[normalized]
 
-    ping_text = PING_REQUEST_PREFIX_RE.sub("", normalized).strip()
-    if not ping_text.startswith("ping "):
+    collapsed_content = re.sub(r"\s+", " ", content).strip()
+    ping_text = PING_REQUEST_PREFIX_RE.sub("", collapsed_content).strip()
+    if not ping_text.lower().startswith("ping "):
         return None
 
-    target_text = PING_REQUEST_SUFFIX_RE.sub("", ping_text.removeprefix("ping ")).strip()
+    target_text = ping_text[5:].strip()
+    message_text = ""
+    message_match = PING_MESSAGE_RE.search(target_text)
+    if message_match:
+        message_text = target_text[message_match.end():].strip()
+        target_text = target_text[:message_match.start()].strip()
+
+    target_text = PING_REQUEST_SUFFIX_RE.sub("", target_text.lower()).strip()
     targets = [target for target in PING_TARGET_SPLIT_RE.split(target_text) if target]
     if not targets:
         return None
@@ -229,7 +265,11 @@ def ping_response_for(content: str) -> str | None:
             return None
         if mention not in mentions:
             mentions.append(mention)
-    return " ".join(mentions)
+
+    response = " ".join(mentions)
+    if message_text:
+        response = f"{response}, {ping_message_text(message_text, single_target=len(mentions) == 1)}"
+    return response
 
 
 def needs_search(text: str) -> bool:

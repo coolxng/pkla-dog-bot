@@ -19,6 +19,18 @@ class PingResponseTests(unittest.TestCase):
             "<@586732970283630633> <@1247415021080678452>",
         )
 
+    def test_ping_with_message_matches_without_model_fallback(self):
+        self.assertEqual(
+            bot.ping_response_for("ping jamal and say he finna go back to jail"),
+            "<@1247415021080678452>, you finna go back to jail",
+        )
+
+    def test_multiple_ping_targets_with_message_match(self):
+        self.assertEqual(
+            bot.ping_response_for("ping ozzy and jamal and say get on"),
+            "<@586732970283630633> <@1247415021080678452>, get on",
+        )
+
     def test_short_j_ping_still_matches_jaedon(self):
         self.assertEqual(bot.ping_response_for("ping j"), "<@1149829095958528020>")
 
