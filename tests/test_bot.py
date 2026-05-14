@@ -38,6 +38,47 @@ class PingResponseTests(unittest.TestCase):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
 
+class ConversationHistoryTests(unittest.TestCase):
+    def setUp(self):
+        bot.conversation_history.clear()
+        bot.channel_conversation_history.clear()
+
+    def test_channel_history_is_shared_and_labels_speakers(self):
+        bot.add_to_active_history(123, 1, "user", "remember this", is_dm=False, display_name="Alice")
+        bot.add_to_active_history(123, 1, "assistant", "got it", is_dm=False)
+
+        history = bot.get_active_history(123, 2, is_dm=False)
+
+        self.assertEqual(
+            history,
+            [
+                {"role": "user", "content": "Alice: remember this"},
+                {"role": "assistant", "content": "got it"},
+            ],
+        )
+
+    def test_dm_history_stays_per_user_without_speaker_label(self):
+        bot.add_to_active_history(999, 1, "user", "private context", is_dm=True, display_name="Alice")
+
+        self.assertEqual(
+            bot.get_active_history(999, 1, is_dm=True),
+            [{"role": "user", "content": "private context"}],
+        )
+        self.assertEqual(bot.get_active_history(999, 2, is_dm=True), [])
+
+    def test_clear_active_history_clears_only_current_channel(self):
+        bot.add_to_active_history(123, 1, "user", "first", is_dm=False, display_name="Alice")
+        bot.add_to_active_history(456, 2, "user", "second", is_dm=False, display_name="Bob")
+
+        bot.clear_active_history(123, 1, is_dm=False)
+
+        self.assertEqual(bot.get_active_history(123, 1, is_dm=False), [])
+        self.assertEqual(
+            bot.get_active_history(456, 2, is_dm=False),
+            [{"role": "user", "content": "Bob: second"}],
+        )
+
+
 class OpenAIConfigTests(unittest.TestCase):
     def test_default_model_uses_chatgpt_like_alias(self):
         self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
