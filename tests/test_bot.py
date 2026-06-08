@@ -90,6 +90,51 @@ class OpenAIConfigTests(unittest.TestCase):
         self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
         self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
 
+class ExternalSayTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+        self.original_token = bot.os.environ.get("EXTERNAL_SEND_TOKEN")
+
+    def tearDown(self):
+        if self.original_token is None:
+            bot.os.environ.pop("EXTERNAL_SEND_TOKEN", None)
+        else:
+            bot.os.environ["EXTERNAL_SEND_TOKEN"] = self.original_token
+
+    def test_page_is_disabled_without_a_control_token(self):
+        bot.os.environ.pop("EXTERNAL_SEND_TOKEN", None)
+
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(b"External sending is disabled", response.data)
+
+    def test_invalid_control_token_is_rejected(self):
+        bot.os.environ["EXTERNAL_SEND_TOKEN"] = "correct-token"
+
+        response = self.client.post(
+            "/say", data={"token": "wrong-token", "message": "hello"}
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn(b"Invalid control token", response.data)
+
+    def test_valid_form_submits_message(self):
+        bot.os.environ["EXTERNAL_SEND_TOKEN"] = "correct-token"
+        submitted_messages = []
+        original_submit = bot.submit_external_message
+        bot.submit_external_message = submitted_messages.append
+        try:
+            response = self.client.post(
+                "/say", data={"token": "correct-token", "message": "hello Discord"}
+            )
+        finally:
+            bot.submit_external_message = original_submit
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(submitted_messages, ["hello Discord"])
+        self.assertIn(b"Message sent", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()
