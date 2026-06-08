@@ -99,7 +99,16 @@ class ExternalSayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Make the bot say something", response.data)
+        self.assertIn(b'/favicon.ico?v=1', response.data)
         self.assertNotIn(b'name="token"', response.data)
+
+    def test_favicon_is_available_at_browser_default_path(self):
+        response = self.client.get("/favicon.ico")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertTrue(response.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        response.close()
 
     def test_empty_message_is_rejected(self):
         response = self.client.post("/say", data={"message": "   "})

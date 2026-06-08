@@ -1,5 +1,5 @@
 import asyncio
-import hmac
+import base64
 import json
 import os
 import re
@@ -14,10 +14,18 @@ from urllib.request import Request, urlopen
 
 import discord
 from ddgs import DDGS
-from flask import Flask, render_template_string, request
+from flask import Flask, Response, render_template_string, request
 
 
 app = Flask(__name__)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    with app.open_resource("static/favicon.png.b64") as favicon_file:
+        encoded_favicon = b"".join(favicon_file.read().split())
+    favicon_data = base64.b64decode(encoded_favicon, validate=True)
+    return Response(favicon_data, mimetype="image/png")
 
 
 @app.route("/")
@@ -233,6 +241,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Discord Bot — Say</title>
+  <link rel="icon" type="image/png" href="/favicon.ico?v=1">
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #111827; color: #f9fafb; }
