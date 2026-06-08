@@ -62,7 +62,12 @@ You can make the bot post a message from a web browser:
 1. Set `EXTERNAL_SEND_TOKEN` to a long, random password. Do not use or expose your Discord bot token.
 2. Set `EXTERNAL_CHANNEL_ID` to the channel where the bot should speak. That ID must also be included in `TARGET_CHANNEL_IDS`.
 3. Restart or redeploy the bot.
-4. Open `https://YOUR-BOT-HOST/say`, enter the control token and message, then select **Send to Discord**.
+4. In Railway, open the bot service, select **Settings** → **Networking**, and choose **Generate Domain**.
+5. When Railway asks for the target port, enter the port used by the bot's web server: `3000` by default, or the value of `PORT` if you set that variable yourself. Do not enter `8080` unless `PORT=8080` is configured.
+6. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
+7. Enter the control token and message, then select **Send to Discord**.
+
+If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
 
 The page returns an error instead of sending if the token is wrong, Discord is not connected, the configured channel is not allowed, or the message exceeds Discord's 2,000-character limit. Anyone who knows the control token can make the bot post, so keep it in your hosting provider's secret settings and rotate it if it leaks.
 
