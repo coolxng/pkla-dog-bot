@@ -116,7 +116,7 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"Enter a message first", response.data)
 
-    def test_valid_form_submits_message(self):
+    def test_valid_form_redirects_and_refresh_does_not_resubmit(self):
         submitted_messages = []
         original_submit = bot.submit_external_message
         bot.submit_external_message = submitted_messages.append
@@ -124,12 +124,17 @@ class ExternalSayTests(unittest.TestCase):
             response = self.client.post(
                 "/say", data={"message": "hello Discord"}
             )
+            redirected_response = self.client.get(response.headers["Location"])
+            refreshed_response = self.client.get(response.headers["Location"])
         finally:
             bot.submit_external_message = original_submit
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], "/say?sent=1")
+        self.assertEqual(redirected_response.status_code, 200)
+        self.assertIn(b"Message sent", redirected_response.data)
+        self.assertEqual(refreshed_response.status_code, 200)
         self.assertEqual(submitted_messages, ["hello Discord"])
-        self.assertIn(b"Message sent", response.data)
 
 
 if __name__ == "__main__":

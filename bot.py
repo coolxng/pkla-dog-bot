@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 
 import discord
 from ddgs import DDGS
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, redirect, render_template_string, request, url_for
 
 
 app = Flask(__name__)
@@ -307,7 +307,7 @@ def submit_external_message(message: str) -> None:
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
-    status = None
+    status = "Message sent." if request.args.get("sent") == "1" else None
     error = False
     response_status = 200
     if request.method == "POST":
@@ -323,7 +323,7 @@ def external_say():
         else:
             try:
                 submit_external_message(message)
-                status = "Message sent."
+                return redirect(url_for("external_say", sent="1"), code=303)
             except Exception as send_error:
                 print(f"External send error: {send_error}")
                 status = str(send_error)
