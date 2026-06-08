@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import json
 import os
 import re
 from collections import OrderedDict
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Thread
@@ -12,10 +14,18 @@ from urllib.request import Request, urlopen
 
 import discord
 from ddgs import DDGS
-from flask import Flask
+from flask import Flask, Response, render_template_string, request
 
 
 app = Flask(__name__)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    with app.open_resource("static/favicon.png.b64") as favicon_file:
+        encoded_favicon = b"".join(favicon_file.read().split())
+    favicon_data = base64.b64decode(encoded_favicon, validate=True)
+    return Response(favicon_data, mimetype="image/png")
 
 
 @app.route("/")
@@ -223,6 +233,106 @@ MAX_UNIVERSAL_MEMORIES = 50
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+discord_event_loop: asyncio.AbstractEventLoop | None = None
+
+EXTERNAL_SAY_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord Bot — Say</title>
+  <link rel="icon" type="image/png" href="/favicon.ico?v=1">
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #111827; color: #f9fafb; }
+    main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
+    h1 { margin-top: 0; }
+    label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
+    textarea, button { box-sizing: border-box; width: 100%; padding: .8rem; border-radius: .5rem; font: inherit; }
+    textarea { border: 1px solid #4b5563; background: #111827; color: inherit; }
+    textarea { min-height: 9rem; resize: vertical; }
+    button { margin-top: 1rem; border: 0; background: #5865f2; color: white; font-weight: 700; cursor: pointer; }
+    .status { padding: .8rem; border-radius: .5rem; background: #374151; }
+    .error { background: #7f1d1d; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Make the bot say something</h1>
+    {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
+    <form method="post">
+      <label for="message">Message</label>
+      <textarea id="message" name="message" maxlength="2000" required></textarea>
+      <button type="submit">Send to Discord</button>
+    </form>
+  </main>
+</body>
+</html>
+"""
+
+
+def external_channel_id() -> int | None:
+    raw_channel_id = os.environ.get("EXTERNAL_CHANNEL_ID", "").strip()
+    if not raw_channel_id:
+        return None
+    try:
+        return int(raw_channel_id)
+    except ValueError:
+        return None
+
+
+async def send_external_message(channel_id: int, message: str) -> None:
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        raise RuntimeError("The configured Discord channel is unavailable")
+    await channel.send(message)
+
+
+def submit_external_message(message: str) -> None:
+    channel_id = external_channel_id()
+    if channel_id is None or channel_id not in TARGET_CHANNEL_IDS:
+        raise RuntimeError("EXTERNAL_CHANNEL_ID must be one of TARGET_CHANNEL_IDS")
+    if discord_event_loop is None or not client.is_ready():
+        raise RuntimeError("The Discord bot is not ready yet")
+
+    future = asyncio.run_coroutine_threadsafe(
+        send_external_message(channel_id, message), discord_event_loop
+    )
+    try:
+        future.result(timeout=10)
+    except FutureTimeoutError as error:
+        future.cancel()
+        raise RuntimeError("Discord took too long to accept the message") from error
+
+
+@app.route("/say", methods=["GET", "POST"])
+def external_say():
+    status = None
+    error = False
+    response_status = 200
+    if request.method == "POST":
+        message = request.form.get("message", "")
+        if not message.strip():
+            status = "Enter a message first."
+            error = True
+            response_status = 400
+        elif len(message) > 2000:
+            status = "Discord messages cannot exceed 2,000 characters."
+            error = True
+            response_status = 400
+        else:
+            try:
+                submit_external_message(message)
+                status = "Message sent."
+            except Exception as send_error:
+                print(f"External send error: {send_error}")
+                status = str(send_error)
+                error = True
+                response_status = 503
+
+    return render_template_string(
+        EXTERNAL_SAY_PAGE, status=status, error=error
+    ), response_status
 
 
 def ping_message_text(message_text: str, *, single_target: bool) -> str:
@@ -868,6 +978,8 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
 
 @client.event
 async def on_ready():
+    global discord_event_loop
+    discord_event_loop = asyncio.get_running_loop()
     print(f"Logged in as {client.user}")
 
 

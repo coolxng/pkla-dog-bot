@@ -90,6 +90,47 @@ class OpenAIConfigTests(unittest.TestCase):
         self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
         self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
 
+class ExternalSayTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_page_is_available_without_a_control_token(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Make the bot say something", response.data)
+        self.assertIn(b'/favicon.ico?v=1', response.data)
+        self.assertNotIn(b'name="token"', response.data)
+
+    def test_favicon_is_available_at_browser_default_path(self):
+        response = self.client.get("/favicon.ico")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertTrue(response.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        response.close()
+
+    def test_empty_message_is_rejected(self):
+        response = self.client.post("/say", data={"message": "   "})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Enter a message first", response.data)
+
+    def test_valid_form_submits_message(self):
+        submitted_messages = []
+        original_submit = bot.submit_external_message
+        bot.submit_external_message = submitted_messages.append
+        try:
+            response = self.client.post(
+                "/say", data={"message": "hello Discord"}
+            )
+        finally:
+            bot.submit_external_message = original_submit
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(submitted_messages, ["hello Discord"])
+        self.assertIn(b"Message sent", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()
