@@ -12,6 +12,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_API_KEY` | Yes | OpenAI API key for chat completions and OpenAI web search. |
 | `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. Defaults to the existing hardcoded channel list if unset. |
 | `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. Defaults to the existing owner ID if unset. |
+| `EXTERNAL_SEND_TOKEN` | Required for `/say` | A long, random password that protects the external send page. Use a different value from your Discord bot token. |
+| `EXTERNAL_CHANNEL_ID` | Required for `/say` | Discord channel ID where messages from the external send page are posted. It must also appear in `TARGET_CHANNEL_IDS`. |
 
 ## Optional environment variables
 
@@ -52,6 +54,17 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
+
+## Send a message from outside Discord
+
+You can make the bot post a message from a web browser:
+
+1. Set `EXTERNAL_SEND_TOKEN` to a long, random password. Do not use or expose your Discord bot token.
+2. Set `EXTERNAL_CHANNEL_ID` to the channel where the bot should speak. That ID must also be included in `TARGET_CHANNEL_IDS`.
+3. Restart or redeploy the bot.
+4. Open `https://YOUR-BOT-HOST/say`, enter the control token and message, then select **Send to Discord**.
+
+The page returns an error instead of sending if the token is wrong, Discord is not connected, the configured channel is not allowed, or the message exceeds Discord's 2,000-character limit. Anyone who knows the control token can make the bot post, so keep it in your hosting provider's secret settings and rotate it if it leaks.
 
 ## Channel setup
 
