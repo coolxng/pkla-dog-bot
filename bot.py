@@ -239,8 +239,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
     h1 { margin-top: 0; }
     label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
-    input, textarea, button { box-sizing: border-box; width: 100%; padding: .8rem; border-radius: .5rem; font: inherit; }
-    input, textarea { border: 1px solid #4b5563; background: #111827; color: inherit; }
+    textarea, button { box-sizing: border-box; width: 100%; padding: .8rem; border-radius: .5rem; font: inherit; }
+    textarea { border: 1px solid #4b5563; background: #111827; color: inherit; }
     textarea { min-height: 9rem; resize: vertical; }
     button { margin-top: 1rem; border: 0; background: #5865f2; color: white; font-weight: 700; cursor: pointer; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
@@ -252,8 +252,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     <h1>Make the bot say something</h1>
     {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
     <form method="post">
-      <label for="token">Control token</label>
-      <input id="token" name="token" type="password" required autocomplete="current-password">
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
       <button type="submit">Send to Discord</button>
@@ -300,25 +298,12 @@ def submit_external_message(message: str) -> None:
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
-    configured_token = os.environ.get("EXTERNAL_SEND_TOKEN", "")
-    if not configured_token:
-        return render_template_string(
-            EXTERNAL_SAY_PAGE,
-            status="External sending is disabled. Set EXTERNAL_SEND_TOKEN first.",
-            error=True,
-        ), 503
-
     status = None
     error = False
     response_status = 200
     if request.method == "POST":
-        supplied_token = request.form.get("token", "")
         message = request.form.get("message", "")
-        if not hmac.compare_digest(supplied_token, configured_token):
-            status = "Invalid control token."
-            error = True
-            response_status = 403
-        elif not message.strip():
+        if not message.strip():
             status = "Enter a message first."
             error = True
             response_status = 400
