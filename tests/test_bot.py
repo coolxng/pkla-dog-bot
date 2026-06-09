@@ -65,6 +65,9 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(frames), 1)
         self.assertTrue(all(len(frame) == bot.BarkAudioSource.FRAME_BYTES for frame in frames))
         self.assertTrue(any(frame != bytes(len(frame)) for frame in frames))
+        duration = len(frames) * 0.02
+        self.assertGreaterEqual(duration, 0.74)
+        self.assertLess(duration, 0.78)
 
     def test_play_bark_starts_generated_audio(self):
         voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
@@ -192,7 +195,7 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
         voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
         start_bark_task.assert_called_once_with(message.guild)
-        self.assertEqual(response, "joined #General — barking every 5 minutes")
+        self.assertEqual(response, "joined #General")
 
     async def test_join_requires_the_user_to_be_in_voice(self):
         message = SimpleNamespace(
@@ -222,7 +225,7 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
         voice_client.move_to.assert_awaited_once_with(new_channel)
         start_bark_task.assert_called_once_with(message.guild)
-        self.assertEqual(response, "joined #New — barking every 5 minutes")
+        self.assertEqual(response, "joined #New")
 
     async def test_join_command_is_handled_without_calling_chat_model(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
@@ -247,7 +250,7 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
         voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
         start_bark_task.assert_called_once_with(message.guild)
-        text_channel.send.assert_awaited_once_with("joined #General — barking every 5 minutes")
+        text_channel.send.assert_awaited_once_with("joined #General")
         call_model.assert_not_awaited()
 
 

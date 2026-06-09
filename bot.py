@@ -1086,25 +1086,52 @@ class BarkAudioSource(discord.AudioSource):
     @classmethod
     def _generate_audio(cls) -> bytes:
         rng = random.Random(0)
+        bursts = ((0.0, 0.22, 145.0), (0.34, 0.66, 125.0))
+        total_samples = int(cls.SAMPLE_RATE * (bursts[-1][1] + 0.08))
+        excitation = [0.0] * total_samples
+
+        for start, end, base_pitch in bursts:
+            start_sample = int(start * cls.SAMPLE_RATE)
+            end_sample = int(end * cls.SAMPLE_RATE)
+            phase = 0.0
+            for sample_index in range(start_sample, end_sample):
+                elapsed = (sample_index - start_sample) / cls.SAMPLE_RATE
+                progress = elapsed / (end - start)
+                attack = 1.0 - math.exp(-elapsed * 180.0)
+                envelope = attack * math.exp(-progress * 3.8)
+                pitch = base_pitch * (1.0 - 0.48 * progress)
+                phase += 2.0 * math.pi * pitch / cls.SAMPLE_RATE
+                throat = math.tanh(
+                    2.8 * (
+                        math.sin(phase)
+                        + 0.42 * math.sin(2.0 * phase)
+                        + 0.18 * math.sin(3.0 * phase)
+                    )
+                )
+                breath = rng.uniform(-1.0, 1.0)
+                breath_mix = 0.72 * math.exp(-progress * 8.0) + 0.12
+                excitation[sample_index] = envelope * (0.72 * throat + breath_mix * breath)
+
+        filtered = [0.0] * total_samples
+        for frequency, radius, gain in (
+            (430.0, 0.975, 0.72),
+            (880.0, 0.965, 0.42),
+            (1_650.0, 0.94, 0.18),
+        ):
+            coefficient = 2.0 * radius * math.cos(2.0 * math.pi * frequency / cls.SAMPLE_RATE)
+            previous = 0.0
+            previous_previous = 0.0
+            for sample_index, value in enumerate(excitation):
+                resonated = value + coefficient * previous - (radius * radius) * previous_previous
+                filtered[sample_index] += gain * resonated
+                previous_previous = previous
+                previous = resonated
+
+        peak = max(abs(value) for value in filtered) or 1.0
+        scale = 28_000.0 / peak
         samples = []
-        bursts = ((0.0, 0.18), (0.24, 0.58))
-        total_samples = int(cls.SAMPLE_RATE * bursts[-1][1])
-
-        for sample_index in range(total_samples):
-            time = sample_index / cls.SAMPLE_RATE
-            value = 0.0
-            for start, end in bursts:
-                if start <= time < end:
-                    progress = (time - start) / (end - start)
-                    envelope = math.sin(math.pi * progress) ** 0.45 * math.exp(-1.8 * progress)
-                    frequency = 210 - (100 * progress)
-                    growl = math.sin(2 * math.pi * frequency * (time - start))
-                    harmonic = math.sin(2 * math.pi * frequency * 2.1 * (time - start))
-                    noise = rng.uniform(-1.0, 1.0)
-                    value = envelope * (0.48 * growl + 0.22 * harmonic + 0.30 * noise)
-                    break
-
-            sample = max(-32_768, min(32_767, int(value * 24_000)))
+        for value in filtered:
+            sample = max(-32_768, min(32_767, int(value * scale)))
             samples.extend((sample, sample))
 
         return struct.pack(f"<{len(samples)}h", *samples)
@@ -1215,7 +1242,7 @@ async def join_author_voice(message) -> str:
         return "couldn't join that voice channel; check my Connect permission and try again"
 
     start_bark_task(message.guild)
-    return f"joined {voice_channel.mention} — barking every 5 minutes"
+    return f"joined {voice_channel.mention}"
 
 
 async def leave_voice(message) -> str:
