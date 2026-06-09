@@ -1,8 +1,10 @@
 import asyncio
+import base64
 import json
 import os
 import re
 from collections import OrderedDict
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from threading import Thread
@@ -12,10 +14,18 @@ from urllib.request import Request, urlopen
 
 import discord
 from ddgs import DDGS
-from flask import Flask
+from flask import Flask, Response, redirect, render_template_string, request, url_for
 
 
 app = Flask(__name__)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    with app.open_resource("static/favicon.png.b64") as favicon_file:
+        encoded_favicon = b"".join(favicon_file.read().split())
+    favicon_data = base64.b64decode(encoded_favicon, validate=True)
+    return Response(favicon_data, mimetype="image/png")
 
 
 @app.route("/")
@@ -151,6 +161,24 @@ PING_MESSAGE_RE = re.compile(
 PING_TARGET_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|\band\b|\s+)\s*")
 PING_TARGETS = {trigger.removeprefix("ping "): response for trigger, response in PING_RESPONSES.items()}
 
+
+def external_ping_members() -> list[dict[str, str]]:
+    members = []
+    seen_mentions = set()
+    for trigger, mention in PING_RESPONSES.items():
+        if mention in seen_mentions:
+            continue
+        seen_mentions.add(mention)
+        members.append(
+            {
+                "name": trigger.removeprefix("ping ").title(),
+                "user_id": mention.removeprefix("<@").removesuffix(">"),
+                "mention": mention,
+            }
+        )
+    return members
+
+
 SYSTEM_PROMPT = """You are pkla dog, a helpful assistant in a Discord server.
 
 Core behavior:
@@ -223,6 +251,174 @@ MAX_UNIVERSAL_MEMORIES = 50
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+discord_event_loop: asyncio.AbstractEventLoop | None = None
+
+EXTERNAL_SAY_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord Bot — Say</title>
+  <link rel="icon" type="image/png" href="/favicon.ico?v=1">
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #111827; color: #f9fafb; }
+    main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
+    h1 { margin-top: 0; }
+    label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
+    textarea, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
+    textarea { width: 100%; min-height: 9rem; resize: vertical; border: 1px solid #4b5563; background: #111827; color: inherit; }
+    button { border: 0; color: white; font-weight: 700; cursor: pointer; }
+    .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
+    .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
+    .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
+    .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
+    .ping-list { display: grid; gap: .6rem; }
+    .ping-member { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; padding: .65rem; background: #111827; border-radius: .5rem; }
+    .member-name { display: block; font-weight: 700; }
+    .member-id { display: block; color: #9ca3af; font-size: .8rem; overflow-wrap: anywhere; }
+    .ping-button { background: #5865f2; }
+    .copy-button { background: #4b5563; }
+    .copy-button.copied { background: #047857; }
+    .status { padding: .8rem; border-radius: .5rem; background: #374151; }
+    .error { background: #7f1d1d; }
+    @media (max-width: 32rem) {
+      .ping-member { grid-template-columns: 1fr 1fr; }
+      .ping-member div { grid-column: 1 / -1; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Make the bot say something</h1>
+    {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
+    <form method="post">
+      <label for="message">Message</label>
+      <textarea id="message" name="message" maxlength="2000" required></textarea>
+      <section class="ping-section" aria-labelledby="ping-heading">
+        <h2 id="ping-heading">Ping a member</h2>
+        <p class="ping-help">Select Ping to add a mention to the message, or Copy to copy the ready-to-paste mention.</p>
+        <div class="ping-list">
+          {% for member in ping_members %}
+          <div class="ping-member">
+            <div>
+              <span class="member-name">{{ member.name }}</span>
+              <code class="member-id">{{ member.user_id }}</code>
+            </div>
+            <button class="ping-button" type="button" data-mention="{{ member.mention }}">Ping</button>
+            <button class="copy-button" type="button" data-mention="{{ member.mention }}">Copy</button>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      <button class="send-button" type="submit">Send to Discord</button>
+    </form>
+  </main>
+  <script>
+    const message = document.getElementById("message");
+
+    document.querySelectorAll(".ping-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mention = button.dataset.mention;
+        const start = message.selectionStart;
+        const end = message.selectionEnd;
+        const before = message.value.slice(0, start);
+        const after = message.value.slice(end);
+        const prefix = before && !before.endsWith(" ") ? " " : "";
+        const suffix = after && !after.startsWith(" ") ? " " : "";
+        const insertion = `${prefix}${mention}${suffix}`;
+        if (before.length + insertion.length + after.length > message.maxLength) return;
+        message.setRangeText(insertion, start, end, "end");
+        message.focus();
+      });
+    });
+
+    document.querySelectorAll(".copy-button").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(button.dataset.mention);
+          button.textContent = "Copied";
+          button.classList.add("copied");
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+            button.classList.remove("copied");
+          }, 1500);
+        } catch (error) {
+          window.prompt("Copy this Discord mention:", button.dataset.mention);
+        }
+      });
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+def external_channel_id() -> int | None:
+    raw_channel_id = os.environ.get("EXTERNAL_CHANNEL_ID", "").strip()
+    if not raw_channel_id:
+        return None
+    try:
+        return int(raw_channel_id)
+    except ValueError:
+        return None
+
+
+async def send_external_message(channel_id: int, message: str) -> None:
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        raise RuntimeError("The configured Discord channel is unavailable")
+    await channel.send(message)
+
+
+def submit_external_message(message: str) -> None:
+    channel_id = external_channel_id()
+    if channel_id is None or channel_id not in TARGET_CHANNEL_IDS:
+        raise RuntimeError("EXTERNAL_CHANNEL_ID must be one of TARGET_CHANNEL_IDS")
+    if discord_event_loop is None or not client.is_ready():
+        raise RuntimeError("The Discord bot is not ready yet")
+
+    future = asyncio.run_coroutine_threadsafe(
+        send_external_message(channel_id, message), discord_event_loop
+    )
+    try:
+        future.result(timeout=10)
+    except FutureTimeoutError as error:
+        future.cancel()
+        raise RuntimeError("Discord took too long to accept the message") from error
+
+
+@app.route("/say", methods=["GET", "POST"])
+def external_say():
+    status = "Message sent." if request.args.get("sent") == "1" else None
+    error = False
+    response_status = 200
+    if request.method == "POST":
+        message = request.form.get("message", "")
+        if not message.strip():
+            status = "Enter a message first."
+            error = True
+            response_status = 400
+        elif len(message) > 2000:
+            status = "Discord messages cannot exceed 2,000 characters."
+            error = True
+            response_status = 400
+        else:
+            try:
+                submit_external_message(message)
+                return redirect(url_for("external_say", sent="1"), code=303)
+            except Exception as send_error:
+                print(f"External send error: {send_error}")
+                status = str(send_error)
+                error = True
+                response_status = 503
+
+    return render_template_string(
+        EXTERNAL_SAY_PAGE,
+        status=status,
+        error=error,
+        ping_members=external_ping_members(),
+    ), response_status
 
 
 def ping_message_text(message_text: str, *, single_target: bool) -> str:
@@ -868,6 +1064,8 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
 
 @client.event
 async def on_ready():
+    global discord_event_loop
+    discord_event_loop = asyncio.get_running_loop()
     print(f"Logged in as {client.user}")
 
 

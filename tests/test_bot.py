@@ -90,6 +90,67 @@ class OpenAIConfigTests(unittest.TestCase):
         self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
         self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
 
+class ExternalSayTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_page_is_available_without_a_control_token(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Make the bot say something", response.data)
+        self.assertIn(b'/favicon.ico?v=1', response.data)
+        self.assertNotIn(b'name="token"', response.data)
+
+    def test_page_lists_ping_members_with_copyable_mentions(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Ping a member", response.data)
+        self.assertIn(b"Ozzy", response.data)
+        self.assertIn(b"586732970283630633", response.data)
+        self.assertIn(b'data-mention="&lt;@586732970283630633&gt;"', response.data)
+        jaedon_members = [
+            member
+            for member in bot.external_ping_members()
+            if member["user_id"] == "1149829095958528020"
+        ]
+        self.assertEqual(len(jaedon_members), 1)
+
+    def test_favicon_is_available_at_browser_default_path(self):
+        response = self.client.get("/favicon.ico")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertTrue(response.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        response.close()
+
+    def test_empty_message_is_rejected(self):
+        response = self.client.post("/say", data={"message": "   "})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Enter a message first", response.data)
+
+    def test_valid_form_redirects_and_refresh_does_not_resubmit(self):
+        submitted_messages = []
+        original_submit = bot.submit_external_message
+        bot.submit_external_message = submitted_messages.append
+        try:
+            response = self.client.post(
+                "/say", data={"message": "hello Discord"}
+            )
+            redirected_response = self.client.get(response.headers["Location"])
+            refreshed_response = self.client.get(response.headers["Location"])
+        finally:
+            bot.submit_external_message = original_submit
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], "/say?sent=1")
+        self.assertEqual(redirected_response.status_code, 200)
+        self.assertIn(b"Message sent", redirected_response.data)
+        self.assertEqual(refreshed_response.status_code, 200)
+        self.assertEqual(submitted_messages, ["hello Discord"])
+
 
 if __name__ == "__main__":
     unittest.main()
