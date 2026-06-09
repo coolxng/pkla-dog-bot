@@ -1,6 +1,6 @@
 """Flask entrypoint for deployment platforms that scan conventional app files."""
 
-from bot import app
+from bot import app as app
 
 
 if __name__ == "__main__":

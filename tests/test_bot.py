@@ -428,6 +428,32 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         play_audio.assert_called_once_with(voice_client, speech_path, delete_after=True)
         self.assertEqual(bot.last_tts_at[456], 100.0)
 
+    async def test_external_speech_failure_does_not_start_cooldown(self):
+        class FakeVoiceChannel:
+            pass
+
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: False
+        )
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot.time, "monotonic", return_value=100.0),
+            patch.object(
+                bot.asyncio,
+                "to_thread",
+                new=AsyncMock(side_effect=RuntimeError("speech failed")),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "speech failed"):
+                await bot.control_external_speech(
+                    1447148315312521256, "hello", "alloy"
+                )
+
+        self.assertNotIn(456, bot.last_tts_at)
+
     async def test_external_speech_enforces_server_cooldown_before_synthesis(self):
         class FakeVoiceChannel:
             pass
@@ -630,6 +656,8 @@ class CasualReplyStyleTests(unittest.TestCase):
         self.assertIsNone(bot.short_casual_reply_guidance("how do I fix this"))
         self.assertIsNone(bot.short_casual_reply_guidance("explain the voice commands"))
         self.assertIsNone(bot.short_casual_reply_guidance("can you help me"))
+        self.assertIsNone(bot.short_casual_reply_guidance("please help me"))
+        self.assertIsNone(bot.short_casual_reply_guidance("pls explain this"))
 
     def test_casual_reply_keeps_reaction_and_drops_generated_followup_bit(self):
         reply = "🦦\n\notter detected.\n\nlevel of silliness: maximum"
@@ -654,15 +682,6 @@ class OpenAIConfigTests(unittest.TestCase):
         self.assertIn("Do not merely echo the user's words and add a scripted punchline", bot.SYSTEM_PROMPT)
         self.assertIn("Treat emoji-only messages like a person would", bot.SYSTEM_PROMPT)
         self.assertIn("Usually use zero or one", bot.SYSTEM_PROMPT)
-
-    def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
-        self.assertIn("`!join`", bot.SYSTEM_PROMPT)
-        self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
-        self.assertIn("does not listen to, record, or process incoming voice audio", bot.SYSTEM_PROMPT)
-        self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
-        self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
-        self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
-        self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
         self.assertIn("`!join`", bot.SYSTEM_PROMPT)

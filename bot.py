@@ -127,10 +127,6 @@ def parse_int_env(name: str, default: int) -> int:
         print(f"Ignoring invalid integer for {name}: {raw_value!r}")
         return default
 
-def current_date_text() -> str:
-    today = current_central_datetime()
-    return f"{today.month}/{today.day}/{today:%y}"
-
 def current_central_datetime() -> datetime:
     return datetime.now(CENTRAL_TIME)
 
@@ -682,6 +678,8 @@ def short_casual_reply_guidance(text: str) -> str | None:
 
     words = normalized.split()
     first_word = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", words[0].lower())
+    if first_word in {"please", "pls"}:
+        return None
     if (
         len(words) > 6
         or "?" in normalized
@@ -718,35 +716,6 @@ def needs_search(text: str) -> bool:
 def needs_recent_search(text: str) -> bool:
     lower = re.sub(r"\s+", " ", text.lower()).strip()
     return any(re.search(rf"\b{re.escape(kw)}\b", lower) for kw in RECENT_SEARCH_KEYWORDS)
-
-
-def needs_time_context(text: str) -> bool:
-    lower = text.lower()
-    time_words = ("time", "hour", "hours", "until", "how long")
-    return any(word in lower for word in time_words)
-
-
-def build_time_context() -> str:
-    now = current_datetime_text()
-    return (
-        f"Current Central Time is exactly {now}. "
-        "Use this exact current time for time math. Do not assume or round to midnight."
-    )
-
-
-def is_current_time_question(text: str) -> bool:
-    normalized = re.sub(r"\s+", " ", text.lower()).strip(" ?!.")
-    ask_time = r"(?:what(?:'s|s| is) the time|what time is it|current time|time)"
-    time_patterns = (
-        rf"^{ask_time}(?: right now| now)?$",
-        rf"^{ask_time}(?: {ask_time})+$",
-    )
-    return any(re.fullmatch(pattern, normalized) for pattern in time_patterns)
-
-
-def current_time_reply() -> str:
-    now = current_central_datetime()
-    return f"It’s {now:%-I:%M %p} Central Time."
 
 
 def needs_time_context(text: str) -> bool:
@@ -1539,9 +1508,16 @@ async def control_external_speech(channel_id: int, text: str, voice: str) -> str
             )
     last_tts_at[guild.id] = now
 
-    speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
-    if not play_audio(voice_client, speech_path, delete_after=True):
-        raise RuntimeError("Another sound is already playing")
+    try:
+        speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
+        if not play_audio(voice_client, speech_path, delete_after=True):
+            raise RuntimeError("Another sound is already playing")
+    except Exception:
+        if last_speech is None:
+            last_tts_at.pop(guild.id, None)
+        else:
+            last_tts_at[guild.id] = last_speech
+        raise
     return f"speaking in {voice_channel.mention}"
 
 
