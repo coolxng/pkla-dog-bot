@@ -1067,6 +1067,30 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
         print(f"[universal memory] stored: {fact}")
 
 
+async def join_author_voice(message) -> str:
+    if message.guild is None:
+        return "use !join in the server while you're in a voice channel"
+
+    voice_state = getattr(message.author, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        return "join a voice channel first, then send !join"
+
+    voice_client = message.guild.voice_client
+    try:
+        if voice_client and voice_client.is_connected():
+            if voice_client.channel == voice_channel:
+                return f"already in {voice_channel.mention}"
+            await voice_client.move_to(voice_channel)
+        else:
+            await voice_channel.connect(self_deaf=False, self_mute=False)
+    except (asyncio.TimeoutError, discord.DiscordException) as error:
+        print(f"Voice connection error: {error}")
+        return "couldn't join that voice channel; check my Connect permission and try again"
+
+    return f"joined {voice_channel.mention} — unmuted and undeafened"
+
+
 @client.event
 async def on_ready():
     global discord_event_loop
@@ -1092,6 +1116,10 @@ async def on_message(message):
     user_id = message.author.id
     display_name = message.author.display_name
     normalized_content = content.lower().strip()
+
+    if normalized_content == "!join":
+        await message.channel.send(await join_author_voice(message))
+        return
 
     ping_response = ping_response_for(content)
     if ping_response:
