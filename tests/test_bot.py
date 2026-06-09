@@ -664,6 +664,15 @@ class OpenAIConfigTests(unittest.TestCase):
         self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
         self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
+    def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
+        self.assertIn("`!join`", bot.SYSTEM_PROMPT)
+        self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
+        self.assertIn("does not listen to, record, or process incoming voice audio", bot.SYSTEM_PROMPT)
+        self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
+        self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
+        self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
+        self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
+
 class ExternalSayTests(unittest.TestCase):
     def setUp(self):
         self.client = bot.app.test_client()
