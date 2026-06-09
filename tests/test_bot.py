@@ -613,6 +613,30 @@ class TextToSpeechTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
 
+class CasualReplyStyleTests(unittest.TestCase):
+    def test_emoji_only_message_gets_strict_plain_reply_guidance(self):
+        guidance = bot.short_casual_reply_guidance("🦦")
+
+        self.assertIn("one emoji or at most four plain words", guidance)
+        self.assertIn("Do not describe, caption, rate, or invent a story", guidance)
+
+    def test_short_statement_gets_single_line_reply_guidance(self):
+        guidance = bot.short_casual_reply_guidance("couldnt get radiant")
+
+        self.assertIn("one line and at most twelve words", guidance)
+        self.assertIn("without narration", guidance)
+
+    def test_questions_and_requests_keep_normal_reply_behavior(self):
+        self.assertIsNone(bot.short_casual_reply_guidance("how do I fix this"))
+        self.assertIsNone(bot.short_casual_reply_guidance("explain the voice commands"))
+        self.assertIsNone(bot.short_casual_reply_guidance("can you help me"))
+
+    def test_casual_reply_keeps_reaction_and_drops_generated_followup_bit(self):
+        reply = "🦦\n\notter detected.\n\nlevel of silliness: maximum"
+
+        self.assertEqual(bot.keep_first_reply_line(reply), "🦦")
+
+
 class OpenAIConfigTests(unittest.TestCase):
     def test_default_model_uses_chatgpt_like_alias(self):
         self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
@@ -627,7 +651,8 @@ class OpenAIConfigTests(unittest.TestCase):
 
     def test_system_prompt_avoids_repetitive_meme_post_style(self):
         self.assertIn("Do not write like a meme account or a viral post", bot.SYSTEM_PROMPT)
-        self.assertIn("Do not merely echo the user's words and add emojis", bot.SYSTEM_PROMPT)
+        self.assertIn("Do not merely echo the user's words and add a scripted punchline", bot.SYSTEM_PROMPT)
+        self.assertIn("Treat emoji-only messages like a person would", bot.SYSTEM_PROMPT)
         self.assertIn("Usually use zero or one", bot.SYSTEM_PROMPT)
 
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):

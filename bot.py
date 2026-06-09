@@ -237,7 +237,8 @@ Core behavior:
 - Match the size and energy of the message. For short casual messages, usually reply with one short sentence or reaction instead of turning every message into a joke or performance.
 - Use recent messages for context, not as a template for your wording. Do not keep repeating your own previous cadence, punchline structure, or running bit.
 - Do not write like a meme account or a viral post. Avoid theatrical narration, fake courtroom or announcer framing, staged captions, "bro really..." setups, and forced closing punchlines unless the user is explicitly asking for that style.
-- Do not merely echo the user's words and add emojis. Add a natural reaction or useful thought, and sometimes a simple response like "lmao", "yeah", or "we got him" is enough.
+- Do not merely echo the user's words and add a scripted punchline. Sometimes a simple response like "lmao", "yeah", or "we got him" is enough.
+- Treat emoji-only messages like a person would: reply with at most one emoji or a few plain words. Never explain, name, caption, rate, or invent lore about the emoji.
 - Use emojis sparingly and only when they fit naturally. Usually use zero or one; do not repeatedly stack crying, skull, gaming, chart, or other decorative emojis.
 - Keep casual replies concise, but give fuller explanations when the user asks for help, reasoning, or details.
 - Answer the actual question.
@@ -664,6 +665,47 @@ def ping_response_for(content: str) -> str | None:
     if message_text:
         response = f"{response}, {ping_message_text(message_text, single_target=len(mentions) == 1)}"
     return response
+
+
+CASUAL_REQUEST_PREFIXES = (
+    "what", "why", "how", "who", "when", "where", "which",
+    "can", "could", "would", "should", "do", "does", "did",
+    "is", "are", "tell", "explain", "help", "search", "find",
+    "look", "give", "write", "make", "show", "list",
+)
+
+
+def short_casual_reply_guidance(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized or len(normalized) > 80 or normalized.startswith("!"):
+        return None
+
+    words = normalized.split()
+    first_word = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", words[0].lower())
+    if (
+        len(words) > 6
+        or "?" in normalized
+        or first_word in CASUAL_REQUEST_PREFIXES
+        or needs_search(normalized)
+        or needs_time_context(normalized)
+    ):
+        return None
+
+    if not any(character.isalnum() for character in normalized):
+        return (
+            "Reply style for this emoji-only message: use one line with either one emoji "
+            "or at most four plain words. Do not describe, caption, rate, or invent a story "
+            "about the emoji."
+        )
+
+    return (
+        "Reply style for this brief casual message: use one line and at most twelve words. "
+        "Respond directly without narration, a setup, a second punchline, or decorative emoji stacking."
+    )
+
+
+def keep_first_reply_line(reply: str) -> str:
+    return next((line.strip() for line in reply.splitlines() if line.strip()), reply.strip())
 
 
 def needs_search(text: str) -> bool:
@@ -1652,6 +1694,9 @@ async def on_message(message):
     history_so_far = get_active_history(message.channel.id, user_id, is_dm=is_dm)
     user_text = content if is_dm else format_user_history_content(display_name, content)
     context_parts = []
+    reply_style_guidance = short_casual_reply_guidance(content)
+    if reply_style_guidance:
+        context_parts.append(reply_style_guidance)
 
     if needs_time_context(content):
         context_parts.append(build_time_context())
@@ -1683,7 +1728,17 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            reply = clean_reply(await call_model(history_so_far, user_text, display_name=display_name))
+            max_tokens = 60 if reply_style_guidance else 1024
+            reply = clean_reply(
+                await call_model(
+                    history_so_far,
+                    user_text,
+                    max_tokens=max_tokens,
+                    display_name=display_name,
+                )
+            )
+            if reply_style_guidance:
+                reply = keep_first_reply_line(reply)
             if not reply:
                 raise ValueError("Empty response")
             add_to_active_history(message.channel.id, user_id, "assistant", reply, is_dm=is_dm)
