@@ -59,6 +59,15 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(bot.BARK_AUDIO_PATH.is_file())
         self.assertEqual(bot.BARK_AUDIO_PATH.name, "pkla-dog-bark.mp3")
 
+    def test_external_bark_audio_files_exist(self):
+        self.assertEqual(
+            {sound["path"].name for sound in bot.EXTERNAL_BARK_SOUNDS.values()},
+            {"wolf-bark.mp3", "minecraft-bark.mp3", "bark-fart.mp3"},
+        )
+        self.assertTrue(
+            all(sound["path"].is_file() for sound in bot.EXTERNAL_BARK_SOUNDS.values())
+        )
+
     def test_play_bark_starts_mp3_audio(self):
         voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
         audio_source = Mock()
@@ -302,6 +311,42 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, "left the voice channel")
         leave_voice.assert_awaited_once_with(guild)
 
+    async def test_external_sound_plays_selected_audio(self):
+        class FakeVoiceChannel:
+            pass
+
+        voice_client = SimpleNamespace(is_connected=lambda: True)
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot, "play_audio", return_value=True) as play_audio,
+        ):
+            response = await bot.control_external_voice(
+                "play_sound", 1447148315312521256, "minecraft"
+            )
+
+        self.assertEqual(response, "playing Minecraft bark")
+        play_audio.assert_called_once_with(
+            voice_client, bot.EXTERNAL_BARK_SOUNDS["minecraft"]["path"]
+        )
+
+    async def test_external_sound_requires_joined_voice_client(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(voice_client=None)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Join the voice call"):
+                await bot.control_external_voice(
+                    "play_sound", 1447148315312521256, "wolf"
+                )
+
     async def test_external_voice_rejects_unavailable_channel(self):
         with patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: None)):
             with self.assertRaisesRegex(RuntimeError, "voice channel is unavailable"):
@@ -428,6 +473,15 @@ class ExternalSayTests(unittest.TestCase):
             response.data,
         )
 
+    def test_page_has_buttons_for_each_bark_sound(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Bark sounds", response.data)
+        self.assertIn(b'value="wolf">Wolf bark</button>', response.data)
+        self.assertIn(b'value="minecraft">Minecraft bark</button>', response.data)
+        self.assertIn(b'value="fart">Bark fart</button>', response.data)
+
     def test_voice_channel_default_can_be_overridden(self):
         with patch.dict(bot.os.environ, {"EXTERNAL_VOICE_CHANNEL_ID": "123456789"}):
             response = self.client.get("/say")
@@ -494,6 +548,40 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=joined+General", response.headers["Location"])
         submit_voice.assert_called_once_with("join", 1447148315312521256)
+
+    def test_sound_button_plays_selected_sound(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="playing Wolf bark",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "play_sound",
+                    "sound": "wolf",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("status=playing+Wolf+bark", response.headers["Location"])
+        submit_voice.assert_called_once_with(
+            "play_sound", 1447148315312521256, "wolf"
+        )
+
+    def test_unknown_sound_is_rejected(self):
+        response = self.client.post(
+            "/say",
+            data={
+                "action": "play_sound",
+                "sound": "unknown",
+                "voice_channel_id": "1447148315312521256",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Unknown bark sound", response.data)
 
     def test_leave_voice_form_uses_selected_channel(self):
         with patch.object(

@@ -54,6 +54,14 @@ BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
+EXTERNAL_BARK_SOUNDS = {
+    "wolf": {"label": "Wolf bark", "path": Path(__file__).with_name("wolf-bark.mp3")},
+    "minecraft": {
+        "label": "Minecraft bark",
+        "path": Path(__file__).with_name("minecraft-bark.mp3"),
+    },
+    "fart": {"label": "Bark fart", "path": Path(__file__).with_name("bark-fart.mp3")},
+}
 DEFAULT_EXTERNAL_VOICE_CHANNEL_ID = 1447148315312521256
 
 
@@ -285,9 +293,12 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     button { border: 0; color: white; font-weight: 700; cursor: pointer; }
     .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
     .voice-section, .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
-    .voice-section h2, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
+    .voice-section h2, .voice-section h3, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
     .voice-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
     .voice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: .75rem; }
+    .voice-section .sound-heading { margin-top: 1.25rem; }
+    .sound-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
+    .sound-button { background: #7c3aed; }
     .join-button { background: #047857; }
     .leave-button { background: #b91c1c; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
@@ -301,6 +312,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
     @media (max-width: 32rem) {
+      .sound-actions { grid-template-columns: 1fr; }
       .ping-member { grid-template-columns: 1fr 1fr; }
       .ping-member div { grid-column: 1 / -1; }
     }
@@ -325,6 +337,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="join-button" type="submit" name="action" value="join">Join call</button>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
       </div>
+      <h3 class="sound-heading">Bark sounds</h3>
+      <p class="voice-help">Play a sound after the bot has joined the voice call.</p>
+      <div class="sound-actions">
+        {% for sound_id, sound in bark_sounds.items() %}
+        <button class="sound-button" type="submit" name="sound" value="{{ sound_id }}">{{ sound.label }}</button>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="action" value="play_sound">
     </form>
     <section class="ping-section" aria-labelledby="ping-heading">
         <h2 id="ping-heading">Ping a member</h2>
@@ -434,11 +454,13 @@ def submit_external_message(message: str) -> None:
     )
 
 
-def submit_external_voice_action(action: str, channel_id: int) -> str:
-    if action not in {"join", "leave"}:
+def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
+    if action not in {"join", "leave", "play_sound"}:
         raise ValueError("Unknown voice action")
+    if action == "play_sound" and sound_id not in EXTERNAL_BARK_SOUNDS:
+        raise ValueError("Unknown bark sound")
     return run_discord_coroutine(
-        control_external_voice(action, channel_id),
+        control_external_voice(action, channel_id, sound_id),
         "Discord took too long to update the voice call",
     )
 
@@ -452,21 +474,32 @@ def external_say():
     response_status = 200
     if request.method == "POST":
         action = request.form.get("action", "send")
-        if action in {"join", "leave"}:
+        if action in {"join", "leave", "play_sound"}:
             raw_channel_id = request.form.get("voice_channel_id", "").strip()
             try:
                 channel_id = int(raw_channel_id)
-                status = submit_external_voice_action(action, channel_id)
-                return redirect(url_for("external_say", status=status), code=303)
             except ValueError:
                 status = "Enter a valid numeric voice channel ID."
                 error = True
                 response_status = 400
-            except Exception as voice_error:
-                print(f"External voice control error: {voice_error}")
-                status = str(voice_error)
-                error = True
-                response_status = 503
+            else:
+                try:
+                    if action == "play_sound":
+                        status = submit_external_voice_action(
+                            action, channel_id, request.form.get("sound")
+                        )
+                    else:
+                        status = submit_external_voice_action(action, channel_id)
+                    return redirect(url_for("external_say", status=status), code=303)
+                except ValueError as voice_error:
+                    status = str(voice_error)
+                    error = True
+                    response_status = 400
+                except Exception as voice_error:
+                    print(f"External voice control error: {voice_error}")
+                    status = str(voice_error)
+                    error = True
+                    response_status = 503
         else:
             message = request.form.get("message", "")
             if not message.strip():
@@ -492,6 +525,7 @@ def external_say():
         status=status,
         error=error,
         ping_members=external_ping_members(),
+        bark_sounds=EXTERNAL_BARK_SOUNDS,
         voice_channel_id=external_voice_channel_id(),
     ), response_status
 
@@ -1142,16 +1176,20 @@ bark_tasks: dict[int, asyncio.Task] = {}
 last_command_bark_at: dict[int, float] = {}
 
 
-def play_bark(voice_client) -> bool:
+def play_audio(voice_client, audio_path: Path) -> bool:
     if voice_client.is_playing():
         return False
 
     def after_playback(error):
         if error:
-            print(f"Bark playback error: {error}")
+            print(f"Audio playback error: {error}")
 
-    voice_client.play(discord.FFmpegPCMAudio(str(BARK_AUDIO_PATH)), after=after_playback)
+    voice_client.play(discord.FFmpegPCMAudio(str(audio_path)), after=after_playback)
     return True
+
+
+def play_bark(voice_client) -> bool:
+    return play_audio(voice_client, BARK_AUDIO_PATH)
 
 
 def bark_on_command(message) -> str:
@@ -1274,13 +1312,26 @@ async def leave_voice(message) -> str:
     return await leave_guild_voice(message.guild)
 
 
-async def control_external_voice(action: str, channel_id: int) -> str:
+async def control_external_voice(
+    action: str, channel_id: int, sound_id: str | None = None
+) -> str:
     voice_channel = client.get_channel(channel_id)
     if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
         raise RuntimeError("That Discord voice channel is unavailable")
     if action == "join":
         return await join_voice_channel(voice_channel)
-    return await leave_guild_voice(voice_channel.guild)
+    if action == "leave":
+        return await leave_guild_voice(voice_channel.guild)
+
+    sound = EXTERNAL_BARK_SOUNDS.get(sound_id)
+    if sound is None:
+        raise ValueError("Unknown bark sound")
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("Join the voice call before playing a sound")
+    if not play_audio(voice_client, sound["path"]):
+        raise RuntimeError("Another sound is already playing")
+    return f'playing {sound["label"]}'
 
 
 @client.event
