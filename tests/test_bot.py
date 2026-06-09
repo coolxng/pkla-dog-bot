@@ -72,6 +72,7 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
                 "minecraft-bark.mp3",
                 "bark-fart.mp3",
                 "jamalcrazyidek.mp3",
+                "evan-crash.mp4",
             },
         )
         self.assertTrue(
@@ -648,6 +649,7 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'value="minecraft">Minecraft bark</button>', response.data)
         self.assertIn(b'value="fart">Bark fart</button>', response.data)
         self.assertIn(b'value="jamal">Jamal crazy idek</button>', response.data)
+        self.assertIn(b'value="evan">Evan crash</button>', response.data)
 
     def test_page_has_text_to_speech_controls(self):
         response = self.client.get("/say")

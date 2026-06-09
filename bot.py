@@ -85,6 +85,10 @@ EXTERNAL_BARK_SOUNDS = {
         "label": "Jamal crazy idek",
         "path": Path(__file__).with_name("jamalcrazyidek.mp3"),
     },
+    "evan": {
+        "label": "Evan crash",
+        "path": Path(__file__).with_name("evan-crash.mp4"),
+    },
 }
 DEFAULT_EXTERNAL_VOICE_CHANNEL_ID = 1447148315312521256
 
