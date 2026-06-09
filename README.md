@@ -30,7 +30,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
-| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, and TTS controls. |
+| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, and MP3 upload controls. |
+| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Optional password that protects all `/say` page access and controls with HTTP Basic authentication. Store it as a secret; do not commit it. |
 
 ## Railway deploy steps
 
@@ -75,10 +76,19 @@ You can make the bot post a message from a web browser:
 5. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
 6. Enter a message, then select **Send to Discord**. The same page also has **Join call** and **Leave call** controls, plus buttons for the wolf bark, Minecraft bark, bark-fart, Jamal crazy idek, and Evan crash sounds. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls.
 7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, choose one of the allowed voices, and select **Speak in call**. The bot must remain connected to that selected channel, and each server can start TTS at most once every 30 seconds.
+8. To play your own clip, use the right-side **Upload MP3** panel. Select the same voice channel the bot already joined, choose an `.mp3` file, and select **Upload and play**. Uploads are MP3-only and limited to 8 MiB. The server checks both the filename extension and an MP3 header signature instead of trusting the browser MIME type.
+
+The Discord bot role needs **Connect** and **Speak** permissions in the selected voice channel. Uploading does not connect or move the bot: it must already be connected to that exact channel. Only one clip can play at a time.
+
+Uploaded files receive server-generated temporary `.mp3` paths; submitted filenames are never used as filesystem paths. Temporary files are removed when validation, Discord scheduling, or playback startup fails, and successful uploads are removed by the playback completion callback (including playback errors). Files can remain briefly only if the process is forcibly terminated before cleanup runs.
 
 If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
 
-The `/say` page has no login or control token. Anyone who knows or discovers its public URL can make the bot post to the configured channel, control its voice connection, and request billable OpenAI TTS generation. Keep the URL private or add authentication before exposing it broadly. The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, the selected voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active.
+Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, browsers show an HTTP Basic login prompt: the username may be any non-empty value and the password must be the configured token. API clients can send the same HTTP Basic credentials. Railway and similar hosts should store the token in their secret-variable UI.
+
+If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, `/say` remains unauthenticated for backward compatibility. **Anyone who knows or discovers the public Railway URL can post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS.** Keeping the URL private is not equivalent to authentication.
+
+The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 
 OpenAI text-to-speech requests use the billable Speech API associated with `OPENAI_API_KEY`. The cooldown and text limit reduce accidental usage, but they are not a substitute for authentication or provider-side budget limits.
 

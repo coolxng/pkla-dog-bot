@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hmac
 import json
 import math
 import os
@@ -19,6 +20,7 @@ from urllib.request import Request, urlopen
 import discord
 from ddgs import DDGS
 from flask import Flask, Response, redirect, render_template_string, request, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
 
 
 app = Flask(__name__)
@@ -64,6 +66,11 @@ if OPENAI_TTS_VOICE not in OPENAI_TTS_VOICES:
     print(f"Ignoring unsupported OPENAI_TTS_VOICE: {OPENAI_TTS_VOICE!r}")
     OPENAI_TTS_VOICE = "alloy"
 TTS_TEXT_LIMIT = 500
+# Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
+MAX_UPLOADED_MP3_BYTES = 8 * 1024 * 1024
+# Allow multipart headers and form fields in addition to the MP3 payload itself.
+MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_MP3_BYTES + (1024 * 1024)
+EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
 TTS_COOLDOWN_SECONDS = 30
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
@@ -91,6 +98,15 @@ EXTERNAL_BARK_SOUNDS = {
     },
 }
 DEFAULT_EXTERNAL_VOICE_CHANNEL_ID = 1447148315312521256
+app.config["MAX_CONTENT_LENGTH"] = MAX_EXTERNAL_SAY_REQUEST_BYTES
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def external_request_too_large(_error):
+    return (
+        f"Upload request is too large. MP3 files must be {MAX_UPLOADED_MP3_BYTES // (1024 * 1024)} MiB or smaller.",
+        413,
+    )
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -324,7 +340,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
   <style>
     :root { color-scheme: dark; font-family: system-ui, sans-serif; }
     body { margin: 0; background: #111827; color: #f9fafb; }
-    main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
+    main { width: min(92%, 72rem); margin: 6vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
+    .control-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr); gap: 2rem; align-items: start; }
     h1 { margin-top: 0; }
     label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
     input, textarea, select, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
@@ -332,6 +349,9 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     textarea { min-height: 9rem; resize: vertical; }
     button { border: 0; color: white; font-weight: 700; cursor: pointer; }
     .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
+    .upload-panel { padding: 1.25rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
+    .upload-panel h2 { margin: 0 0 .25rem; }
+    .upload-button { width: 100%; margin-top: 1rem; background: #7c3aed; }
     .voice-section, .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
     .voice-section h2, .voice-section h3, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
     .voice-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
@@ -353,6 +373,9 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .copy-button.copied { background: #047857; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
+    @media (max-width: 52rem) {
+      .control-grid { grid-template-columns: 1fr; }
+    }
     @media (max-width: 32rem) {
       .sound-actions { grid-template-columns: 1fr; }
       .ping-member { grid-template-columns: 1fr 1fr; }
@@ -364,6 +387,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
   <main>
     <h1>Make the bot say something</h1>
     {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
+    <div class="control-grid">
+      <div>
     <form method="post">
       <input type="hidden" name="action" value="send">
       <label for="message">Message</label>
@@ -415,9 +440,27 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           {% endfor %}
         </div>
     </section>
+      </div>
+      <aside class="upload-panel" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Upload MP3</h2>
+        <p class="voice-help">Upload an MP3 up to {{ max_upload_mp3_mib }} MiB. The bot must already be connected to the selected voice channel.</p>
+        <form method="post" enctype="multipart/form-data">
+          <input type="hidden" name="action" value="upload_audio">
+          <label for="upload-voice-channel-id">Voice channel ID</label>
+          <input id="upload-voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
+          <label for="audio-file">MP3 file</label>
+          <input id="audio-file" name="audio_file" type="file" accept=".mp3,audio/mpeg" required>
+          <button class="upload-button" type="submit">Upload and play</button>
+        </form>
+      </aside>
+    </div>
   </main>
   <script>
     const message = document.getElementById("message");
+    const voiceChannel = document.getElementById("voice-channel-id");
+    const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
+    voiceChannel.addEventListener("input", () => { uploadVoiceChannel.value = voiceChannel.value; });
+    uploadVoiceChannel.addEventListener("input", () => { voiceChannel.value = uploadVoiceChannel.value; });
 
     document.querySelectorAll(".ping-button").forEach((button) => {
       button.addEventListener("click", () => {
@@ -477,6 +520,64 @@ def external_voice_channel_id() -> int:
         return DEFAULT_EXTERNAL_VOICE_CHANNEL_ID
 
 
+def external_say_is_authorized() -> bool:
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        return True
+    authorization = request.authorization
+    return bool(
+        authorization
+        and authorization.username
+        and authorization.password
+        and hmac.compare_digest(authorization.password, EXTERNAL_SAY_CONTROL_TOKEN)
+    )
+
+
+def external_say_authentication_required():
+    return Response(
+        "Authentication is required to use the /say controls.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Discord bot controls"'},
+    )
+
+
+def uploaded_mp3_has_plausible_signature(header: bytes) -> bool:
+    return header.startswith(b"ID3") or (
+        len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0
+    )
+
+
+def save_uploaded_mp3(upload) -> Path:
+    filename = upload.filename or ""
+    if Path(filename).suffix.lower() != ".mp3":
+        raise ValueError("Upload a file with an .mp3 extension.")
+
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            total_bytes = 0
+            header = b""
+            while chunk := upload.stream.read(64 * 1024):
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOADED_MP3_BYTES:
+                    raise ValueError(
+                        f"MP3 files cannot exceed {MAX_UPLOADED_MP3_BYTES // (1024 * 1024)} MiB."
+                    )
+                if len(header) < 3:
+                    header += chunk[: 3 - len(header)]
+                temporary_file.write(chunk)
+
+        if total_bytes == 0:
+            raise ValueError("The uploaded MP3 file is empty.")
+        if not uploaded_mp3_has_plausible_signature(header):
+            raise ValueError("The uploaded file does not appear to be a valid MP3.")
+        return temporary_path
+    except Exception:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def run_discord_coroutine(coroutine, timeout_message: str):
     if discord_event_loop is None or not client.is_ready():
         coroutine.close()
@@ -514,6 +615,18 @@ def submit_external_speech(channel_id: int, text: str, voice: str) -> str:
     )
 
 
+def submit_external_uploaded_audio(channel_id: int, temporary_path: Path) -> str:
+    coroutine = control_external_uploaded_audio(channel_id, temporary_path)
+    try:
+        return run_discord_coroutine(
+            coroutine,
+            "Discord took too long to start the uploaded audio",
+        )
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
     if action not in {"join", "leave", "play_sound"}:
         raise ValueError("Unknown voice action")
@@ -527,6 +640,9 @@ def submit_external_voice_action(action: str, channel_id: int, sound_id: str | N
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
+    if not external_say_is_authorized():
+        return external_say_authentication_required()
+
     status = request.args.get("status")
     if request.args.get("sent") == "1":
         status = "Message sent."
@@ -534,7 +650,7 @@ def external_say():
     response_status = 200
     if request.method == "POST":
         action = request.form.get("action", "send")
-        if action in {"join", "leave", "play_sound", "speak"}:
+        if action in {"join", "leave", "play_sound", "speak", "upload_audio"}:
             raw_channel_id = request.form.get("voice_channel_id", "").strip()
             try:
                 channel_id = int(raw_channel_id)
@@ -548,6 +664,12 @@ def external_say():
                         status = submit_external_voice_action(
                             action, channel_id, request.form.get("sound")
                         )
+                    elif action == "upload_audio":
+                        upload = request.files.get("audio_file")
+                        if upload is None or not upload.filename:
+                            raise ValueError("Choose an MP3 file to upload.")
+                        temporary_path = save_uploaded_mp3(upload)
+                        status = submit_external_uploaded_audio(channel_id, temporary_path)
                     elif action == "speak":
                         speech_text = request.form.get("speech_text", "").strip()
                         voice = request.form.get("voice", "")
@@ -600,6 +722,7 @@ def external_say():
         bark_sounds=EXTERNAL_BARK_SOUNDS,
         voice_channel_id=external_voice_channel_id(),
         tts_text_limit=TTS_TEXT_LIMIT,
+        max_upload_mp3_mib=MAX_UPLOADED_MP3_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
     ), response_status
@@ -1484,6 +1607,32 @@ async def leave_voice(message) -> str:
     if message.guild is None:
         return "use !leave in the server"
     return await leave_guild_voice(message.guild)
+
+
+async def control_external_uploaded_audio(
+    channel_id: int, temporary_path: Path
+) -> str:
+    playback_started = False
+    try:
+        voice_channel = client.get_channel(channel_id)
+        if not isinstance(voice_channel, discord.VoiceChannel):
+            raise RuntimeError("That Discord voice channel is unavailable")
+
+        voice_client = voice_channel.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            raise RuntimeError("Join the selected voice call before uploading audio")
+        if getattr(voice_client, "channel", None) != voice_channel:
+            raise RuntimeError("The bot is connected to a different voice channel")
+        if voice_client.is_playing():
+            raise RuntimeError("Another sound is already playing")
+        if not play_audio(voice_client, temporary_path, delete_after=True):
+            raise RuntimeError("Another sound is already playing")
+
+        playback_started = True
+        return f"playing uploaded MP3 in {voice_channel.mention}"
+    finally:
+        if not playback_started:
+            temporary_path.unlink(missing_ok=True)
 
 
 async def control_external_speech(channel_id: int, text: str, voice: str) -> str:
