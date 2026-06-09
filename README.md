@@ -57,7 +57,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
-| `!join` | Joins your current voice channel self-deafened and self-muted without processing audio. |
+| `!join` | Joins your current voice channel unmuted and undeafened. The bot does not play, record, or process audio. |
 
 ## Send a message from outside Discord
 

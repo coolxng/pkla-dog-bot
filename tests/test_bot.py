@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import bot
 
@@ -54,7 +54,7 @@ class PingResponseTests(unittest.TestCase):
 
 
 class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
-    async def test_join_connects_self_deafened_and_self_muted(self):
+    async def test_join_connects_unmuted_and_undeafened(self):
         voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
         message = SimpleNamespace(
             guild=SimpleNamespace(voice_client=None),
@@ -63,8 +63,8 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
         response = await bot.join_author_voice(message)
 
-        voice_channel.connect.assert_awaited_once_with(self_deaf=True, self_mute=True)
-        self.assertEqual(response, "joined #General — self-deafened and not listening")
+        voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
+        self.assertEqual(response, "joined #General — unmuted and undeafened")
 
     async def test_join_requires_the_user_to_be_in_voice(self):
         message = SimpleNamespace(
@@ -92,7 +92,29 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         response = await bot.join_author_voice(message)
 
         voice_client.move_to.assert_awaited_once_with(new_channel)
-        self.assertEqual(response, "joined #New — self-deafened and not listening")
+        self.assertEqual(response, "joined #New — unmuted and undeafened")
+
+    async def test_join_command_is_handled_without_calling_chat_model(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        message = SimpleNamespace(
+            author=SimpleNamespace(
+                id=123,
+                display_name="Tester",
+                voice=SimpleNamespace(channel=voice_channel),
+            ),
+            channel=text_channel,
+            content="!join",
+            guild=SimpleNamespace(voice_client=None),
+        )
+
+        with patch.object(bot, "call_model", new_callable=AsyncMock) as call_model:
+            await bot.on_message(message)
+
+        voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
+        text_channel.send.assert_awaited_once_with("joined #General — unmuted and undeafened")
+        call_model.assert_not_awaited()
 
 
 class ConversationHistoryTests(unittest.TestCase):

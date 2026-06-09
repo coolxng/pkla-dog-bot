@@ -1083,12 +1083,12 @@ async def join_author_voice(message) -> str:
                 return f"already in {voice_channel.mention}"
             await voice_client.move_to(voice_channel)
         else:
-            await voice_channel.connect(self_deaf=True, self_mute=True)
+            await voice_channel.connect(self_deaf=False, self_mute=False)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
         print(f"Voice connection error: {error}")
         return "couldn't join that voice channel; check my Connect permission and try again"
 
-    return f"joined {voice_channel.mention} — self-deafened and not listening"
+    return f"joined {voice_channel.mention} — unmuted and undeafened"
 
 
 @client.event
