@@ -67,7 +67,12 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
     def test_external_bark_audio_files_exist(self):
         self.assertEqual(
             {sound["path"].name for sound in bot.EXTERNAL_BARK_SOUNDS.values()},
-            {"wolf-bark.mp3", "minecraft-bark.mp3", "bark-fart.mp3"},
+            {
+                "wolf-bark.mp3",
+                "minecraft-bark.mp3",
+                "bark-fart.mp3",
+                "jamalcrazyidek.mp3",
+            },
         )
         self.assertTrue(
             all(sound["path"].is_file() for sound in bot.EXTERNAL_BARK_SOUNDS.values())
@@ -634,14 +639,15 @@ class ExternalSayTests(unittest.TestCase):
             response.data,
         )
 
-    def test_page_has_buttons_for_each_bark_sound(self):
+    def test_page_has_buttons_for_each_sound_clip(self):
         response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Bark sounds", response.data)
+        self.assertIn(b"Sound clips", response.data)
         self.assertIn(b'value="wolf">Wolf bark</button>', response.data)
         self.assertIn(b'value="minecraft">Minecraft bark</button>', response.data)
         self.assertIn(b'value="fart">Bark fart</button>', response.data)
+        self.assertIn(b'value="jamal">Jamal crazy idek</button>', response.data)
 
     def test_page_has_text_to_speech_controls(self):
         response = self.client.get("/say")

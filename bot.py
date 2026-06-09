@@ -81,6 +81,10 @@ EXTERNAL_BARK_SOUNDS = {
         "path": Path(__file__).with_name("minecraft-bark.mp3"),
     },
     "fart": {"label": "Bark fart", "path": Path(__file__).with_name("bark-fart.mp3")},
+    "jamal": {
+        "label": "Jamal crazy idek",
+        "path": Path(__file__).with_name("jamalcrazyidek.mp3"),
+    },
 }
 DEFAULT_EXTERNAL_VOICE_CHANNEL_ID = 1447148315312521256
 
@@ -359,7 +363,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="join-button" type="submit" name="action" value="join">Join call</button>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
       </div>
-      <h3 class="sound-heading">Bark sounds</h3>
+      <h3 class="sound-heading">Sound clips</h3>
       <p class="voice-help">Play a sound after the bot has joined the voice call.</p>
       <div class="sound-actions">
         {% for sound_id, sound in bark_sounds.items() %}
