@@ -53,6 +53,7 @@ DEFAULT_OWNER_ID = 575057023046123520
 COOLDOWN_SECONDS = 2
 BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
+BARK_JOIN_DELAY_SECONDS = 0.25
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -1229,20 +1230,28 @@ async def join_author_voice(message) -> str:
         return "join a voice channel first, then send !join"
 
     voice_client = message.guild.voice_client
+    already_in_channel = False
     try:
         if voice_client and voice_client.is_connected():
             if voice_client.channel == voice_channel:
-                start_bark_task(message.guild)
-                return f"already in {voice_channel.mention}"
-            await voice_client.move_to(voice_channel)
+                already_in_channel = True
+            else:
+                await voice_client.move_to(voice_channel)
         else:
-            await voice_channel.connect(self_deaf=False, self_mute=False)
+            voice_client = await voice_channel.connect(self_deaf=False, self_mute=False)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
         print(f"Voice connection error: {error}")
         return "couldn't join that voice channel; check my Connect permission and try again"
 
     start_bark_task(message.guild)
-    return f"joined {voice_channel.mention}"
+    await asyncio.sleep(BARK_JOIN_DELAY_SECONDS)
+    try:
+        play_bark(voice_client)
+    except discord.DiscordException as error:
+        print(f"Join bark playback error: {error}")
+        return f"joined {voice_channel.mention}, but couldn't bark; check my Speak permission"
+
+    return f"already in {voice_channel.mention}" if already_in_channel else f"joined {voice_channel.mention}"
 
 
 async def leave_voice(message) -> str:

@@ -183,18 +183,28 @@ class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
-    async def test_join_connects_unmuted_and_undeafened(self):
-        voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
+    async def test_join_connects_and_barks_immediately(self):
+        voice_client = SimpleNamespace()
+        voice_channel = SimpleNamespace(
+            mention="#General",
+            connect=AsyncMock(return_value=voice_client),
+        )
         message = SimpleNamespace(
             guild=SimpleNamespace(voice_client=None),
             author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
         )
 
-        with patch.object(bot, "start_bark_task") as start_bark_task:
+        with (
+            patch.object(bot, "start_bark_task") as start_bark_task,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+            patch.object(bot, "play_bark", return_value=True) as play_bark,
+        ):
             response = await bot.join_author_voice(message)
 
         voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
         start_bark_task.assert_called_once_with(message.guild)
+        sleep.assert_awaited_once_with(bot.BARK_JOIN_DELAY_SECONDS)
+        play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #General")
 
     async def test_join_requires_the_user_to_be_in_voice(self):
@@ -220,16 +230,25 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(voice=SimpleNamespace(channel=new_channel)),
         )
 
-        with patch.object(bot, "start_bark_task") as start_bark_task:
+        with (
+            patch.object(bot, "start_bark_task") as start_bark_task,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
+            patch.object(bot, "play_bark", return_value=True) as play_bark,
+        ):
             response = await bot.join_author_voice(message)
 
         voice_client.move_to.assert_awaited_once_with(new_channel)
         start_bark_task.assert_called_once_with(message.guild)
+        play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #New")
 
     async def test_join_command_is_handled_without_calling_chat_model(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
+        voice_client = SimpleNamespace()
+        voice_channel = SimpleNamespace(
+            mention="#General",
+            connect=AsyncMock(return_value=voice_client),
+        )
         text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
         message = SimpleNamespace(
             author=SimpleNamespace(
@@ -245,11 +264,14 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
             patch.object(bot, "start_bark_task") as start_bark_task,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
+            patch.object(bot, "play_bark", return_value=True) as play_bark,
         ):
             await bot.on_message(message)
 
         voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
         start_bark_task.assert_called_once_with(message.guild)
+        play_bark.assert_called_once_with(voice_client)
         text_channel.send.assert_awaited_once_with("joined #General")
         call_model.assert_not_awaited()
 

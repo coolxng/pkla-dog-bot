@@ -57,7 +57,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
-| `!join` | Joins your current voice channel and plays a short generated bark every five minutes. The bot does not record or process incoming audio. |
+| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. The bot does not record or process incoming audio. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
 
