@@ -28,6 +28,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
+| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join/Leave controls. |
 
 ## Railway deploy steps
 
@@ -70,11 +71,11 @@ You can make the bot post a message from a web browser:
 3. In Railway, open the bot service, select **Settings** → **Networking**, and choose **Generate Domain**.
 4. When Railway asks for the target port, enter the port used by the bot's web server: `3000` by default, or the value of `PORT` if you set that variable yourself. Do not enter `8080` unless `PORT=8080` is configured.
 5. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
-6. Enter a message, then select **Send to Discord**.
+6. Enter a message, then select **Send to Discord**. The same page also has **Join call** and **Leave call** controls, with voice channel `1447148315312521256` selected by default. You can edit the channel ID before using either control.
 
 If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
 
-The `/say` page has no login or control token. Anyone who knows or discovers its public URL can make the bot post to the configured channel. The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, or the message exceeds Discord's 2,000-character limit.
+The `/say` page has no login or control token. Anyone who knows or discovers its public URL can make the bot post to the configured channel or control its voice connection. The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, or the message exceeds Discord's 2,000-character limit.
 
 ## Channel setup
 
