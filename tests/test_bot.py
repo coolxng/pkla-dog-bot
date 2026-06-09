@@ -55,28 +55,21 @@ class PingResponseTests(unittest.TestCase):
 
 
 class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
-    def test_bark_audio_produces_complete_pcm_frames(self):
-        source = bot.BarkAudioSource()
-        frames = []
+    def test_bark_audio_file_exists(self):
+        self.assertTrue(bot.BARK_AUDIO_PATH.is_file())
+        self.assertEqual(bot.BARK_AUDIO_PATH.name, "pkla-dog-bark.mp3")
 
-        while frame := source.read():
-            frames.append(frame)
-
-        self.assertGreater(len(frames), 1)
-        self.assertTrue(all(len(frame) == bot.BarkAudioSource.FRAME_BYTES for frame in frames))
-        self.assertTrue(any(frame != bytes(len(frame)) for frame in frames))
-        duration = len(frames) * 0.02
-        self.assertGreaterEqual(duration, 0.74)
-        self.assertLess(duration, 0.78)
-
-    def test_play_bark_starts_generated_audio(self):
+    def test_play_bark_starts_mp3_audio(self):
         voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
+        audio_source = Mock()
 
-        played = bot.play_bark(voice_client)
+        with patch.object(bot.discord, "FFmpegPCMAudio", return_value=audio_source) as ffmpeg_audio:
+            played = bot.play_bark(voice_client)
 
         self.assertTrue(played)
-        source = voice_client.play.call_args.args[0]
-        self.assertIsInstance(source, bot.BarkAudioSource)
+        ffmpeg_audio.assert_called_once_with(str(bot.BARK_AUDIO_PATH))
+        voice_client.play.assert_called_once()
+        self.assertIs(voice_client.play.call_args.args[0], audio_source)
         self.assertIn("after", voice_client.play.call_args.kwargs)
 
     def test_play_bark_does_not_interrupt_existing_audio(self):
