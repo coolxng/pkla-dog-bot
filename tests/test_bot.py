@@ -1,6 +1,11 @@
 import asyncio
+import io
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 from unittest.mock import AsyncMock, Mock, patch
 
 import bot
@@ -88,6 +93,21 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(played)
         voice_client.play.assert_not_called()
+
+    def test_temporary_audio_is_deleted_after_playback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "speech.mp3"
+            audio_path.write_bytes(b"mp3")
+            voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
+
+            with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
+                played = bot.play_audio(voice_client, audio_path, delete_after=True)
+                after_playback = voice_client.play.call_args.kwargs["after"]
+                after_playback(None)
+
+            self.assertTrue(played)
+            self.assertFalse(audio_path.exists())
+
 
     async def test_periodic_task_waits_then_plays_bark(self):
         voice_client = SimpleNamespace(is_connected=lambda: True)
@@ -279,6 +299,9 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.last_tts_at.clear()
+
     async def test_external_join_uses_requested_voice_channel(self):
         class FakeVoiceChannel:
             pass
@@ -346,6 +369,94 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
                 await bot.control_external_voice(
                     "play_sound", 1447148315312521256, "wolf"
                 )
+
+    async def test_external_speech_requires_joined_voice_client(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(id=456, voice_client=None)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
+                await bot.control_external_speech(
+                    1447148315312521256, "hello", "alloy"
+                )
+
+    async def test_external_speech_synthesizes_off_loop_and_plays_temporary_audio(self):
+        class FakeVoiceChannel:
+            pass
+
+        speech_path = Path("generated-speech.mp3")
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: False
+        )
+        channel = FakeVoiceChannel()
+        channel.mention = "#General"
+        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot.time, "monotonic", return_value=100.0),
+            patch.object(
+                bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
+            ) as to_thread,
+            patch.object(bot, "play_audio", return_value=True) as play_audio,
+        ):
+            response = await bot.control_external_speech(
+                1447148315312521256, "hello", "nova"
+            )
+
+        self.assertEqual(response, "speaking in #General")
+        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "nova")
+        play_audio.assert_called_once_with(voice_client, speech_path, delete_after=True)
+        self.assertEqual(bot.last_tts_at[456], 100.0)
+
+    async def test_external_speech_enforces_server_cooldown_before_synthesis(self):
+        class FakeVoiceChannel:
+            pass
+
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: False
+        )
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        bot.last_tts_at[456] = 100.0
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot.time, "monotonic", return_value=110.0),
+            patch.object(bot.asyncio, "to_thread", new=AsyncMock()) as to_thread,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cooldown"):
+                await bot.control_external_speech(
+                    1447148315312521256, "hello", "alloy"
+                )
+
+        to_thread.assert_not_awaited()
+
+    async def test_external_speech_rejects_busy_playback_before_synthesis(self):
+        class FakeVoiceChannel:
+            pass
+
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: True
+        )
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot.asyncio, "to_thread", new=AsyncMock()) as to_thread,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "already playing"):
+                await bot.control_external_speech(
+                    1447148315312521256, "hello", "alloy"
+                )
+
+        to_thread.assert_not_awaited()
 
     async def test_external_voice_rejects_unavailable_channel(self):
         with patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: None)):
@@ -438,6 +549,56 @@ class ConversationHistoryTests(unittest.TestCase):
         )
 
 
+class TextToSpeechTests(unittest.TestCase):
+    def test_openai_request_contains_configured_speech_values(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b"mp3-data"
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(bot.os.environ, {"OPENAI_API_KEY": "secret"}),
+            patch.object(bot.tempfile, "tempdir", directory),
+            patch.object(bot, "urlopen", return_value=FakeResponse()) as urlopen,
+        ):
+            speech_path = bot.synthesize_speech("hello", "nova")
+            speech_request = urlopen.call_args.args[0]
+            payload = json.loads(speech_request.data.decode("utf-8"))
+
+            self.assertEqual(speech_request.full_url, "https://api.openai.com/v1/audio/speech")
+            self.assertEqual(payload["model"], bot.OPENAI_TTS_MODEL)
+            self.assertEqual(payload["voice"], "nova")
+            self.assertEqual(payload["input"], "hello")
+            self.assertEqual(payload["response_format"], "mp3")
+            self.assertEqual(speech_path.read_bytes(), b"mp3-data")
+            speech_path.unlink()
+
+    def test_api_errors_do_not_leave_temporary_files(self):
+        error = HTTPError(
+            "https://api.openai.com/v1/audio/speech",
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(b'{"error":"rate limited"}'),
+        )
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(bot.os.environ, {"OPENAI_API_KEY": "secret"}),
+            patch.object(bot.tempfile, "tempdir", directory),
+            patch.object(bot, "urlopen", side_effect=error),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "could not generate speech"):
+                bot.synthesize_speech("hello", "alloy")
+
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+
 class OpenAIConfigTests(unittest.TestCase):
     def test_default_model_uses_chatgpt_like_alias(self):
         self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
@@ -481,6 +642,17 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'value="wolf">Wolf bark</button>', response.data)
         self.assertIn(b'value="minecraft">Minecraft bark</button>', response.data)
         self.assertIn(b'value="fart">Bark fart</button>', response.data)
+
+    def test_page_has_text_to_speech_controls(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Text to speech", response.data)
+        self.assertIn(b'name="speech_text"', response.data)
+        self.assertIn(b'name="voice"', response.data)
+        self.assertIn(b'value="alloy"', response.data)
+        self.assertIn(b'name="action" value="speak"', response.data)
+        self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
 
     def test_voice_channel_default_can_be_overridden(self):
         with patch.dict(bot.os.environ, {"EXTERNAL_VOICE_CHANNEL_ID": "123456789"}):
@@ -530,6 +702,68 @@ class ExternalSayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"Enter a message first", response.data)
+
+    def test_empty_speech_is_rejected(self):
+        response = self.client.post(
+            "/say",
+            data={
+                "action": "speak",
+                "voice_channel_id": "1447148315312521256",
+                "speech_text": "   ",
+                "voice": "alloy",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Enter text to speak first", response.data)
+
+    def test_over_limit_speech_is_rejected(self):
+        response = self.client.post(
+            "/say",
+            data={
+                "action": "speak",
+                "voice_channel_id": "1447148315312521256",
+                "speech_text": "x" * (bot.TTS_TEXT_LIMIT + 1),
+                "voice": "alloy",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Speech text cannot exceed", response.data)
+
+    def test_unknown_speech_voice_is_rejected(self):
+        response = self.client.post(
+            "/say",
+            data={
+                "action": "speak",
+                "voice_channel_id": "1447148315312521256",
+                "speech_text": "hello",
+                "voice": "arbitrary",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Unknown text-to-speech voice", response.data)
+
+    def test_valid_speech_form_submits_selected_values(self):
+        with patch.object(
+            bot, "submit_external_speech", return_value="speaking in #General"
+        ) as submit_speech:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "speak",
+                    "voice_channel_id": "1447148315312521256",
+                    "speech_text": "  hello there  ",
+                    "voice": "nova",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("status=speaking+in+%23General", response.headers["Location"])
+        submit_speech.assert_called_once_with(
+            1447148315312521256, "hello there", "nova"
+        )
 
     def test_join_voice_form_uses_selected_channel(self):
         with patch.object(

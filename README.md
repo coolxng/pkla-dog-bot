@@ -20,6 +20,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | --- | --- | --- |
 | `OPENAI_MODEL` | `chat-latest` | Model used for normal bot replies. `chat-latest` is the API model alias intended for chat-style behavior close to ChatGPT. Override this if you need a specific model or lower cost. |
 | `OPENAI_SEARCH_MODEL` | `OPENAI_MODEL` or `chat-latest` | Model used for OpenAI web search requests. |
+| `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | Model used by the OpenAI Speech API for **Speak in call**. |
+| `OPENAI_TTS_VOICE` | `alloy` | Default voice selected on `/say`. Unsupported values fall back to `alloy`; the page only accepts voices from the server-side allowlist. |
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
 | `OPENAI_REASONING_EFFORT` | `none` for GPT-5 models, otherwise `minimal` | Reasoning effort for chat completions when supported. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
@@ -28,7 +30,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
-| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join/Leave controls. |
+| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, and TTS controls. |
 
 ## Railway deploy steps
 
@@ -71,11 +73,14 @@ You can make the bot post a message from a web browser:
 3. In Railway, open the bot service, select **Settings** → **Networking**, and choose **Generate Domain**.
 4. When Railway asks for the target port, enter the port used by the bot's web server: `3000` by default, or the value of `PORT` if you set that variable yourself. Do not enter `8080` unless `PORT=8080` is configured.
 5. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
-6. Enter a message, then select **Send to Discord**. The same page also has **Join call** and **Leave call** controls, plus buttons for the wolf bark, Minecraft bark, and bark-fart sounds. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls. Join the call before playing a sound.
+6. Enter a message, then select **Send to Discord**. The same page also has **Join call** and **Leave call** controls, plus buttons for the wolf bark, Minecraft bark, and bark-fart sounds. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls.
+7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, choose one of the allowed voices, and select **Speak in call**. The bot must remain connected to that selected channel, and each server can start TTS at most once every 30 seconds.
 
 If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
 
-The `/say` page has no login or control token. Anyone who knows or discovers its public URL can make the bot post to the configured channel or control its voice connection. The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, or the message exceeds Discord's 2,000-character limit.
+The `/say` page has no login or control token. Anyone who knows or discovers its public URL can make the bot post to the configured channel, control its voice connection, and request billable OpenAI TTS generation. Keep the URL private or add authentication before exposing it broadly. The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, the selected voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active.
+
+OpenAI text-to-speech requests use the billable Speech API associated with `OPENAI_API_KEY`. The cooldown and text limit reduce accidental usage, but they are not a substitute for authentication or provider-side budget limits.
 
 ## Channel setup
 
@@ -89,7 +94,7 @@ If `TARGET_CHANNEL_IDS` is unset or invalid, the bot falls back to the existing 
 
 ## API provider setup
 
-OpenAI is the primary provider for chat and web search. Set `OPENAI_API_KEY` and optionally override `OPENAI_MODEL`. The default `chat-latest` model is chosen for ChatGPT-like chat behavior, while deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. OpenAI web search runs first when available. Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers if configured or available.
+OpenAI is the primary provider for chat, web search, and optional text to speech. Set `OPENAI_API_KEY` and optionally override `OPENAI_MODEL`, `OPENAI_TTS_MODEL`, or `OPENAI_TTS_VOICE`. The default `chat-latest` model is chosen for ChatGPT-like chat behavior, while deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. OpenAI web search runs first when available. Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers if configured or available.
 
 ## Known limitations
 

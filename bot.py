@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import time
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -11,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from threading import Thread
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -45,6 +46,25 @@ def start_web_server():
 
 
 DEFAULT_OPENAI_MODEL = "chat-latest"
+# OpenAI documents gpt-4o-mini-tts and alloy as supported Speech API defaults.
+OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+OPENAI_TTS_VOICES = {
+    "alloy": "Alloy",
+    "ash": "Ash",
+    "coral": "Coral",
+    "echo": "Echo",
+    "fable": "Fable",
+    "nova": "Nova",
+    "onyx": "Onyx",
+    "sage": "Sage",
+    "shimmer": "Shimmer",
+}
+OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "alloy")
+if OPENAI_TTS_VOICE not in OPENAI_TTS_VOICES:
+    print(f"Ignoring unsupported OPENAI_TTS_VOICE: {OPENAI_TTS_VOICE!r}")
+    OPENAI_TTS_VOICE = "alloy"
+TTS_TEXT_LIMIT = 500
+TTS_COOLDOWN_SECONDS = 30
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
@@ -287,8 +307,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
     h1 { margin-top: 0; }
     label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
-    input, textarea, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
-    input, textarea { width: 100%; border: 1px solid #4b5563; background: #111827; color: inherit; }
+    input, textarea, select, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
+    input, textarea, select { width: 100%; border: 1px solid #4b5563; background: #111827; color: inherit; }
     textarea { min-height: 9rem; resize: vertical; }
     button { border: 0; color: white; font-weight: 700; cursor: pointer; }
     .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
@@ -299,6 +319,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .voice-section .sound-heading { margin-top: 1.25rem; }
     .sound-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
     .sound-button { background: #7c3aed; }
+    .speak-button { width: 100%; margin-top: .75rem; background: #0369a1; }
+    .speech-text { min-height: 6rem; }
     .join-button { background: #047857; }
     .leave-button { background: #b91c1c; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
@@ -344,6 +366,17 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="sound-button" type="submit" name="sound" value="{{ sound_id }}">{{ sound.label }}</button>
         {% endfor %}
       </div>
+      <h3 class="sound-heading">Text to speech</h3>
+      <p class="voice-help">Speak up to {{ tts_text_limit }} characters. The bot must already be in the selected voice channel.</p>
+      <label for="speech-text">Speech text</label>
+      <textarea class="speech-text" id="speech-text" name="speech_text" maxlength="{{ tts_text_limit }}"></textarea>
+      <label for="tts-voice">Voice</label>
+      <select id="tts-voice" name="voice">
+        {% for voice_id, voice_label in tts_voices.items() %}
+        <option value="{{ voice_id }}"{% if voice_id == tts_default_voice %} selected{% endif %}>{{ voice_label }}</option>
+        {% endfor %}
+      </select>
+      <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
       <input type="hidden" name="action" value="play_sound">
     </form>
     <section class="ping-section" aria-labelledby="ping-heading">
@@ -454,6 +487,13 @@ def submit_external_message(message: str) -> None:
     )
 
 
+def submit_external_speech(channel_id: int, text: str, voice: str) -> str:
+    return run_discord_coroutine(
+        control_external_speech(channel_id, text, voice),
+        "Discord took too long to start speaking",
+    )
+
+
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
     if action not in {"join", "leave", "play_sound"}:
         raise ValueError("Unknown voice action")
@@ -474,7 +514,7 @@ def external_say():
     response_status = 200
     if request.method == "POST":
         action = request.form.get("action", "send")
-        if action in {"join", "leave", "play_sound"}:
+        if action in {"join", "leave", "play_sound", "speak"}:
             raw_channel_id = request.form.get("voice_channel_id", "").strip()
             try:
                 channel_id = int(raw_channel_id)
@@ -488,6 +528,18 @@ def external_say():
                         status = submit_external_voice_action(
                             action, channel_id, request.form.get("sound")
                         )
+                    elif action == "speak":
+                        speech_text = request.form.get("speech_text", "").strip()
+                        voice = request.form.get("voice", "")
+                        if not speech_text:
+                            raise ValueError("Enter text to speak first.")
+                        if len(speech_text) > TTS_TEXT_LIMIT:
+                            raise ValueError(
+                                f"Speech text cannot exceed {TTS_TEXT_LIMIT} characters."
+                            )
+                        if voice not in OPENAI_TTS_VOICES:
+                            raise ValueError("Unknown text-to-speech voice.")
+                        status = submit_external_speech(channel_id, speech_text, voice)
                     else:
                         status = submit_external_voice_action(action, channel_id)
                     return redirect(url_for("external_say", status=status), code=303)
@@ -527,6 +579,9 @@ def external_say():
         ping_members=external_ping_members(),
         bark_sounds=EXTERNAL_BARK_SOUNDS,
         voice_channel_id=external_voice_channel_id(),
+        tts_text_limit=TTS_TEXT_LIMIT,
+        tts_voices=OPENAI_TTS_VOICES,
+        tts_default_voice=OPENAI_TTS_VOICE,
     ), response_status
 
 
@@ -726,6 +781,60 @@ def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> d
     request = Request(url, headers=headers or {})
     with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def synthesize_speech(text: str, voice: str) -> Path:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    payload = {
+        "model": OPENAI_TTS_MODEL,
+        "voice": voice,
+        "input": text,
+        "response_format": "mp3",
+    }
+    body = json.dumps(payload).encode("utf-8")
+    speech_path: Path | None = None
+    request_headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    speech_request = Request(
+        "https://api.openai.com/v1/audio/speech",
+        data=body,
+        headers=request_headers,
+        method="POST",
+    )
+    try:
+        with urlopen(speech_request, timeout=30) as response:
+            audio_data = response.read()
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix="discord-tts-", suffix=".mp3"
+        )
+        speech_path = Path(temporary_name)
+        with os.fdopen(file_descriptor, "wb") as speech_file:
+            speech_file.write(audio_data)
+        return speech_path
+    except HTTPError as error:
+        if speech_path is not None:
+            speech_path.unlink(missing_ok=True)
+        error_body = error.read().decode("utf-8", errors="replace")
+        print(
+            f"OpenAI speech HTTP error {error.code} {error.reason}: "
+            f"{error_body[:1000]}"
+        )
+        raise RuntimeError("OpenAI could not generate speech right now") from error
+    except URLError as error:
+        if speech_path is not None:
+            speech_path.unlink(missing_ok=True)
+        print(f"OpenAI speech connection error: {error.reason}")
+        raise RuntimeError("OpenAI speech is unavailable right now") from error
+    except Exception:
+        if speech_path is not None:
+            speech_path.unlink(missing_ok=True)
+        raise
 
 
 def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: int = 30) -> dict:
@@ -1174,17 +1283,30 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
 
 bark_tasks: dict[int, asyncio.Task] = {}
 last_command_bark_at: dict[int, float] = {}
+last_tts_at: dict[int, float] = {}
 
 
-def play_audio(voice_client, audio_path: Path) -> bool:
+def play_audio(voice_client, audio_path: Path, *, delete_after: bool = False) -> bool:
+    def cleanup() -> None:
+        if delete_after:
+            audio_path.unlink(missing_ok=True)
+
     if voice_client.is_playing():
+        cleanup()
         return False
 
     def after_playback(error):
-        if error:
-            print(f"Audio playback error: {error}")
+        try:
+            if error:
+                print(f"Audio playback error: {error}")
+        finally:
+            cleanup()
 
-    voice_client.play(discord.FFmpegPCMAudio(str(audio_path)), after=after_playback)
+    try:
+        voice_client.play(discord.FFmpegPCMAudio(str(audio_path)), after=after_playback)
+    except Exception:
+        cleanup()
+        raise
     return True
 
 
@@ -1310,6 +1432,34 @@ async def leave_voice(message) -> str:
     if message.guild is None:
         return "use !leave in the server"
     return await leave_guild_voice(message.guild)
+
+
+async def control_external_speech(channel_id: int, text: str, voice: str) -> str:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+
+    guild = voice_channel.guild
+    voice_client = guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("Join the selected voice call before speaking")
+    if voice_client.is_playing():
+        raise RuntimeError("Another sound is already playing")
+
+    now = time.monotonic()
+    last_speech = last_tts_at.get(guild.id)
+    if last_speech is not None:
+        remaining = TTS_COOLDOWN_SECONDS - (now - last_speech)
+        if remaining > 0:
+            raise RuntimeError(
+                f"Text-to-speech cooldown — wait {math.ceil(remaining)} seconds"
+            )
+    last_tts_at[guild.id] = now
+
+    speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
+    if not play_audio(voice_client, speech_path, delete_after=True):
+        raise RuntimeError("Another sound is already playing")
+    return f"speaking in {voice_channel.mention}"
 
 
 async def control_external_voice(
