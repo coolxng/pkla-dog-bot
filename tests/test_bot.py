@@ -348,6 +348,82 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, "left the voice channel")
         leave_voice.assert_awaited_once_with(guild)
 
+    async def test_external_stop_stops_playing_audio_in_selected_channel(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: True,
+            stop=Mock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_voice("stop", 1447148315312521256)
+
+        self.assertEqual(response, "stopped audio in #General")
+        voice_client.stop.assert_called_once_with()
+
+    async def test_external_stop_reports_when_nothing_is_playing(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: False,
+            stop=Mock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_voice("stop", 1447148315312521256)
+
+        self.assertEqual(response, "nothing is playing")
+        voice_client.stop.assert_not_called()
+
+    async def test_external_stop_requires_connected_voice_client(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(voice_client=None)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
+                await bot.control_external_voice("stop", 1447148315312521256)
+
+    async def test_external_stop_requires_selected_voice_channel_connection(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=object(),
+            is_connected=lambda: True,
+            is_playing=lambda: True,
+            stop=Mock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "different voice channel"):
+                await bot.control_external_voice("stop", 1447148315312521256)
+
+        voice_client.stop.assert_not_called()
+
     async def test_external_sound_plays_selected_audio(self):
         class FakeVoiceChannel:
             pass
@@ -763,6 +839,8 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Voice call", response.data)
         self.assertIn(b'name="action" value="join"', response.data)
+        self.assertIn(b'name="action" value="stop"', response.data)
+        self.assertIn(b"Stop audio", response.data)
         self.assertIn(b'name="action" value="leave"', response.data)
         self.assertIn(
             b'value="1447148315312521256"',
@@ -920,6 +998,24 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn("status=joined+General", response.headers["Location"])
         submit_voice.assert_called_once_with("join", 1447148315312521256)
 
+    def test_stop_audio_form_uses_selected_channel(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="stopped audio in #General",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "stop",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("status=stopped+audio+in+%23General", response.headers["Location"])
+        submit_voice.assert_called_once_with("stop", 1447148315312521256)
+
     def test_sound_button_plays_selected_sound(self):
         with patch.object(
             bot,
@@ -999,6 +1095,266 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b"Message sent", redirected_response.data)
         self.assertEqual(refreshed_response.status_code, 200)
         self.assertEqual(submitted_messages, ["hello Discord"])
+
+
+class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):
+    async def test_upload_requires_connected_voice_client(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(voice_client=None)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            audio_path = Path(temporary_directory, "clip.mp3")
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot, "client", SimpleNamespace(get_channel=lambda _channel_id: channel)),
+                patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
+                    await bot.control_external_uploaded_audio(123, audio_path)
+
+            self.assertFalse(audio_path.exists())
+
+    async def test_upload_requires_exact_selected_voice_channel(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=object(),
+            is_connected=lambda: True,
+            is_playing=lambda: False,
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            audio_path = Path(temporary_directory, "clip.mp3")
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot, "client", SimpleNamespace(get_channel=lambda _channel_id: channel)),
+                patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "different voice channel"):
+                    await bot.control_external_uploaded_audio(123, audio_path)
+
+            self.assertFalse(audio_path.exists())
+
+    async def test_upload_rejects_audio_while_another_clip_is_playing(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: True,
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            audio_path = Path(temporary_directory, "clip.mp3")
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot, "client", SimpleNamespace(get_channel=lambda _channel_id: channel)),
+                patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "already playing"):
+                    await bot.control_external_uploaded_audio(123, audio_path)
+
+            self.assertFalse(audio_path.exists())
+
+    async def test_upload_passes_delete_after_to_play_audio(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: False,
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            audio_path = Path(temporary_directory, "clip.mp3")
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot, "client", SimpleNamespace(get_channel=lambda _channel_id: channel)),
+                patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+                patch.object(bot, "play_audio", return_value=True) as play_audio,
+            ):
+                response = await bot.control_external_uploaded_audio(123, audio_path)
+
+            self.assertEqual(response, "playing uploaded MP3 in #General")
+            play_audio.assert_called_once_with(voice_client, audio_path, delete_after=True)
+            audio_path.unlink()
+
+    async def test_upload_removes_file_when_playback_start_raises(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: False,
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            audio_path = Path(temporary_directory, "clip.mp3")
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot, "client", SimpleNamespace(get_channel=lambda _channel_id: channel)),
+                patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+                patch.object(bot, "play_audio", side_effect=RuntimeError("ffmpeg failed")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "ffmpeg failed"):
+                    await bot.control_external_uploaded_audio(123, audio_path)
+
+            self.assertFalse(audio_path.exists())
+
+    def test_submit_upload_removes_file_on_discord_error_or_timeout(self):
+        for message in ("Discord failed", "Discord took too long"):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary_directory:
+                audio_path = Path(temporary_directory, "clip.mp3")
+                audio_path.write_bytes(b"ID3audio")
+                with (
+                    patch.object(bot, "control_external_uploaded_audio", new=Mock(return_value=Mock())),
+                    patch.object(bot, "run_discord_coroutine", side_effect=RuntimeError(message)),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, message):
+                        bot.submit_external_uploaded_audio(123, audio_path)
+                self.assertFalse(audio_path.exists())
+
+
+class ExternalSayUploadFormTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    @staticmethod
+    def upload_data(content=b"ID3audio", filename="clip.mp3", channel_id="123"):
+        return {
+            "action": "upload_audio",
+            "voice_channel_id": channel_id,
+            "audio_file": (io.BytesIO(content), filename),
+        }
+
+    def test_page_renders_right_side_multipart_upload_panel(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'class="control-grid"', response.data)
+        self.assertIn(b'class="upload-panel"', response.data)
+        self.assertIn(b'enctype="multipart/form-data"', response.data)
+        self.assertIn(b'name="action" value="upload_audio"', response.data)
+        self.assertIn(b'name="audio_file"', response.data)
+        self.assertIn(b'accept=".mp3,audio/mpeg"', response.data)
+        self.assertIn(b"The bot must already be connected", response.data)
+        self.assertIn(str(bot.MAX_UPLOADED_MP3_BYTES // (1024 * 1024)).encode(), response.data)
+
+    def test_valid_upload_submits_channel_and_redirects(self):
+        submitted = []
+
+        def submit(channel_id, audio_path):
+            submitted.append((channel_id, audio_path))
+            return "playing uploaded MP3 in #General"
+
+        with patch.object(bot, "submit_external_uploaded_audio", side_effect=submit):
+            response = self.client.post(
+                "/say", data=self.upload_data(), content_type="multipart/form-data"
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("status=playing+uploaded+MP3+in+%23General", response.headers["Location"])
+        self.assertEqual(submitted[0][0], 123)
+        self.assertTrue(submitted[0][1].is_file())
+        submitted[0][1].unlink()
+
+    def test_missing_empty_non_mp3_malformed_and_oversized_uploads_are_rejected(self):
+        cases = (
+            (None, b"Choose an MP3 file"),
+            (self.upload_data(content=b""), b"empty"),
+            (self.upload_data(filename="clip.wav"), b".mp3 extension"),
+            (self.upload_data(content=b"not an mp3"), b"does not appear"),
+        )
+        for data, expected in cases:
+            with self.subTest(expected=expected):
+                response = self.client.post(
+                    "/say",
+                    data=data or {"action": "upload_audio", "voice_channel_id": "123"},
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(expected, response.data)
+
+        with patch.object(bot, "MAX_UPLOADED_MP3_BYTES", 4):
+            response = self.client.post(
+                "/say",
+                data=self.upload_data(content=b"ID3too large"),
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"cannot exceed", response.data)
+
+    def test_submitted_filename_cannot_choose_temporary_path(self):
+        submitted_paths = []
+        with patch.object(
+            bot,
+            "submit_external_uploaded_audio",
+            side_effect=lambda _channel_id, path: submitted_paths.append(path) or "playing",
+        ):
+            response = self.client.post(
+                "/say",
+                data=self.upload_data(filename="../../chosen-by-user.mp3"),
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertNotEqual(submitted_paths[0].name, "chosen-by-user.mp3")
+        self.assertTrue(submitted_paths[0].name.endswith(".mp3"))
+        submitted_paths[0].unlink()
+
+    def test_validation_failure_removes_generated_temporary_file(self):
+        original_named_temporary_file = tempfile.NamedTemporaryFile
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            def local_temporary_file(*args, **kwargs):
+                kwargs["dir"] = temporary_directory
+                return original_named_temporary_file(*args, **kwargs)
+
+            with patch.object(bot.tempfile, "NamedTemporaryFile", side_effect=local_temporary_file):
+                response = self.client.post(
+                    "/say",
+                    data=self.upload_data(content=b"invalid"),
+                    content_type="multipart/form-data",
+                )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(list(Path(temporary_directory).iterdir()), [])
+
+    def test_flask_request_limit_returns_readable_413(self):
+        original_limit = bot.app.config["MAX_CONTENT_LENGTH"]
+        bot.app.config["MAX_CONTENT_LENGTH"] = 100
+        try:
+            response = self.client.post(
+                "/say",
+                data=self.upload_data(content=b"ID3" + b"x" * 200),
+                content_type="multipart/form-data",
+            )
+        finally:
+            bot.app.config["MAX_CONTENT_LENGTH"] = original_limit
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn(b"Upload request is too large", response.data)
+
+    def test_authentication_is_required_when_control_token_is_enabled(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
+            unauthorized = self.client.get("/say")
+            authorized = self.client.get(
+                "/say",
+                headers={"Authorization": "Basic dXNlcjpzZWNyZXQtdG9rZW4="},
+            )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertIn("Basic", unauthorized.headers["WWW-Authenticate"])
+        self.assertEqual(authorized.status_code, 200)
 
 
 if __name__ == "__main__":
