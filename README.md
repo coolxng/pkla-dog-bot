@@ -73,7 +73,7 @@ You can make the bot post a message from a web browser:
 3. In Railway, open the bot service, select **Settings** → **Networking**, and choose **Generate Domain**.
 4. When Railway asks for the target port, enter the port used by the bot's web server: `3000` by default, or the value of `PORT` if you set that variable yourself. Do not enter `8080` unless `PORT=8080` is configured.
 5. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
-6. Enter a message, then select **Send to Discord**. The same page also has **Join call** and **Leave call** controls, plus buttons for the wolf bark, Minecraft bark, and bark-fart sounds. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls.
+6. Enter a message, then select **Send to Discord**. The same page also has **Join call** and **Leave call** controls, plus buttons for the wolf bark, Minecraft bark, bark-fart, and Jamal crazy idek sounds. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls.
 7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, choose one of the allowed voices, and select **Speak in call**. The bot must remain connected to that selected channel, and each server can start TTS at most once every 30 seconds.
 
 If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
