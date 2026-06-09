@@ -6,6 +6,7 @@ import os
 import random
 import re
 import struct
+import time
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
@@ -51,6 +52,7 @@ DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 14980224
 DEFAULT_OWNER_ID = 575057023046123520
 COOLDOWN_SECONDS = 2
 BARK_INTERVAL_SECONDS = 5 * 60
+BARK_COMMAND_COOLDOWN_SECONDS = 5
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -1116,6 +1118,7 @@ class BarkAudioSource(discord.AudioSource):
 
 
 bark_tasks: dict[int, asyncio.Task] = {}
+last_command_bark_at: dict[int, float] = {}
 
 
 def play_bark(voice_client) -> bool:
@@ -1128,6 +1131,32 @@ def play_bark(voice_client) -> bool:
 
     voice_client.play(BarkAudioSource(), after=after_playback)
     return True
+
+
+def bark_on_command(message) -> str:
+    if message.guild is None:
+        return "use !bark in the server"
+
+    voice_client = message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        return "join me to a voice channel first with !join"
+
+    now = time.monotonic()
+    last_bark = last_command_bark_at.get(message.guild.id)
+    if last_bark is not None:
+        remaining = BARK_COMMAND_COOLDOWN_SECONDS - (now - last_bark)
+        if remaining > 0:
+            return f"bark cooldown — wait {math.ceil(remaining)} seconds"
+
+    try:
+        if not play_bark(voice_client):
+            return "already barking"
+    except discord.DiscordException as error:
+        print(f"Bark playback error: {error}")
+        return "couldn't bark; check my Speak permission and try again"
+
+    last_command_bark_at[message.guild.id] = now
+    return "woof"
 
 
 async def bark_periodically(guild) -> None:
@@ -1204,6 +1233,7 @@ async def leave_voice(message) -> str:
         return "couldn't leave the voice channel; try again"
 
     stop_bark_task(message.guild.id)
+    last_command_bark_at.pop(message.guild.id, None)
     return "left the voice channel"
 
 
@@ -1239,6 +1269,10 @@ async def on_message(message):
 
     if normalized_content == "!leave":
         await message.channel.send(await leave_voice(message))
+        return
+
+    if normalized_content == "!bark":
+        await message.channel.send(bark_on_command(message))
         return
 
     ping_response = ping_response_for(content)
