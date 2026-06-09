@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import bot
 
@@ -49,6 +51,48 @@ class PingResponseTests(unittest.TestCase):
 
     def test_unrelated_text_does_not_ping(self):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
+
+
+class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
+    async def test_join_connects_self_deafened_and_self_muted(self):
+        voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=None),
+            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+        )
+
+        response = await bot.join_author_voice(message)
+
+        voice_channel.connect.assert_awaited_once_with(self_deaf=True, self_mute=True)
+        self.assertEqual(response, "joined #General — self-deafened and not listening")
+
+    async def test_join_requires_the_user_to_be_in_voice(self):
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=None),
+            author=SimpleNamespace(voice=None),
+        )
+
+        response = await bot.join_author_voice(message)
+
+        self.assertEqual(response, "join a voice channel first, then send !join")
+
+    async def test_join_moves_an_existing_voice_connection(self):
+        old_channel = SimpleNamespace(mention="#Old")
+        new_channel = SimpleNamespace(mention="#New")
+        voice_client = SimpleNamespace(
+            channel=old_channel,
+            is_connected=lambda: True,
+            move_to=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=voice_client),
+            author=SimpleNamespace(voice=SimpleNamespace(channel=new_channel)),
+        )
+
+        response = await bot.join_author_voice(message)
+
+        voice_client.move_to.assert_awaited_once_with(new_channel)
+        self.assertEqual(response, "joined #New — self-deafened and not listening")
 
 
 class ConversationHistoryTests(unittest.TestCase):
