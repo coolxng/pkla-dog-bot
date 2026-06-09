@@ -12,6 +12,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_API_KEY` | Yes | OpenAI API key for chat completions and OpenAI web search. |
 | `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. Defaults to the existing hardcoded channel list if unset. |
 | `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. Defaults to the existing owner ID if unset. |
+| `EXTERNAL_CHANNEL_ID` | Required for `/say` | Discord channel ID where messages from the external send page are posted. It must also appear in `TARGET_CHANNEL_IDS`. |
 
 ## Optional environment variables
 
@@ -47,11 +48,30 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `ping ryan` | Mentions Ryan. |
 | `ping jamal` | Mentions Jamal. |
 | `ping jaedon` / `ping j` | Mentions Jaedon. |
+| `ping reqo` | Mentions Reqo. |
+| `ping hayden` | Mentions Hayden. |
+| `ping 6uke` | Mentions 6uke. |
+| `ping tom pearls` | Mentions Tom Pearls. |
 | `!reset` or `!clear` | Clears the active conversation history: your DM history in DMs, or the current channel's shared history in server channels. |
 | `!remember <fact>` | Adds a shared memory fact manually. |
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
+
+## Send a message from outside Discord
+
+You can make the bot post a message from a web browser:
+
+1. Set `EXTERNAL_CHANNEL_ID` to the channel where the bot should speak. That ID must also be included in `TARGET_CHANNEL_IDS`.
+2. Restart or redeploy the bot.
+3. In Railway, open the bot service, select **Settings** → **Networking**, and choose **Generate Domain**.
+4. When Railway asks for the target port, enter the port used by the bot's web server: `3000` by default, or the value of `PORT` if you set that variable yourself. Do not enter `8080` unless `PORT=8080` is configured.
+5. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
+6. Enter a message, then select **Send to Discord**.
+
+If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
+
+The `/say` page has no login or control token. Anyone who knows or discovers its public URL can make the bot post to the configured channel. The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, or the message exceeds Discord's 2,000-character limit.
 
 ## Channel setup
 
