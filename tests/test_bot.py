@@ -620,9 +620,24 @@ class OpenAIConfigTests(unittest.TestCase):
     def test_gpt5_reasoning_effort_defaults_to_none(self):
         self.assertEqual(bot.default_reasoning_effort("gpt-5.5"), "none")
 
-    def test_system_prompt_keeps_chatgpt_like_behavior(self):
-        self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
-        self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
+    def test_system_prompt_uses_natural_discord_conversation_style(self):
+        self.assertIn("real person participating in a Discord conversation", bot.SYSTEM_PROMPT)
+        self.assertIn("usually reply with one short sentence", bot.SYSTEM_PROMPT)
+        self.assertIn("not as a template for your wording", bot.SYSTEM_PROMPT)
+
+    def test_system_prompt_avoids_repetitive_meme_post_style(self):
+        self.assertIn("Do not write like a meme account or a viral post", bot.SYSTEM_PROMPT)
+        self.assertIn("Do not merely echo the user's words and add emojis", bot.SYSTEM_PROMPT)
+        self.assertIn("Usually use zero or one", bot.SYSTEM_PROMPT)
+
+    def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
+        self.assertIn("`!join`", bot.SYSTEM_PROMPT)
+        self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
+        self.assertIn("does not listen to, record, or process incoming voice audio", bot.SYSTEM_PROMPT)
+        self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
+        self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
+        self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
+        self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
         self.assertIn("`!join`", bot.SYSTEM_PROMPT)
