@@ -3,13 +3,12 @@ import base64
 import json
 import math
 import os
-import random
 import re
-import struct
 import time
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from threading import Thread
 from urllib.error import HTTPError
@@ -54,6 +53,7 @@ COOLDOWN_SECONDS = 2
 BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
 BARK_JOIN_DELAY_SECONDS = 0.25
+BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -1074,76 +1074,6 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
         print(f"[universal memory] stored: {fact}")
 
 
-class BarkAudioSource(discord.AudioSource):
-    SAMPLE_RATE = 48_000
-    FRAME_BYTES = 3_840
-    _audio_data: bytes | None = None
-
-    def __init__(self):
-        if self.__class__._audio_data is None:
-            self.__class__._audio_data = self._generate_audio()
-        self.position = 0
-
-    @classmethod
-    def _generate_audio(cls) -> bytes:
-        rng = random.Random(0)
-        bursts = ((0.0, 0.22, 145.0), (0.34, 0.66, 125.0))
-        total_samples = int(cls.SAMPLE_RATE * (bursts[-1][1] + 0.08))
-        excitation = [0.0] * total_samples
-
-        for start, end, base_pitch in bursts:
-            start_sample = int(start * cls.SAMPLE_RATE)
-            end_sample = int(end * cls.SAMPLE_RATE)
-            phase = 0.0
-            for sample_index in range(start_sample, end_sample):
-                elapsed = (sample_index - start_sample) / cls.SAMPLE_RATE
-                progress = elapsed / (end - start)
-                attack = 1.0 - math.exp(-elapsed * 180.0)
-                envelope = attack * math.exp(-progress * 3.8)
-                pitch = base_pitch * (1.0 - 0.48 * progress)
-                phase += 2.0 * math.pi * pitch / cls.SAMPLE_RATE
-                throat = math.tanh(
-                    2.8 * (
-                        math.sin(phase)
-                        + 0.42 * math.sin(2.0 * phase)
-                        + 0.18 * math.sin(3.0 * phase)
-                    )
-                )
-                breath = rng.uniform(-1.0, 1.0)
-                breath_mix = 0.72 * math.exp(-progress * 8.0) + 0.12
-                excitation[sample_index] = envelope * (0.72 * throat + breath_mix * breath)
-
-        filtered = [0.0] * total_samples
-        for frequency, radius, gain in (
-            (430.0, 0.975, 0.72),
-            (880.0, 0.965, 0.42),
-            (1_650.0, 0.94, 0.18),
-        ):
-            coefficient = 2.0 * radius * math.cos(2.0 * math.pi * frequency / cls.SAMPLE_RATE)
-            previous = 0.0
-            previous_previous = 0.0
-            for sample_index, value in enumerate(excitation):
-                resonated = value + coefficient * previous - (radius * radius) * previous_previous
-                filtered[sample_index] += gain * resonated
-                previous_previous = previous
-                previous = resonated
-
-        peak = max(abs(value) for value in filtered) or 1.0
-        scale = 28_000.0 / peak
-        samples = []
-        for value in filtered:
-            sample = max(-32_768, min(32_767, int(value * scale)))
-            samples.extend((sample, sample))
-
-        return struct.pack(f"<{len(samples)}h", *samples)
-
-    def read(self) -> bytes:
-        if self._audio_data is None or self.position >= len(self._audio_data):
-            return b""
-        frame = self._audio_data[self.position:self.position + self.FRAME_BYTES]
-        self.position += self.FRAME_BYTES
-        return frame.ljust(self.FRAME_BYTES, b"\0")
-
 
 bark_tasks: dict[int, asyncio.Task] = {}
 last_command_bark_at: dict[int, float] = {}
@@ -1157,7 +1087,7 @@ def play_bark(voice_client) -> bool:
         if error:
             print(f"Bark playback error: {error}")
 
-    voice_client.play(BarkAudioSource(), after=after_playback)
+    voice_client.play(discord.FFmpegPCMAudio(str(BARK_AUDIO_PATH)), after=after_playback)
     return True
 
 
