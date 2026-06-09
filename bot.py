@@ -145,7 +145,10 @@ PING_RESPONSES = {
     "ping jamal": "<@1247415021080678452>",
     "ping jaedon": "<@1149829095958528020>",
     "ping j": "<@1149829095958528020>",
-    "ping red": "<@375402301646700546>",
+    "ping reqo": "<@375402301646700546>",
+    "ping hayden": "<@1069346669566623928>",
+    "ping 6uke": "<@1135595806171332760>",
+    "ping tom pearls": "<@607667203126591509>",
 }
 PING_REQUEST_PREFIX_RE = re.compile(
     r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*",
@@ -169,9 +172,11 @@ def external_ping_members() -> list[dict[str, str]]:
         if mention in seen_mentions:
             continue
         seen_mentions.add(mention)
+        member_name = trigger.removeprefix("ping ")
+        display_name = member_name if member_name[0].isdigit() else member_name.title()
         members.append(
             {
-                "name": trigger.removeprefix("ping ").title(),
+                "name": display_name,
                 "user_id": mention.removeprefix("<@").removesuffix(">"),
                 "mention": mention,
             }
@@ -295,6 +300,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     <form method="post">
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
+      <button class="send-button" type="submit">Send to Discord</button>
       <section class="ping-section" aria-labelledby="ping-heading">
         <h2 id="ping-heading">Ping a member</h2>
         <p class="ping-help">Select Ping to add a mention to the message, or Copy to copy the ready-to-paste mention.</p>
@@ -311,7 +317,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           {% endfor %}
         </div>
       </section>
-      <button class="send-button" type="submit">Send to Discord</button>
     </form>
   </main>
   <script>

@@ -48,6 +48,10 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `ping ryan` | Mentions Ryan. |
 | `ping jamal` | Mentions Jamal. |
 | `ping jaedon` / `ping j` | Mentions Jaedon. |
+| `ping reqo` | Mentions Reqo. |
+| `ping hayden` | Mentions Hayden. |
+| `ping 6uke` | Mentions 6uke. |
+| `ping tom pearls` | Mentions Tom Pearls. |
 | `!reset` or `!clear` | Clears the active conversation history: your DM history in DMs, or the current channel's shared history in server channels. |
 | `!remember <fact>` | Adds a shared memory fact manually. |
 | `!memory` | Shows current shared memory facts. |

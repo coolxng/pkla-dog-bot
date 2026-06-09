@@ -34,6 +34,19 @@ class PingResponseTests(unittest.TestCase):
     def test_short_j_ping_still_matches_jaedon(self):
         self.assertEqual(bot.ping_response_for("ping j"), "<@1149829095958528020>")
 
+    def test_reqo_ping_uses_renamed_member(self):
+        self.assertEqual(bot.ping_response_for("ping reqo"), "<@375402301646700546>")
+        self.assertIsNone(bot.ping_response_for("ping red"))
+
+    def test_hayden_ping_matches(self):
+        self.assertEqual(bot.ping_response_for("ping hayden"), "<@1069346669566623928>")
+
+    def test_6uke_ping_matches(self):
+        self.assertEqual(bot.ping_response_for("ping 6uke"), "<@1135595806171332760>")
+
+    def test_tom_pearls_ping_matches(self):
+        self.assertEqual(bot.ping_response_for("ping tom pearls"), "<@607667203126591509>")
+
     def test_unrelated_text_does_not_ping(self):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
@@ -110,12 +123,25 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b"Ozzy", response.data)
         self.assertIn(b"586732970283630633", response.data)
         self.assertIn(b'data-mention="&lt;@586732970283630633&gt;"', response.data)
+        self.assertIn(b"Reqo", response.data)
+        self.assertIn(b"375402301646700546", response.data)
+        self.assertNotIn(b">Red<", response.data)
+        self.assertIn(b"Hayden", response.data)
+        self.assertIn(b"1069346669566623928", response.data)
+        self.assertIn(b">6uke<", response.data)
+        self.assertIn(b"1135595806171332760", response.data)
+        self.assertIn(b"Tom Pearls", response.data)
+        self.assertIn(b"607667203126591509", response.data)
         jaedon_members = [
             member
             for member in bot.external_ping_members()
             if member["user_id"] == "1149829095958528020"
         ]
         self.assertEqual(len(jaedon_members), 1)
+        self.assertLess(
+            response.data.index(b"Send to Discord"),
+            response.data.index(b"Ping a member"),
+        )
 
     def test_favicon_is_available_at_browser_default_path(self):
         response = self.client.get("/favicon.ico")
