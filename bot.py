@@ -161,6 +161,24 @@ PING_MESSAGE_RE = re.compile(
 PING_TARGET_SPLIT_RE = re.compile(r"\s*(?:,|&|\+|\band\b|\s+)\s*")
 PING_TARGETS = {trigger.removeprefix("ping "): response for trigger, response in PING_RESPONSES.items()}
 
+
+def external_ping_members() -> list[dict[str, str]]:
+    members = []
+    seen_mentions = set()
+    for trigger, mention in PING_RESPONSES.items():
+        if mention in seen_mentions:
+            continue
+        seen_mentions.add(mention)
+        members.append(
+            {
+                "name": trigger.removeprefix("ping ").title(),
+                "user_id": mention.removeprefix("<@").removesuffix(">"),
+                "mention": mention,
+            }
+        )
+    return members
+
+
 SYSTEM_PROMPT = """You are pkla dog, a helpful assistant in a Discord server.
 
 Core behavior:
@@ -248,12 +266,26 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
     h1 { margin-top: 0; }
     label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
-    textarea, button { box-sizing: border-box; width: 100%; padding: .8rem; border-radius: .5rem; font: inherit; }
-    textarea { border: 1px solid #4b5563; background: #111827; color: inherit; }
-    textarea { min-height: 9rem; resize: vertical; }
-    button { margin-top: 1rem; border: 0; background: #5865f2; color: white; font-weight: 700; cursor: pointer; }
+    textarea, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
+    textarea { width: 100%; min-height: 9rem; resize: vertical; border: 1px solid #4b5563; background: #111827; color: inherit; }
+    button { border: 0; color: white; font-weight: 700; cursor: pointer; }
+    .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
+    .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
+    .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
+    .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
+    .ping-list { display: grid; gap: .6rem; }
+    .ping-member { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; padding: .65rem; background: #111827; border-radius: .5rem; }
+    .member-name { display: block; font-weight: 700; }
+    .member-id { display: block; color: #9ca3af; font-size: .8rem; overflow-wrap: anywhere; }
+    .ping-button { background: #5865f2; }
+    .copy-button { background: #4b5563; }
+    .copy-button.copied { background: #047857; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
+    @media (max-width: 32rem) {
+      .ping-member { grid-template-columns: 1fr 1fr; }
+      .ping-member div { grid-column: 1 / -1; }
+    }
   </style>
 </head>
 <body>
@@ -263,9 +295,60 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     <form method="post">
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
-      <button type="submit">Send to Discord</button>
+      <section class="ping-section" aria-labelledby="ping-heading">
+        <h2 id="ping-heading">Ping a member</h2>
+        <p class="ping-help">Select Ping to add a mention to the message, or Copy to copy the ready-to-paste mention.</p>
+        <div class="ping-list">
+          {% for member in ping_members %}
+          <div class="ping-member">
+            <div>
+              <span class="member-name">{{ member.name }}</span>
+              <code class="member-id">{{ member.user_id }}</code>
+            </div>
+            <button class="ping-button" type="button" data-mention="{{ member.mention }}">Ping</button>
+            <button class="copy-button" type="button" data-mention="{{ member.mention }}">Copy</button>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      <button class="send-button" type="submit">Send to Discord</button>
     </form>
   </main>
+  <script>
+    const message = document.getElementById("message");
+
+    document.querySelectorAll(".ping-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mention = button.dataset.mention;
+        const start = message.selectionStart;
+        const end = message.selectionEnd;
+        const before = message.value.slice(0, start);
+        const after = message.value.slice(end);
+        const prefix = before && !before.endsWith(" ") ? " " : "";
+        const suffix = after && !after.startsWith(" ") ? " " : "";
+        const insertion = `${prefix}${mention}${suffix}`;
+        if (before.length + insertion.length + after.length > message.maxLength) return;
+        message.setRangeText(insertion, start, end, "end");
+        message.focus();
+      });
+    });
+
+    document.querySelectorAll(".copy-button").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(button.dataset.mention);
+          button.textContent = "Copied";
+          button.classList.add("copied");
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+            button.classList.remove("copied");
+          }, 1500);
+        } catch (error) {
+          window.prompt("Copy this Discord mention:", button.dataset.mention);
+        }
+      });
+    });
+  </script>
 </body>
 </html>
 """
@@ -331,7 +414,10 @@ def external_say():
                 response_status = 503
 
     return render_template_string(
-        EXTERNAL_SAY_PAGE, status=status, error=error
+        EXTERNAL_SAY_PAGE,
+        status=status,
+        error=error,
+        ping_members=external_ping_members(),
     ), response_status
 
 

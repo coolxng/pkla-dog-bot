@@ -102,6 +102,21 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'/favicon.ico?v=1', response.data)
         self.assertNotIn(b'name="token"', response.data)
 
+    def test_page_lists_ping_members_with_copyable_mentions(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Ping a member", response.data)
+        self.assertIn(b"Ozzy", response.data)
+        self.assertIn(b"586732970283630633", response.data)
+        self.assertIn(b'data-mention="&lt;@586732970283630633&gt;"', response.data)
+        jaedon_members = [
+            member
+            for member in bot.external_ping_members()
+            if member["user_id"] == "1149829095958528020"
+        ]
+        self.assertEqual(len(jaedon_members), 1)
+
     def test_favicon_is_available_at_browser_default_path(self):
         response = self.client.get("/favicon.ico")
 
