@@ -228,10 +228,18 @@ def external_ping_members() -> list[dict[str, str]]:
     return members
 
 
-SYSTEM_PROMPT = """You are pkla dog, a helpful assistant in a Discord server.
+SOUND_CLIP_LABELS = ", ".join(sound["label"] for sound in EXTERNAL_BARK_SOUNDS.values())
+
+SYSTEM_PROMPT = f"""You are pkla dog, a helpful assistant in a Discord server.
 
 Core behavior:
-- Respond like ChatGPT in a Discord chat: helpful, natural, clear, and conversational.
+- Respond like a real person participating in a Discord conversation: helpful, natural, clear, and conversational.
+- Match the size and energy of the message. For short casual messages, usually reply with one short sentence or reaction instead of turning every message into a joke or performance.
+- Use recent messages for context, not as a template for your wording. Do not keep repeating your own previous cadence, punchline structure, or running bit.
+- Do not write like a meme account or a viral post. Avoid theatrical narration, fake courtroom or announcer framing, staged captions, "bro really..." setups, and forced closing punchlines unless the user is explicitly asking for that style.
+- Do not merely echo the user's words and add a scripted punchline. Sometimes a simple response like "lmao", "yeah", or "we got him" is enough.
+- Treat emoji-only messages like a person would: reply with at most one emoji or a few plain words. Never explain, name, caption, rate, or invent lore about the emoji.
+- Use emojis sparingly and only when they fit naturally. Usually use zero or one; do not repeatedly stack crying, skull, gaming, chart, or other decorative emojis.
 - Keep casual replies concise, but give fuller explanations when the user asks for help, reasoning, or details.
 - Answer the actual question.
 - Do not pretend to know things you do not know. Say when you are guessing.
@@ -249,7 +257,15 @@ Core behavior:
 - You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
 - Configured Discord mention text like <@123> contains a user ID from the bot config. If asked about a mention you just sent, answer from chat context instead of claiming you do not store or use IDs.
 - In server channels, recent chat history can include multiple users labeled as "Name: message". Use that shared channel context so another user can naturally continue the same conversation.
-- Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
+- Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said.
+
+Bot capabilities and boundaries:
+- Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
+- `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. The bot does not listen to, record, or process incoming voice audio.
+- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!leave` stops scheduled barking and disconnects from voice.
+- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, and speak up to 500 characters with text to speech. Those web controls are separate from normal chat commands.
+- `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
+- A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
 
 SEARCH_KEYWORDS = [
     "what are", "what was", "what were",
@@ -649,6 +665,47 @@ def ping_response_for(content: str) -> str | None:
     if message_text:
         response = f"{response}, {ping_message_text(message_text, single_target=len(mentions) == 1)}"
     return response
+
+
+CASUAL_REQUEST_PREFIXES = (
+    "what", "why", "how", "who", "when", "where", "which",
+    "can", "could", "would", "should", "do", "does", "did",
+    "is", "are", "tell", "explain", "help", "search", "find",
+    "look", "give", "write", "make", "show", "list",
+)
+
+
+def short_casual_reply_guidance(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized or len(normalized) > 80 or normalized.startswith("!"):
+        return None
+
+    words = normalized.split()
+    first_word = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", words[0].lower())
+    if (
+        len(words) > 6
+        or "?" in normalized
+        or first_word in CASUAL_REQUEST_PREFIXES
+        or needs_search(normalized)
+        or needs_time_context(normalized)
+    ):
+        return None
+
+    if not any(character.isalnum() for character in normalized):
+        return (
+            "Reply style for this emoji-only message: use one line with either one emoji "
+            "or at most four plain words. Do not describe, caption, rate, or invent a story "
+            "about the emoji."
+        )
+
+    return (
+        "Reply style for this brief casual message: use one line and at most twelve words. "
+        "Respond directly without narration, a setup, a second punchline, or decorative emoji stacking."
+    )
+
+
+def keep_first_reply_line(reply: str) -> str:
+    return next((line.strip() for line in reply.splitlines() if line.strip()), reply.strip())
 
 
 def needs_search(text: str) -> bool:
@@ -1096,6 +1153,24 @@ def clear_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
         channel_conversation_history.pop(channel_id, None)
 
 
+def record_command_exchange(message, response: str, *, is_dm: bool) -> None:
+    add_to_active_history(
+        message.channel.id,
+        message.author.id,
+        "user",
+        message.content.strip(),
+        is_dm=is_dm,
+        display_name=message.author.display_name,
+    )
+    add_to_active_history(
+        message.channel.id,
+        message.author.id,
+        "assistant",
+        response,
+        is_dm=is_dm,
+    )
+
+
 def pop_last_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
     history = conversation_history.get(user_id) if is_dm else channel_conversation_history.get(channel_id)
     if history:
@@ -1519,15 +1594,21 @@ async def on_message(message):
     normalized_content = content.lower().strip()
 
     if normalized_content == "!join":
-        await message.channel.send(await join_author_voice(message))
+        response = await join_author_voice(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
         return
 
     if normalized_content == "!leave":
-        await message.channel.send(await leave_voice(message))
+        response = await leave_voice(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
         return
 
     if normalized_content == "!bark":
-        await message.channel.send(bark_on_command(message))
+        response = bark_on_command(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
         return
 
     ping_response = ping_response_for(content)
@@ -1613,6 +1694,9 @@ async def on_message(message):
     history_so_far = get_active_history(message.channel.id, user_id, is_dm=is_dm)
     user_text = content if is_dm else format_user_history_content(display_name, content)
     context_parts = []
+    reply_style_guidance = short_casual_reply_guidance(content)
+    if reply_style_guidance:
+        context_parts.append(reply_style_guidance)
 
     if needs_time_context(content):
         context_parts.append(build_time_context())
@@ -1644,7 +1728,17 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            reply = clean_reply(await call_model(history_so_far, user_text, display_name=display_name))
+            max_tokens = 60 if reply_style_guidance else 1024
+            reply = clean_reply(
+                await call_model(
+                    history_so_far,
+                    user_text,
+                    max_tokens=max_tokens,
+                    display_name=display_name,
+                )
+            )
+            if reply_style_guidance:
+                reply = keep_first_reply_line(reply)
             if not reply:
                 raise ValueError("Empty response")
             add_to_active_history(message.channel.id, user_id, "assistant", reply, is_dm=is_dm)

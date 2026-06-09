@@ -189,6 +189,7 @@ class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bark_command_is_handled_without_calling_chat_model(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        bot.channel_conversation_history.pop(channel_id, None)
         voice_client = SimpleNamespace(is_connected=lambda: True)
         text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
         message = SimpleNamespace(
@@ -208,6 +209,13 @@ class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
         play_bark.assert_called_once_with(voice_client)
         text_channel.send.assert_awaited_once_with("woof")
         call_model.assert_not_awaited()
+        self.assertEqual(
+            bot.get_active_history(channel_id, 123, is_dm=False),
+            [
+                {"role": "user", "content": "Tester: !bark"},
+                {"role": "assistant", "content": "woof"},
+            ],
+        )
 
 
 class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
@@ -605,6 +613,30 @@ class TextToSpeechTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
 
 
+class CasualReplyStyleTests(unittest.TestCase):
+    def test_emoji_only_message_gets_strict_plain_reply_guidance(self):
+        guidance = bot.short_casual_reply_guidance("🦦")
+
+        self.assertIn("one emoji or at most four plain words", guidance)
+        self.assertIn("Do not describe, caption, rate, or invent a story", guidance)
+
+    def test_short_statement_gets_single_line_reply_guidance(self):
+        guidance = bot.short_casual_reply_guidance("couldnt get radiant")
+
+        self.assertIn("one line and at most twelve words", guidance)
+        self.assertIn("without narration", guidance)
+
+    def test_questions_and_requests_keep_normal_reply_behavior(self):
+        self.assertIsNone(bot.short_casual_reply_guidance("how do I fix this"))
+        self.assertIsNone(bot.short_casual_reply_guidance("explain the voice commands"))
+        self.assertIsNone(bot.short_casual_reply_guidance("can you help me"))
+
+    def test_casual_reply_keeps_reaction_and_drops_generated_followup_bit(self):
+        reply = "🦦\n\notter detected.\n\nlevel of silliness: maximum"
+
+        self.assertEqual(bot.keep_first_reply_line(reply), "🦦")
+
+
 class OpenAIConfigTests(unittest.TestCase):
     def test_default_model_uses_chatgpt_like_alias(self):
         self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
@@ -612,9 +644,25 @@ class OpenAIConfigTests(unittest.TestCase):
     def test_gpt5_reasoning_effort_defaults_to_none(self):
         self.assertEqual(bot.default_reasoning_effort("gpt-5.5"), "none")
 
-    def test_system_prompt_keeps_chatgpt_like_behavior(self):
-        self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
-        self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
+    def test_system_prompt_uses_natural_discord_conversation_style(self):
+        self.assertIn("real person participating in a Discord conversation", bot.SYSTEM_PROMPT)
+        self.assertIn("usually reply with one short sentence", bot.SYSTEM_PROMPT)
+        self.assertIn("not as a template for your wording", bot.SYSTEM_PROMPT)
+
+    def test_system_prompt_avoids_repetitive_meme_post_style(self):
+        self.assertIn("Do not write like a meme account or a viral post", bot.SYSTEM_PROMPT)
+        self.assertIn("Do not merely echo the user's words and add a scripted punchline", bot.SYSTEM_PROMPT)
+        self.assertIn("Treat emoji-only messages like a person would", bot.SYSTEM_PROMPT)
+        self.assertIn("Usually use zero or one", bot.SYSTEM_PROMPT)
+
+    def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
+        self.assertIn("`!join`", bot.SYSTEM_PROMPT)
+        self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
+        self.assertIn("does not listen to, record, or process incoming voice audio", bot.SYSTEM_PROMPT)
+        self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
+        self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
+        self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
+        self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
 class ExternalSayTests(unittest.TestCase):
     def setUp(self):
