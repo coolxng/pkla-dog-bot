@@ -269,6 +269,45 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         call_model.assert_not_awaited()
 
 
+class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
+    async def test_external_join_uses_requested_voice_channel(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot, "join_voice_channel", new=AsyncMock(return_value="joined #General")) as join_voice,
+        ):
+            response = await bot.control_external_voice("join", 1447148315312521256)
+
+        self.assertEqual(response, "joined #General")
+        join_voice.assert_awaited_once_with(channel)
+
+    async def test_external_leave_uses_requested_channel_guild(self):
+        class FakeVoiceChannel:
+            pass
+
+        guild = SimpleNamespace()
+        channel = FakeVoiceChannel()
+        channel.guild = guild
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot, "leave_guild_voice", new=AsyncMock(return_value="left the voice channel")) as leave_voice,
+        ):
+            response = await bot.control_external_voice("leave", 1447148315312521256)
+
+        self.assertEqual(response, "left the voice channel")
+        leave_voice.assert_awaited_once_with(guild)
+
+    async def test_external_voice_rejects_unavailable_channel(self):
+        with patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: None)):
+            with self.assertRaisesRegex(RuntimeError, "voice channel is unavailable"):
+                await bot.control_external_voice("join", 1447148315312521256)
+
+
 class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
     async def test_leave_disconnects_voice_client(self):
         voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
@@ -377,6 +416,25 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'/favicon.ico?v=1', response.data)
         self.assertNotIn(b'name="token"', response.data)
 
+    def test_page_has_voice_controls_with_default_channel(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Voice call", response.data)
+        self.assertIn(b'name="action" value="join"', response.data)
+        self.assertIn(b'name="action" value="leave"', response.data)
+        self.assertIn(
+            b'value="1447148315312521256"',
+            response.data,
+        )
+
+    def test_voice_channel_default_can_be_overridden(self):
+        with patch.dict(bot.os.environ, {"EXTERNAL_VOICE_CHANNEL_ID": "123456789"}):
+            response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'value="123456789"', response.data)
+
     def test_page_lists_ping_members_with_copyable_mentions(self):
         response = self.client.get("/say")
 
@@ -418,6 +476,50 @@ class ExternalSayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"Enter a message first", response.data)
+
+    def test_join_voice_form_uses_selected_channel(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="joined General",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "join",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("status=joined+General", response.headers["Location"])
+        submit_voice.assert_called_once_with("join", 1447148315312521256)
+
+    def test_leave_voice_form_uses_selected_channel(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="left the voice channel",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "leave",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        submit_voice.assert_called_once_with("leave", 1447148315312521256)
+
+    def test_voice_form_rejects_non_numeric_channel_id(self):
+        response = self.client.post(
+            "/say",
+            data={"action": "join", "voice_channel_id": "not-a-channel"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Enter a valid numeric voice channel ID", response.data)
 
     def test_valid_form_redirects_and_refresh_does_not_resubmit(self):
         submitted_messages = []

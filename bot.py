@@ -54,6 +54,7 @@ BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
+DEFAULT_EXTERNAL_VOICE_CHANNEL_ID = 1447148315312521256
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -278,12 +279,17 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     main { width: min(92%, 36rem); margin: 10vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
     h1 { margin-top: 0; }
     label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
-    textarea, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
-    textarea { width: 100%; min-height: 9rem; resize: vertical; border: 1px solid #4b5563; background: #111827; color: inherit; }
+    input, textarea, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
+    input, textarea { width: 100%; border: 1px solid #4b5563; background: #111827; color: inherit; }
+    textarea { min-height: 9rem; resize: vertical; }
     button { border: 0; color: white; font-weight: 700; cursor: pointer; }
     .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
-    .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
-    .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
+    .voice-section, .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
+    .voice-section h2, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
+    .voice-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
+    .voice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: .75rem; }
+    .join-button { background: #047857; }
+    .leave-button { background: #b91c1c; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
     .ping-list { display: grid; gap: .6rem; }
     .ping-member { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; padding: .65rem; background: #111827; border-radius: .5rem; }
@@ -305,10 +311,22 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     <h1>Make the bot say something</h1>
     {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
     <form method="post">
+      <input type="hidden" name="action" value="send">
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
       <button class="send-button" type="submit">Send to Discord</button>
-      <section class="ping-section" aria-labelledby="ping-heading">
+    </form>
+    <form method="post" class="voice-section" aria-labelledby="voice-heading">
+      <h2 id="voice-heading">Voice call</h2>
+      <p class="voice-help">Join or leave a Discord voice channel. Joining also plays the bark and starts scheduled barking.</p>
+      <label for="voice-channel-id">Voice channel ID</label>
+      <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
+      <div class="voice-actions">
+        <button class="join-button" type="submit" name="action" value="join">Join call</button>
+        <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
+      </div>
+    </form>
+    <section class="ping-section" aria-labelledby="ping-heading">
         <h2 id="ping-heading">Ping a member</h2>
         <p class="ping-help">Select Ping to add a mention to the message, or Copy to copy the ready-to-paste mention.</p>
         <div class="ping-list">
@@ -323,8 +341,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           </div>
           {% endfor %}
         </div>
-      </section>
-    </form>
+    </section>
   </main>
   <script>
     const message = document.getElementById("message");
@@ -376,6 +393,30 @@ def external_channel_id() -> int | None:
         return None
 
 
+def external_voice_channel_id() -> int:
+    raw_channel_id = os.environ.get("EXTERNAL_VOICE_CHANNEL_ID", "").strip()
+    if not raw_channel_id:
+        return DEFAULT_EXTERNAL_VOICE_CHANNEL_ID
+    try:
+        return int(raw_channel_id)
+    except ValueError:
+        print(f"Ignoring invalid integer for EXTERNAL_VOICE_CHANNEL_ID: {raw_channel_id!r}")
+        return DEFAULT_EXTERNAL_VOICE_CHANNEL_ID
+
+
+def run_discord_coroutine(coroutine, timeout_message: str):
+    if discord_event_loop is None or not client.is_ready():
+        coroutine.close()
+        raise RuntimeError("The Discord bot is not ready yet")
+
+    future = asyncio.run_coroutine_threadsafe(coroutine, discord_event_loop)
+    try:
+        return future.result(timeout=10)
+    except FutureTimeoutError as error:
+        future.cancel()
+        raise RuntimeError(timeout_message) from error
+
+
 async def send_external_message(channel_id: int, message: str) -> None:
     channel = client.get_channel(channel_id)
     if channel is None:
@@ -387,49 +428,71 @@ def submit_external_message(message: str) -> None:
     channel_id = external_channel_id()
     if channel_id is None or channel_id not in TARGET_CHANNEL_IDS:
         raise RuntimeError("EXTERNAL_CHANNEL_ID must be one of TARGET_CHANNEL_IDS")
-    if discord_event_loop is None or not client.is_ready():
-        raise RuntimeError("The Discord bot is not ready yet")
-
-    future = asyncio.run_coroutine_threadsafe(
-        send_external_message(channel_id, message), discord_event_loop
+    run_discord_coroutine(
+        send_external_message(channel_id, message),
+        "Discord took too long to accept the message",
     )
-    try:
-        future.result(timeout=10)
-    except FutureTimeoutError as error:
-        future.cancel()
-        raise RuntimeError("Discord took too long to accept the message") from error
+
+
+def submit_external_voice_action(action: str, channel_id: int) -> str:
+    if action not in {"join", "leave"}:
+        raise ValueError("Unknown voice action")
+    return run_discord_coroutine(
+        control_external_voice(action, channel_id),
+        "Discord took too long to update the voice call",
+    )
 
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
-    status = "Message sent." if request.args.get("sent") == "1" else None
+    status = request.args.get("status")
+    if request.args.get("sent") == "1":
+        status = "Message sent."
     error = False
     response_status = 200
     if request.method == "POST":
-        message = request.form.get("message", "")
-        if not message.strip():
-            status = "Enter a message first."
-            error = True
-            response_status = 400
-        elif len(message) > 2000:
-            status = "Discord messages cannot exceed 2,000 characters."
-            error = True
-            response_status = 400
-        else:
+        action = request.form.get("action", "send")
+        if action in {"join", "leave"}:
+            raw_channel_id = request.form.get("voice_channel_id", "").strip()
             try:
-                submit_external_message(message)
-                return redirect(url_for("external_say", sent="1"), code=303)
-            except Exception as send_error:
-                print(f"External send error: {send_error}")
-                status = str(send_error)
+                channel_id = int(raw_channel_id)
+                status = submit_external_voice_action(action, channel_id)
+                return redirect(url_for("external_say", status=status), code=303)
+            except ValueError:
+                status = "Enter a valid numeric voice channel ID."
+                error = True
+                response_status = 400
+            except Exception as voice_error:
+                print(f"External voice control error: {voice_error}")
+                status = str(voice_error)
                 error = True
                 response_status = 503
+        else:
+            message = request.form.get("message", "")
+            if not message.strip():
+                status = "Enter a message first."
+                error = True
+                response_status = 400
+            elif len(message) > 2000:
+                status = "Discord messages cannot exceed 2,000 characters."
+                error = True
+                response_status = 400
+            else:
+                try:
+                    submit_external_message(message)
+                    return redirect(url_for("external_say", sent="1"), code=303)
+                except Exception as send_error:
+                    print(f"External send error: {send_error}")
+                    status = str(send_error)
+                    error = True
+                    response_status = 503
 
     return render_template_string(
         EXTERNAL_SAY_PAGE,
         status=status,
         error=error,
         ping_members=external_ping_members(),
+        voice_channel_id=external_voice_channel_id(),
     ), response_status
 
 
@@ -1150,16 +1213,9 @@ def stop_bark_task(guild_id: int) -> None:
         task.cancel()
 
 
-async def join_author_voice(message) -> str:
-    if message.guild is None:
-        return "use !join in the server while you're in a voice channel"
-
-    voice_state = getattr(message.author, "voice", None)
-    voice_channel = getattr(voice_state, "channel", None)
-    if voice_channel is None:
-        return "join a voice channel first, then send !join"
-
-    voice_client = message.guild.voice_client
+async def join_voice_channel(voice_channel, guild=None) -> str:
+    guild = guild or voice_channel.guild
+    voice_client = guild.voice_client
     already_in_channel = False
     try:
         if voice_client and voice_client.is_connected():
@@ -1173,7 +1229,7 @@ async def join_author_voice(message) -> str:
         print(f"Voice connection error: {error}")
         return "couldn't join that voice channel; check my Connect permission and try again"
 
-    start_bark_task(message.guild)
+    start_bark_task(guild)
     await asyncio.sleep(BARK_JOIN_DELAY_SECONDS)
     try:
         play_bark(voice_client)
@@ -1184,11 +1240,20 @@ async def join_author_voice(message) -> str:
     return f"already in {voice_channel.mention}" if already_in_channel else f"joined {voice_channel.mention}"
 
 
-async def leave_voice(message) -> str:
+async def join_author_voice(message) -> str:
     if message.guild is None:
-        return "use !leave in the server"
+        return "use !join in the server while you're in a voice channel"
 
-    voice_client = message.guild.voice_client
+    voice_state = getattr(message.author, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        return "join a voice channel first, then send !join"
+
+    return await join_voice_channel(voice_channel, message.guild)
+
+
+async def leave_guild_voice(guild) -> str:
+    voice_client = guild.voice_client
     if not voice_client or not voice_client.is_connected():
         return "i'm not in a voice channel"
 
@@ -1198,9 +1263,24 @@ async def leave_voice(message) -> str:
         print(f"Voice disconnect error: {error}")
         return "couldn't leave the voice channel; try again"
 
-    stop_bark_task(message.guild.id)
-    last_command_bark_at.pop(message.guild.id, None)
+    stop_bark_task(guild.id)
+    last_command_bark_at.pop(guild.id, None)
     return "left the voice channel"
+
+
+async def leave_voice(message) -> str:
+    if message.guild is None:
+        return "use !leave in the server"
+    return await leave_guild_voice(message.guild)
+
+
+async def control_external_voice(action: str, channel_id: int) -> str:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    if action == "join":
+        return await join_voice_channel(voice_channel)
+    return await leave_guild_voice(voice_channel.guild)
 
 
 @client.event
