@@ -1,8 +1,12 @@
 import asyncio
 import base64
 import json
+import math
 import os
+import random
 import re
+import struct
+import time
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
@@ -47,6 +51,8 @@ DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 DEFAULT_OWNER_ID = 575057023046123520
 COOLDOWN_SECONDS = 2
+BARK_INTERVAL_SECONDS = 5 * 60
+BARK_COMMAND_COOLDOWN_SECONDS = 5
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -1067,6 +1073,170 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
         print(f"[universal memory] stored: {fact}")
 
 
+class BarkAudioSource(discord.AudioSource):
+    SAMPLE_RATE = 48_000
+    FRAME_BYTES = 3_840
+    _audio_data: bytes | None = None
+
+    def __init__(self):
+        if self.__class__._audio_data is None:
+            self.__class__._audio_data = self._generate_audio()
+        self.position = 0
+
+    @classmethod
+    def _generate_audio(cls) -> bytes:
+        rng = random.Random(0)
+        samples = []
+        bursts = ((0.0, 0.18), (0.24, 0.58))
+        total_samples = int(cls.SAMPLE_RATE * bursts[-1][1])
+
+        for sample_index in range(total_samples):
+            time = sample_index / cls.SAMPLE_RATE
+            value = 0.0
+            for start, end in bursts:
+                if start <= time < end:
+                    progress = (time - start) / (end - start)
+                    envelope = math.sin(math.pi * progress) ** 0.45 * math.exp(-1.8 * progress)
+                    frequency = 210 - (100 * progress)
+                    growl = math.sin(2 * math.pi * frequency * (time - start))
+                    harmonic = math.sin(2 * math.pi * frequency * 2.1 * (time - start))
+                    noise = rng.uniform(-1.0, 1.0)
+                    value = envelope * (0.48 * growl + 0.22 * harmonic + 0.30 * noise)
+                    break
+
+            sample = max(-32_768, min(32_767, int(value * 24_000)))
+            samples.extend((sample, sample))
+
+        return struct.pack(f"<{len(samples)}h", *samples)
+
+    def read(self) -> bytes:
+        if self._audio_data is None or self.position >= len(self._audio_data):
+            return b""
+        frame = self._audio_data[self.position:self.position + self.FRAME_BYTES]
+        self.position += self.FRAME_BYTES
+        return frame.ljust(self.FRAME_BYTES, b"\0")
+
+
+bark_tasks: dict[int, asyncio.Task] = {}
+last_command_bark_at: dict[int, float] = {}
+
+
+def play_bark(voice_client) -> bool:
+    if voice_client.is_playing():
+        return False
+
+    def after_playback(error):
+        if error:
+            print(f"Bark playback error: {error}")
+
+    voice_client.play(BarkAudioSource(), after=after_playback)
+    return True
+
+
+def bark_on_command(message) -> str:
+    if message.guild is None:
+        return "use !bark in the server"
+
+    voice_client = message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        return "join me to a voice channel first with !join"
+
+    now = time.monotonic()
+    last_bark = last_command_bark_at.get(message.guild.id)
+    if last_bark is not None:
+        remaining = BARK_COMMAND_COOLDOWN_SECONDS - (now - last_bark)
+        if remaining > 0:
+            return f"bark cooldown — wait {math.ceil(remaining)} seconds"
+
+    try:
+        if not play_bark(voice_client):
+            return "already barking"
+    except discord.DiscordException as error:
+        print(f"Bark playback error: {error}")
+        return "couldn't bark; check my Speak permission and try again"
+
+    last_command_bark_at[message.guild.id] = now
+    return "woof"
+
+
+async def bark_periodically(guild) -> None:
+    while True:
+        await asyncio.sleep(BARK_INTERVAL_SECONDS)
+        voice_client = guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            return
+        try:
+            play_bark(voice_client)
+        except discord.DiscordException as error:
+            print(f"Bark playback error: {error}")
+
+
+def start_bark_task(guild) -> None:
+    current_task = bark_tasks.get(guild.id)
+    if current_task and not current_task.done():
+        return
+
+    task = asyncio.create_task(bark_periodically(guild))
+    bark_tasks[guild.id] = task
+
+    def remove_finished_task(finished_task):
+        if bark_tasks.get(guild.id) is finished_task:
+            bark_tasks.pop(guild.id, None)
+
+    task.add_done_callback(remove_finished_task)
+
+
+def stop_bark_task(guild_id: int) -> None:
+    task = bark_tasks.pop(guild_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+async def join_author_voice(message) -> str:
+    if message.guild is None:
+        return "use !join in the server while you're in a voice channel"
+
+    voice_state = getattr(message.author, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        return "join a voice channel first, then send !join"
+
+    voice_client = message.guild.voice_client
+    try:
+        if voice_client and voice_client.is_connected():
+            if voice_client.channel == voice_channel:
+                start_bark_task(message.guild)
+                return f"already in {voice_channel.mention}"
+            await voice_client.move_to(voice_channel)
+        else:
+            await voice_channel.connect(self_deaf=False, self_mute=False)
+    except (asyncio.TimeoutError, discord.DiscordException) as error:
+        print(f"Voice connection error: {error}")
+        return "couldn't join that voice channel; check my Connect permission and try again"
+
+    start_bark_task(message.guild)
+    return f"joined {voice_channel.mention} — barking every 5 minutes"
+
+
+async def leave_voice(message) -> str:
+    if message.guild is None:
+        return "use !leave in the server"
+
+    voice_client = message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        return "i'm not in a voice channel"
+
+    try:
+        await voice_client.disconnect()
+    except (asyncio.TimeoutError, discord.DiscordException) as error:
+        print(f"Voice disconnect error: {error}")
+        return "couldn't leave the voice channel; try again"
+
+    stop_bark_task(message.guild.id)
+    last_command_bark_at.pop(message.guild.id, None)
+    return "left the voice channel"
+
+
 @client.event
 async def on_ready():
     global discord_event_loop
@@ -1092,6 +1262,18 @@ async def on_message(message):
     user_id = message.author.id
     display_name = message.author.display_name
     normalized_content = content.lower().strip()
+
+    if normalized_content == "!join":
+        await message.channel.send(await join_author_voice(message))
+        return
+
+    if normalized_content == "!leave":
+        await message.channel.send(await leave_voice(message))
+        return
+
+    if normalized_content == "!bark":
+        await message.channel.send(bark_on_command(message))
+        return
 
     ping_response = ping_response_for(content)
     if ping_response:
