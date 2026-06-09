@@ -454,6 +454,59 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(456, bot.last_tts_at)
 
+    async def test_external_speech_cancellation_does_not_start_cooldown(self):
+        class FakeVoiceChannel:
+            pass
+
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: False
+        )
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot.time, "monotonic", return_value=100.0),
+            patch.object(
+                bot.asyncio,
+                "to_thread",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await bot.control_external_speech(
+                    1447148315312521256, "hello", "alloy"
+                )
+
+        self.assertNotIn(456, bot.last_tts_at)
+
+    async def test_external_speech_failure_preserves_newer_cooldown(self):
+        class FakeVoiceChannel:
+            pass
+
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: False
+        )
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+
+        async def fail_after_newer_request(*args):
+            bot.last_tts_at[456] = 200.0
+            raise RuntimeError("speech failed")
+
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot.time, "monotonic", return_value=100.0),
+            patch.object(bot.asyncio, "to_thread", side_effect=fail_after_newer_request),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "speech failed"):
+                await bot.control_external_speech(
+                    1447148315312521256, "hello", "alloy"
+                )
+
+        self.assertEqual(bot.last_tts_at[456], 200.0)
+
     async def test_external_speech_enforces_server_cooldown_before_synthesis(self):
         class FakeVoiceChannel:
             pass

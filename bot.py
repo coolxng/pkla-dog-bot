@@ -1508,15 +1508,23 @@ async def control_external_speech(channel_id: int, text: str, voice: str) -> str
             )
     last_tts_at[guild.id] = now
 
-    try:
-        speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
-        if not play_audio(voice_client, speech_path, delete_after=True):
-            raise RuntimeError("Another sound is already playing")
-    except Exception:
+    def restore_previous_cooldown() -> None:
+        if last_tts_at.get(guild.id) != now:
+            return
         if last_speech is None:
             last_tts_at.pop(guild.id, None)
         else:
             last_tts_at[guild.id] = last_speech
+
+    try:
+        speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
+        if not play_audio(voice_client, speech_path, delete_after=True):
+            raise RuntimeError("Another sound is already playing")
+    except asyncio.CancelledError:
+        restore_previous_cooldown()
+        raise
+    except Exception:
+        restore_previous_cooldown()
         raise
     return f"speaking in {voice_channel.mention}"
 
