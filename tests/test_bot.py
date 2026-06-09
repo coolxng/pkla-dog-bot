@@ -1,4 +1,7 @@
+import asyncio
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import bot
 
@@ -49,6 +52,169 @@ class PingResponseTests(unittest.TestCase):
 
     def test_unrelated_text_does_not_ping(self):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
+
+
+class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
+    def test_bark_audio_produces_complete_pcm_frames(self):
+        source = bot.BarkAudioSource()
+        frames = []
+
+        while frame := source.read():
+            frames.append(frame)
+
+        self.assertGreater(len(frames), 1)
+        self.assertTrue(all(len(frame) == bot.BarkAudioSource.FRAME_BYTES for frame in frames))
+        self.assertTrue(any(frame != bytes(len(frame)) for frame in frames))
+
+    def test_play_bark_starts_generated_audio(self):
+        voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
+
+        played = bot.play_bark(voice_client)
+
+        self.assertTrue(played)
+        source = voice_client.play.call_args.args[0]
+        self.assertIsInstance(source, bot.BarkAudioSource)
+        self.assertIn("after", voice_client.play.call_args.kwargs)
+
+    def test_play_bark_does_not_interrupt_existing_audio(self):
+        voice_client = SimpleNamespace(is_playing=lambda: True, play=Mock())
+
+        played = bot.play_bark(voice_client)
+
+        self.assertFalse(played)
+        voice_client.play.assert_not_called()
+
+    async def test_periodic_task_waits_then_plays_bark(self):
+        voice_client = SimpleNamespace(is_connected=lambda: True)
+        guild = SimpleNamespace(voice_client=voice_client)
+
+        with (
+            patch.object(
+                bot.asyncio,
+                "sleep",
+                new=AsyncMock(side_effect=[None, asyncio.CancelledError]),
+            ) as sleep,
+            patch.object(bot, "play_bark") as play_bark,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await bot.bark_periodically(guild)
+
+        sleep.assert_any_await(bot.BARK_INTERVAL_SECONDS)
+        play_bark.assert_called_once_with(voice_client)
+
+
+class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
+    async def test_join_connects_unmuted_and_undeafened(self):
+        voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=None),
+            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+        )
+
+        with patch.object(bot, "start_bark_task") as start_bark_task:
+            response = await bot.join_author_voice(message)
+
+        voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
+        start_bark_task.assert_called_once_with(message.guild)
+        self.assertEqual(response, "joined #General — barking every 5 minutes")
+
+    async def test_join_requires_the_user_to_be_in_voice(self):
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=None),
+            author=SimpleNamespace(voice=None),
+        )
+
+        response = await bot.join_author_voice(message)
+
+        self.assertEqual(response, "join a voice channel first, then send !join")
+
+    async def test_join_moves_an_existing_voice_connection(self):
+        old_channel = SimpleNamespace(mention="#Old")
+        new_channel = SimpleNamespace(mention="#New")
+        voice_client = SimpleNamespace(
+            channel=old_channel,
+            is_connected=lambda: True,
+            move_to=AsyncMock(),
+        )
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=voice_client),
+            author=SimpleNamespace(voice=SimpleNamespace(channel=new_channel)),
+        )
+
+        with patch.object(bot, "start_bark_task") as start_bark_task:
+            response = await bot.join_author_voice(message)
+
+        voice_client.move_to.assert_awaited_once_with(new_channel)
+        start_bark_task.assert_called_once_with(message.guild)
+        self.assertEqual(response, "joined #New — barking every 5 minutes")
+
+    async def test_join_command_is_handled_without_calling_chat_model(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        voice_channel = SimpleNamespace(mention="#General", connect=AsyncMock())
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        message = SimpleNamespace(
+            author=SimpleNamespace(
+                id=123,
+                display_name="Tester",
+                voice=SimpleNamespace(channel=voice_channel),
+            ),
+            channel=text_channel,
+            content="!join",
+            guild=SimpleNamespace(voice_client=None),
+        )
+
+        with (
+            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
+            patch.object(bot, "start_bark_task") as start_bark_task,
+        ):
+            await bot.on_message(message)
+
+        voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
+        start_bark_task.assert_called_once_with(message.guild)
+        text_channel.send.assert_awaited_once_with("joined #General — barking every 5 minutes")
+        call_model.assert_not_awaited()
+
+
+class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_leave_disconnects_voice_client(self):
+        voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
+        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=voice_client))
+
+        with patch.object(bot, "stop_bark_task") as stop_bark_task:
+            response = await bot.leave_voice(message)
+
+        voice_client.disconnect.assert_awaited_once_with()
+        stop_bark_task.assert_called_once_with(456)
+        self.assertEqual(response, "left the voice channel")
+
+    async def test_leave_reports_when_not_connected(self):
+        message = SimpleNamespace(guild=SimpleNamespace(voice_client=None))
+
+        response = await bot.leave_voice(message)
+
+        self.assertEqual(response, "i'm not in a voice channel")
+
+    async def test_leave_command_is_handled_without_calling_chat_model(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=123, display_name="Tester"),
+            channel=text_channel,
+            content="!leave",
+            guild=SimpleNamespace(id=456, voice_client=voice_client),
+        )
+
+        with (
+            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
+            patch.object(bot, "stop_bark_task") as stop_bark_task,
+        ):
+            await bot.on_message(message)
+
+        voice_client.disconnect.assert_awaited_once_with()
+        stop_bark_task.assert_called_once_with(456)
+        text_channel.send.assert_awaited_once_with("left the voice channel")
+        call_model.assert_not_awaited()
 
 
 class ConversationHistoryTests(unittest.TestCase):
