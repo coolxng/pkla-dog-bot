@@ -355,13 +355,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .voice-section, .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
     .voice-section h2, .voice-section h3, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
     .voice-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
-    .voice-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-top: .75rem; }
+    .voice-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
     .voice-section .sound-heading { margin-top: 1.25rem; }
     .sound-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
     .sound-button { background: #7c3aed; }
     .speak-button { width: 100%; margin-top: .75rem; background: #0369a1; }
     .speech-text { min-height: 6rem; }
     .join-button { background: #047857; }
+    .stop-button { background: #b45309; }
     .leave-button { background: #b91c1c; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
     .ping-list { display: grid; gap: .6rem; }
@@ -377,7 +378,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       .control-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 32rem) {
-      .sound-actions { grid-template-columns: 1fr; }
+      .voice-actions, .sound-actions { grid-template-columns: 1fr; }
       .ping-member { grid-template-columns: 1fr 1fr; }
       .ping-member div { grid-column: 1 / -1; }
     }
@@ -402,6 +403,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
       <div class="voice-actions">
         <button class="join-button" type="submit" name="action" value="join">Join call</button>
+        <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
       </div>
       <h3 class="sound-heading">Sound clips</h3>
@@ -628,7 +630,7 @@ def submit_external_uploaded_audio(channel_id: int, temporary_path: Path) -> str
 
 
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
-    if action not in {"join", "leave", "play_sound"}:
+    if action not in {"join", "stop", "leave", "play_sound"}:
         raise ValueError("Unknown voice action")
     if action == "play_sound" and sound_id not in EXTERNAL_BARK_SOUNDS:
         raise ValueError("Unknown bark sound")
@@ -650,7 +652,7 @@ def external_say():
     response_status = 200
     if request.method == "POST":
         action = request.form.get("action", "send")
-        if action in {"join", "leave", "play_sound", "speak", "upload_audio"}:
+        if action in {"join", "stop", "leave", "play_sound", "speak", "upload_audio"}:
             raw_channel_id = request.form.get("voice_channel_id", "").strip()
             try:
                 channel_id = int(raw_channel_id)
@@ -1688,6 +1690,16 @@ async def control_external_voice(
         return await join_voice_channel(voice_channel)
     if action == "leave":
         return await leave_guild_voice(voice_channel.guild)
+    if action == "stop":
+        voice_client = voice_channel.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            raise RuntimeError("Join the selected voice call before stopping audio")
+        if getattr(voice_client, "channel", None) != voice_channel:
+            raise RuntimeError("The bot is connected to a different voice channel")
+        if not voice_client.is_playing():
+            return "nothing is playing"
+        voice_client.stop()
+        return f"stopped audio in {voice_channel.mention}"
 
     sound = EXTERNAL_BARK_SOUNDS.get(sound_id)
     if sound is None:

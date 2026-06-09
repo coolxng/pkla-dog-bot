@@ -348,6 +348,82 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, "left the voice channel")
         leave_voice.assert_awaited_once_with(guild)
 
+    async def test_external_stop_stops_playing_audio_in_selected_channel(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: True,
+            stop=Mock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_voice("stop", 1447148315312521256)
+
+        self.assertEqual(response, "stopped audio in #General")
+        voice_client.stop.assert_called_once_with()
+
+    async def test_external_stop_reports_when_nothing_is_playing(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: False,
+            stop=Mock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_voice("stop", 1447148315312521256)
+
+        self.assertEqual(response, "nothing is playing")
+        voice_client.stop.assert_not_called()
+
+    async def test_external_stop_requires_connected_voice_client(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        channel.guild = SimpleNamespace(voice_client=None)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
+                await bot.control_external_voice("stop", 1447148315312521256)
+
+    async def test_external_stop_requires_selected_voice_channel_connection(self):
+        class FakeVoiceChannel:
+            mention = "#General"
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(
+            channel=object(),
+            is_connected=lambda: True,
+            is_playing=lambda: True,
+            stop=Mock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "different voice channel"):
+                await bot.control_external_voice("stop", 1447148315312521256)
+
+        voice_client.stop.assert_not_called()
+
     async def test_external_sound_plays_selected_audio(self):
         class FakeVoiceChannel:
             pass
@@ -763,6 +839,8 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Voice call", response.data)
         self.assertIn(b'name="action" value="join"', response.data)
+        self.assertIn(b'name="action" value="stop"', response.data)
+        self.assertIn(b"Stop audio", response.data)
         self.assertIn(b'name="action" value="leave"', response.data)
         self.assertIn(
             b'value="1447148315312521256"',
@@ -919,6 +997,24 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=joined+General", response.headers["Location"])
         submit_voice.assert_called_once_with("join", 1447148315312521256)
+
+    def test_stop_audio_form_uses_selected_channel(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="stopped audio in #General",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "stop",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("status=stopped+audio+in+%23General", response.headers["Location"])
+        submit_voice.assert_called_once_with("stop", 1447148315312521256)
 
     def test_sound_button_plays_selected_sound(self):
         with patch.object(
