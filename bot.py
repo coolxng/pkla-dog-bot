@@ -228,7 +228,9 @@ def external_ping_members() -> list[dict[str, str]]:
     return members
 
 
-SYSTEM_PROMPT = """You are pkla dog, a helpful assistant in a Discord server.
+SOUND_CLIP_LABELS = ", ".join(sound["label"] for sound in EXTERNAL_BARK_SOUNDS.values())
+
+SYSTEM_PROMPT = f"""You are pkla dog, a helpful assistant in a Discord server.
 
 Core behavior:
 - Respond like ChatGPT in a Discord chat: helpful, natural, clear, and conversational.
@@ -249,7 +251,15 @@ Core behavior:
 - You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
 - Configured Discord mention text like <@123> contains a user ID from the bot config. If asked about a mention you just sent, answer from chat context instead of claiming you do not store or use IDs.
 - In server channels, recent chat history can include multiple users labeled as "Name: message". Use that shared channel context so another user can naturally continue the same conversation.
-- Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said."""
+- Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said.
+
+Bot capabilities and boundaries:
+- Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
+- `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. The bot does not listen to, record, or process incoming voice audio.
+- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!leave` stops scheduled barking and disconnects from voice.
+- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, and speak up to 500 characters with text to speech. Those web controls are separate from normal chat commands.
+- `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
+- A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
 
 SEARCH_KEYWORDS = [
     "what are", "what was", "what were",
@@ -1096,6 +1106,24 @@ def clear_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
         channel_conversation_history.pop(channel_id, None)
 
 
+def record_command_exchange(message, response: str, *, is_dm: bool) -> None:
+    add_to_active_history(
+        message.channel.id,
+        message.author.id,
+        "user",
+        message.content.strip(),
+        is_dm=is_dm,
+        display_name=message.author.display_name,
+    )
+    add_to_active_history(
+        message.channel.id,
+        message.author.id,
+        "assistant",
+        response,
+        is_dm=is_dm,
+    )
+
+
 def pop_last_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
     history = conversation_history.get(user_id) if is_dm else channel_conversation_history.get(channel_id)
     if history:
@@ -1519,15 +1547,21 @@ async def on_message(message):
     normalized_content = content.lower().strip()
 
     if normalized_content == "!join":
-        await message.channel.send(await join_author_voice(message))
+        response = await join_author_voice(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
         return
 
     if normalized_content == "!leave":
-        await message.channel.send(await leave_voice(message))
+        response = await leave_voice(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
         return
 
     if normalized_content == "!bark":
-        await message.channel.send(bark_on_command(message))
+        response = bark_on_command(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
         return
 
     ping_response = ping_response_for(content)

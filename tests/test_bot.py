@@ -189,6 +189,7 @@ class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_bark_command_is_handled_without_calling_chat_model(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        bot.channel_conversation_history.pop(channel_id, None)
         voice_client = SimpleNamespace(is_connected=lambda: True)
         text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
         message = SimpleNamespace(
@@ -208,6 +209,13 @@ class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
         play_bark.assert_called_once_with(voice_client)
         text_channel.send.assert_awaited_once_with("woof")
         call_model.assert_not_awaited()
+        self.assertEqual(
+            bot.get_active_history(channel_id, 123, is_dm=False),
+            [
+                {"role": "user", "content": "Tester: !bark"},
+                {"role": "assistant", "content": "woof"},
+            ],
+        )
 
 
 class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
@@ -615,6 +623,15 @@ class OpenAIConfigTests(unittest.TestCase):
     def test_system_prompt_keeps_chatgpt_like_behavior(self):
         self.assertIn("Respond like ChatGPT", bot.SYSTEM_PROMPT)
         self.assertIn("Discord chat", bot.SYSTEM_PROMPT)
+
+    def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
+        self.assertIn("`!join`", bot.SYSTEM_PROMPT)
+        self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
+        self.assertIn("does not listen to, record, or process incoming voice audio", bot.SYSTEM_PROMPT)
+        self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
+        self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
+        self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
+        self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
 class ExternalSayTests(unittest.TestCase):
     def setUp(self):
