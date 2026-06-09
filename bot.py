@@ -1091,6 +1091,23 @@ async def join_author_voice(message) -> str:
     return f"joined {voice_channel.mention} — unmuted and undeafened"
 
 
+async def leave_voice(message) -> str:
+    if message.guild is None:
+        return "use !leave in the server"
+
+    voice_client = message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        return "i'm not in a voice channel"
+
+    try:
+        await voice_client.disconnect()
+    except (asyncio.TimeoutError, discord.DiscordException) as error:
+        print(f"Voice disconnect error: {error}")
+        return "couldn't leave the voice channel; try again"
+
+    return "left the voice channel"
+
+
 @client.event
 async def on_ready():
     global discord_event_loop
@@ -1119,6 +1136,10 @@ async def on_message(message):
 
     if normalized_content == "!join":
         await message.channel.send(await join_author_voice(message))
+        return
+
+    if normalized_content == "!leave":
+        await message.channel.send(await leave_voice(message))
         return
 
     ping_response = ping_response_for(content)

@@ -117,6 +117,42 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         call_model.assert_not_awaited()
 
 
+class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_leave_disconnects_voice_client(self):
+        voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
+        message = SimpleNamespace(guild=SimpleNamespace(voice_client=voice_client))
+
+        response = await bot.leave_voice(message)
+
+        voice_client.disconnect.assert_awaited_once_with()
+        self.assertEqual(response, "left the voice channel")
+
+    async def test_leave_reports_when_not_connected(self):
+        message = SimpleNamespace(guild=SimpleNamespace(voice_client=None))
+
+        response = await bot.leave_voice(message)
+
+        self.assertEqual(response, "i'm not in a voice channel")
+
+    async def test_leave_command_is_handled_without_calling_chat_model(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=123, display_name="Tester"),
+            channel=text_channel,
+            content="!leave",
+            guild=SimpleNamespace(voice_client=voice_client),
+        )
+
+        with patch.object(bot, "call_model", new_callable=AsyncMock) as call_model:
+            await bot.on_message(message)
+
+        voice_client.disconnect.assert_awaited_once_with()
+        text_channel.send.assert_awaited_once_with("left the voice channel")
+        call_model.assert_not_awaited()
+
+
 class ConversationHistoryTests(unittest.TestCase):
     def setUp(self):
         bot.conversation_history.clear()
