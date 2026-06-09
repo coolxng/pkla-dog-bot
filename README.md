@@ -35,7 +35,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `OPENAI_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`.
 3. Confirm the start command uses the `Procfile`: `worker: python bot.py`.
 4. Deploy the service.
-5. In Discord, invite the bot with message-content permissions enabled and add the target channel IDs to `TARGET_CHANNEL_IDS`.
+5. In Discord, invite the bot with message-content permissions enabled, grant it **Connect** permission in voice channels, and add the target channel IDs to `TARGET_CHANNEL_IDS`.
 6. Keep a single Railway replica running. The bot stores conversation and universal memory in RAM, so multiple replicas will not share state.
 
 ## Bot commands
@@ -57,6 +57,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
+| `!join` | Joins your current voice channel unmuted and undeafened. The bot does not play, record, or process audio. |
+| `!leave` | Disconnects the bot from its current voice channel. |
 
 ## Send a message from outside Discord
 
