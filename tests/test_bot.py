@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
 
 import bot
 
@@ -57,6 +57,165 @@ class PingResponseTests(unittest.TestCase):
 
     def test_unrelated_text_does_not_ping(self):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
+
+
+class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.last_pingdeaf_at.clear()
+
+    @staticmethod
+    def interaction():
+        return SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+
+    @staticmethod
+    def member(*, channel=None, self_deaf=False, deaf=False):
+        voice = None
+        if channel is not None:
+            voice = SimpleNamespace(channel=channel, self_deaf=self_deaf, deaf=deaf)
+        return SimpleNamespace(
+            id=123, mention="<@123>", voice=voice, send=AsyncMock()
+        )
+
+    def test_pingdeaf_is_registered_with_required_member_option(self):
+        command = bot.command_tree.get_command("pingdeaf")
+
+        self.assertIsNotNone(command)
+        self.assertEqual(command.description, "DM a deafened voice member to undeafen.")
+        self.assertEqual(len(command.parameters), 1)
+        self.assertEqual(command.parameters[0].name, "user")
+        self.assertTrue(command.parameters[0].required)
+
+    async def test_sync_keeps_global_command_and_clears_guild_commands(self):
+        guilds = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+
+        with (
+            patch.object(
+                type(bot.client),
+                "guilds",
+                new_callable=PropertyMock,
+                return_value=guilds,
+            ),
+            patch.object(bot.command_tree, "sync", new=AsyncMock()) as sync,
+            patch.object(bot.command_tree, "clear_commands") as clear_commands,
+        ):
+            synced = await bot.sync_slash_commands()
+
+        self.assertTrue(synced)
+        self.assertEqual(
+            sync.await_args_list,
+            [call(), call(guild=guilds[0]), call(guild=guilds[1])],
+        )
+        self.assertEqual(
+            clear_commands.call_args_list,
+            [call(guild=guilds[0]), call(guild=guilds[1])],
+        )
+
+    async def test_sync_failure_is_reported_for_retry(self):
+        with patch.object(
+            bot.command_tree,
+            "sync",
+            new=AsyncMock(
+                side_effect=bot.discord.HTTPException(
+                    Mock(status=500, reason="Server Error"), "sync failed"
+                )
+            ),
+        ):
+            synced = await bot.sync_slash_commands()
+
+        self.assertFalse(synced)
+
+    async def test_rejects_member_not_in_voice(self):
+        interaction = self.interaction()
+        member = self.member()
+
+        await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "That user is not in a voice channel.", ephemeral=True
+        )
+
+    async def test_rejects_member_who_is_not_deafened(self):
+        interaction = self.interaction()
+        member = self.member(channel=SimpleNamespace(name="General"))
+
+        await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "That user is not deafened.", ephemeral=True
+        )
+
+    async def test_dms_self_deafened_member_and_starts_cooldown(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+
+        with patch.object(bot.time, "monotonic", return_value=100.0):
+            await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_awaited_once_with(
+            "🔇 People are trying to talk to you in **General**. Undeafen when you can."
+        )
+        interaction.response.send_message.assert_awaited_once_with(
+            "Sent <@123> a DM to undeafen.", ephemeral=True
+        )
+        self.assertEqual(bot.last_pingdeaf_at[123], 100.0)
+
+    async def test_dms_server_deafened_member(self):
+        interaction = self.interaction()
+        member = self.member(channel=SimpleNamespace(name="General"), deaf=True)
+
+        await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_awaited_once()
+
+    async def test_enforces_per_target_cooldown(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        bot.last_pingdeaf_at[member.id] = 100.0
+
+        with patch.object(bot.time, "monotonic", return_value=120.0):
+            await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "<@123> was already pinged recently. Try again in 40s.", ephemeral=True
+        )
+
+    async def test_allows_ping_after_cooldown_expires(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        bot.last_pingdeaf_at[member.id] = 100.0
+
+        with patch.object(bot.time, "monotonic", return_value=160.0):
+            await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_awaited_once()
+        self.assertEqual(bot.last_pingdeaf_at[member.id], 160.0)
+
+    async def test_closed_dms_report_error_without_starting_cooldown(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        member.send.side_effect = bot.discord.Forbidden(
+            Mock(status=403, reason="Forbidden"),
+            {"message": "Cannot send", "code": 50007},
+        )
+
+        with patch.object(bot.time, "monotonic", return_value=100.0):
+            await bot.handle_pingdeaf(interaction, member)
+
+        interaction.response.send_message.assert_awaited_once_with(
+            "I could not DM that user. Their DMs may be closed.", ephemeral=True
+        )
+        self.assertNotIn(member.id, bot.last_pingdeaf_at)
 
 
 class BarkAudioTests(unittest.IsolatedAsyncioTestCase):

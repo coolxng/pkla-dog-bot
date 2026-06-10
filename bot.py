@@ -18,6 +18,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 import discord
+from discord import app_commands
 from ddgs import DDGS
 from flask import Flask, Response, redirect, render_template_string, request, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -80,6 +81,7 @@ DEFAULT_OWNER_ID = 575057023046123520
 COOLDOWN_SECONDS = 2
 BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
+PINGDEAF_COOLDOWN_SECONDS = 60
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 EXTERNAL_BARK_SOUNDS = {
@@ -321,6 +323,8 @@ channel_conversation_history: OrderedDict = OrderedDict()
 MAX_USERS = 500
 MAX_CHANNELS = 100
 last_message_at: dict[int, datetime] = {}
+# Successful /pingdeaf attempts are rate-limited per target and reset on restart.
+last_pingdeaf_at: dict[int, float] = {}
 
 # Universal memory is RAM-only and is wiped on restart; it is not persistent storage.
 universal_memory: list[str] = []
@@ -329,6 +333,8 @@ MAX_UNIVERSAL_MEMORIES = 50
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
+command_tree = app_commands.CommandTree(client)
+slash_commands_synced = False
 discord_event_loop: asyncio.AbstractEventLoop | None = None
 
 EXTERNAL_SAY_PAGE = """<!doctype html>
@@ -1813,10 +1819,80 @@ async def control_external_voice(
     return f'playing {sound["label"]}'
 
 
+async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
+    voice_state = user.voice
+    if voice_state is None or voice_state.channel is None:
+        await interaction.response.send_message(
+            "That user is not in a voice channel.", ephemeral=True
+        )
+        return
+
+    if not (voice_state.self_deaf or voice_state.deaf):
+        await interaction.response.send_message(
+            "That user is not deafened.", ephemeral=True
+        )
+        return
+
+    now = time.monotonic()
+    last_pinged_at = last_pingdeaf_at.get(user.id)
+    if last_pinged_at is not None:
+        elapsed = now - last_pinged_at
+        if elapsed < PINGDEAF_COOLDOWN_SECONDS:
+            seconds = math.ceil(PINGDEAF_COOLDOWN_SECONDS - elapsed)
+            await interaction.response.send_message(
+                f"{user.mention} was already pinged recently. Try again in {seconds}s.",
+                ephemeral=True,
+            )
+            return
+        last_pingdeaf_at.pop(user.id, None)
+
+    # Reserve the cooldown before awaiting the DM so concurrent commands cannot send duplicates.
+    last_pingdeaf_at[user.id] = now
+    try:
+        await user.send(
+            f"🔇 People are trying to talk to you in **{voice_state.channel.name}**. "
+            "Undeafen when you can."
+        )
+    except discord.HTTPException:
+        if last_pingdeaf_at.get(user.id) == now:
+            last_pingdeaf_at.pop(user.id, None)
+        await interaction.response.send_message(
+            "I could not DM that user. Their DMs may be closed.", ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        f"Sent {user.mention} a DM to undeafen.", ephemeral=True
+    )
+
+
+@command_tree.command(name="pingdeaf", description="DM a deafened voice member to undeafen.")
+@app_commands.describe(user="The deafened member to ping")
+@app_commands.guild_only()
+async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
+    await handle_pingdeaf(interaction, user)
+
+
+async def sync_slash_commands() -> bool:
+    try:
+        await command_tree.sync()
+        for guild in client.guilds:
+            # This bot only uses global commands. Clear obsolete guild commands that
+            # would otherwise remain visible and override the working global command.
+            command_tree.clear_commands(guild=guild)
+            await command_tree.sync(guild=guild)
+    except discord.HTTPException as error:
+        print(f"Could not sync slash commands: {error}")
+        return False
+    return True
+
+
 @client.event
 async def on_ready():
-    global discord_event_loop
+    global discord_event_loop, slash_commands_synced
     discord_event_loop = asyncio.get_running_loop()
+    if not slash_commands_synced:
+        slash_commands_synced = await sync_slash_commands()
     print(f"Logged in as {client.user}")
 
 
