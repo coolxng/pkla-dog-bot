@@ -1835,6 +1835,13 @@ def pingdeaf_message(channel_name: str) -> str:
     )
 
 
+def pingdeaf_sender_status(user: discord.Member, sent_count: int) -> str:
+    return (
+        f"DMing {user.mention} every 2 seconds until they undeafen.\n"
+        f"Messages sent: **{sent_count}**"
+    )
+
+
 async def delete_pingdeaf_messages(messages: list[discord.Message]) -> None:
     await asyncio.sleep(PINGDEAF_DELETE_DELAY_SECONDS)
     for message in messages:
@@ -1865,10 +1872,13 @@ def stop_pingdeaf(target_id: int) -> discord.abc.User | None:
 
 
 class PingDeafSenderView(discord.ui.View):
-    def __init__(self, target: discord.Member, sender_id: int):
+    def __init__(
+        self, target: discord.Member, sender_id: int, messages: list[discord.Message]
+    ):
         super().__init__(timeout=None)
         self.target = target
         self.sender_id = sender_id
+        self.messages = messages
 
     @discord.ui.button(
         label="Stop", style=discord.ButtonStyle.danger, custom_id="pingdeaf:sender-stop"
@@ -1882,15 +1892,23 @@ class PingDeafSenderView(discord.ui.View):
             )
             return
 
+        sent_count = len(self.messages)
         if stop_pingdeaf(self.target.id) is None:
             await interaction.response.edit_message(
-                content=f"The DM reminders for {self.target.mention} already stopped.",
+                content=(
+                    f"The DM reminders for {self.target.mention} already stopped.\n"
+                    f"Messages sent: **{sent_count}**"
+                ),
                 view=None,
             )
             return
 
         await interaction.response.edit_message(
-            content=f"Stopped DMing {self.target.mention}.", view=None
+            content=(
+                f"Stopped DMing {self.target.mention}.\n"
+                f"Messages sent: **{sent_count}**"
+            ),
+            view=None,
         )
 
 
@@ -1915,6 +1933,7 @@ class PingDeafReceiverView(discord.ui.View):
             return
 
         messages = pingdeaf_messages.get(self.target.id)
+        sent_count = len(messages) if messages is not None else 0
         sender = stop_pingdeaf(self.target.id)
         if sender is None:
             await interaction.response.edit_message(
@@ -1927,7 +1946,8 @@ class PingDeafReceiverView(discord.ui.View):
         )
         try:
             notification = await sender.send(
-                f"{self.target.mention} used **Stop the spam**, so the undeafen DMs stopped."
+                f"{self.target.mention} used **Stop the spam**, so the undeafen DMs stopped. "
+                f"Messages sent: **{sent_count}**"
             )
             if messages is not None:
                 messages.append(notification)
@@ -1939,7 +1959,10 @@ class PingDeafReceiverView(discord.ui.View):
 
 
 async def pingdeaf_until_undeafened(
-    user: discord.Member, messages: list[discord.Message] | None = None
+    user: discord.Member,
+    messages: list[discord.Message] | None = None,
+    sender_interaction: discord.Interaction | None = None,
+    sender_view: PingDeafSenderView | None = None,
 ) -> None:
     if messages is None:
         messages = []
@@ -1960,6 +1983,17 @@ async def pingdeaf_until_undeafened(
                     view=PingDeafReceiverView(user),
                 )
                 messages.append(message)
+                if sender_interaction is not None:
+                    try:
+                        await sender_interaction.edit_original_response(
+                            content=pingdeaf_sender_status(user, len(messages)),
+                            view=sender_view,
+                        )
+                    except discord.HTTPException as error:
+                        print(
+                            f"Could not update /pingdeaf count for user {user.id}: {error}"
+                        )
+                        sender_interaction = None
             except discord.HTTPException as error:
                 print(f"Could not continue /pingdeaf DMs to user {user.id}: {error}")
                 return
@@ -2025,16 +2059,18 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
         )
         return
 
-    sender_view = PingDeafSenderView(user, interaction.user.id)
     messages = [first_message]
+    sender_view = PingDeafSenderView(user, interaction.user.id, messages)
     pingdeaf_senders[user.id] = interaction.user
     pingdeaf_sender_views[user.id] = sender_view
     pingdeaf_messages[user.id] = messages
     pingdeaf_tasks[user.id] = asyncio.create_task(
-        pingdeaf_until_undeafened(user, messages)
+        pingdeaf_until_undeafened(
+            user, messages, sender_interaction=interaction, sender_view=sender_view
+        )
     )
     await interaction.response.send_message(
-        f"DMing {user.mention} every 2 seconds until they undeafen.",
+        pingdeaf_sender_status(user, len(messages)),
         ephemeral=True,
         view=sender_view,
     )

@@ -100,6 +100,7 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
             response=SimpleNamespace(
                 send_message=AsyncMock(), edit_message=AsyncMock()
             ),
+            edit_original_response=AsyncMock(),
         )
 
     @staticmethod
@@ -210,7 +211,8 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
             view=ANY,
         )
         interaction.response.send_message.assert_awaited_once_with(
-            "DMing <@123> every 2 seconds until they undeafen.",
+            "DMing <@123> every 2 seconds until they undeafen.\n"
+            "Messages sent: **1**",
             ephemeral=True,
             view=ANY,
         )
@@ -238,15 +240,27 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
             if sleep_count == 2:
                 member.voice.self_deaf = False
 
+        interaction = self.interaction()
+        messages = [SimpleNamespace(id=1, delete=AsyncMock())]
+        sender_view = bot.PingDeafSenderView(
+            member, interaction.user.id, messages
+        )
         with patch.object(
             bot.asyncio, "sleep", new=AsyncMock(side_effect=sleep_then_update_voice_state)
         ):
-            await bot.pingdeaf_until_undeafened(member)
+            await bot.pingdeaf_until_undeafened(
+                member, messages, interaction, sender_view
+            )
 
         member.send.assert_awaited_once_with(
             "🔇 People are trying to talk to you in **General**. "
             "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen.",
             view=ANY,
+        )
+        interaction.edit_original_response.assert_awaited_once_with(
+            content="DMing <@123> every 2 seconds until they undeafen.\n"
+            "Messages sent: **2**",
+            view=sender_view,
         )
 
     async def test_deletes_reminder_messages_two_minutes_after_stopping(self):
@@ -292,7 +306,7 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(member.id, bot.pingdeaf_tasks)
         self.assertNotIn(member.id, bot.pingdeaf_senders)
         button_interaction.response.edit_message.assert_awaited_once_with(
-            content="Stopped DMing <@123>.", view=None
+            content="Stopped DMing <@123>.\nMessages sent: **1**", view=None
         )
 
     async def test_receiver_stop_button_stops_and_notifies_sender(self):
@@ -312,7 +326,8 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
             content="You stopped the undeafen DM reminders.", view=None
         )
         interaction.user.send.assert_awaited_once_with(
-            "<@123> used **Stop the spam**, so the undeafen DMs stopped."
+            "<@123> used **Stop the spam**, so the undeafen DMs stopped. "
+            "Messages sent: **1**"
         )
         self.assertIn(interaction.user.sent_notification, tracked_messages)
 
