@@ -341,6 +341,7 @@ MAX_UNIVERSAL_MEMORIES = 50
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 client = discord.Client(intents=intents)
 command_tree = app_commands.CommandTree(client)
 slash_commands_synced = False

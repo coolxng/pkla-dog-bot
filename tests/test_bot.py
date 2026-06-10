@@ -59,6 +59,12 @@ class PingResponseTests(unittest.TestCase):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
 
+class DiscordIntentTests(unittest.TestCase):
+    def test_member_and_message_content_intents_are_enabled(self):
+        self.assertTrue(bot.intents.members)
+        self.assertTrue(bot.intents.message_content)
+
+
 class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_pingdeaf_at.clear()
