@@ -62,6 +62,15 @@ class PingResponseTests(unittest.TestCase):
 class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_pingdeaf_at.clear()
+        bot.pingdeaf_tasks.clear()
+
+    async def asyncTearDown(self):
+        tasks = list(bot.pingdeaf_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        bot.pingdeaf_tasks.clear()
 
     @staticmethod
     def interaction():
@@ -156,12 +165,52 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
             await bot.handle_pingdeaf(interaction, member)
 
         member.send.assert_awaited_once_with(
-            "🔇 People are trying to talk to you in **General**. Undeafen when you can."
+            "🔇 People are trying to talk to you in **General**. "
+            "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen."
         )
         interaction.response.send_message.assert_awaited_once_with(
-            "Sent <@123> a DM to undeafen.", ephemeral=True
+            "DMing <@123> every 2 seconds until they undeafen.", ephemeral=True
         )
         self.assertEqual(bot.last_pingdeaf_at[123], 100.0)
+        self.assertIn(member.id, bot.pingdeaf_tasks)
+
+    async def test_repeats_every_two_seconds_until_member_undeafens(self):
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        sleep_count = 0
+
+        async def sleep_then_update_voice_state(seconds):
+            nonlocal sleep_count
+            self.assertEqual(seconds, 2)
+            sleep_count += 1
+            if sleep_count == 2:
+                member.voice.self_deaf = False
+
+        with patch.object(
+            bot.asyncio, "sleep", new=AsyncMock(side_effect=sleep_then_update_voice_state)
+        ):
+            await bot.pingdeaf_until_undeafened(member)
+
+        member.send.assert_awaited_once_with(
+            "🔇 People are trying to talk to you in **General**. "
+            "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen."
+        )
+
+    async def test_does_not_start_a_duplicate_reminder_loop(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        active_task = asyncio.create_task(asyncio.sleep(60))
+        bot.pingdeaf_tasks[member.id] = active_task
+
+        await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "<@123> is already being DM'd every 2 seconds.", ephemeral=True
+        )
 
     async def test_dms_server_deafened_member(self):
         interaction = self.interaction()

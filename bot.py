@@ -82,6 +82,7 @@ COOLDOWN_SECONDS = 2
 BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
 PINGDEAF_COOLDOWN_SECONDS = 60
+PINGDEAF_INTERVAL_SECONDS = 2
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 EXTERNAL_BARK_SOUNDS = {
@@ -325,6 +326,8 @@ MAX_CHANNELS = 100
 last_message_at: dict[int, datetime] = {}
 # Successful /pingdeaf attempts are rate-limited per target and reset on restart.
 last_pingdeaf_at: dict[int, float] = {}
+# Active reminder loops are keyed by target user ID and stop when the user undeafens.
+pingdeaf_tasks: dict[int, asyncio.Task] = {}
 
 # Universal memory is RAM-only and is wiped on restart; it is not persistent storage.
 universal_memory: list[str] = []
@@ -1819,6 +1822,36 @@ async def control_external_voice(
     return f'playing {sound["label"]}'
 
 
+def pingdeaf_message(channel_name: str) -> str:
+    return (
+        f"🔇 People are trying to talk to you in **{channel_name}**. "
+        "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen."
+    )
+
+
+async def pingdeaf_until_undeafened(user: discord.Member) -> None:
+    try:
+        while True:
+            await asyncio.sleep(PINGDEAF_INTERVAL_SECONDS)
+            voice_state = user.voice
+            if (
+                voice_state is None
+                or voice_state.channel is None
+                or not (voice_state.self_deaf or voice_state.deaf)
+            ):
+                return
+
+            try:
+                await user.send(pingdeaf_message(voice_state.channel.name))
+            except discord.HTTPException as error:
+                print(f"Could not continue /pingdeaf DMs to user {user.id}: {error}")
+                return
+    finally:
+        current_task = asyncio.current_task()
+        if pingdeaf_tasks.get(user.id) is current_task:
+            pingdeaf_tasks.pop(user.id, None)
+
+
 async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
     voice_state = user.voice
     if voice_state is None or voice_state.channel is None:
@@ -1830,6 +1863,13 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
     if not (voice_state.self_deaf or voice_state.deaf):
         await interaction.response.send_message(
             "That user is not deafened.", ephemeral=True
+        )
+        return
+
+    active_task = pingdeaf_tasks.get(user.id)
+    if active_task is not None and not active_task.done():
+        await interaction.response.send_message(
+            f"{user.mention} is already being DM'd every 2 seconds.", ephemeral=True
         )
         return
 
@@ -1849,10 +1889,7 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
     # Reserve the cooldown before awaiting the DM so concurrent commands cannot send duplicates.
     last_pingdeaf_at[user.id] = now
     try:
-        await user.send(
-            f"🔇 People are trying to talk to you in **{voice_state.channel.name}**. "
-            "Undeafen RIGHT NOW 😠."
-        )
+        await user.send(pingdeaf_message(voice_state.channel.name))
     except discord.HTTPException:
         if last_pingdeaf_at.get(user.id) == now:
             last_pingdeaf_at.pop(user.id, None)
@@ -1861,8 +1898,9 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
         )
         return
 
+    pingdeaf_tasks[user.id] = asyncio.create_task(pingdeaf_until_undeafened(user))
     await interaction.response.send_message(
-        f"Sent {user.mention} a DM to undeafen.", ephemeral=True
+        f"DMing {user.mention} every 2 seconds until they undeafen.", ephemeral=True
     )
 
 
