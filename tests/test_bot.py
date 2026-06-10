@@ -389,12 +389,15 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(
                 bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
-            ),
+            ) as to_thread,
             patch.object(bot, "play_audio", side_effect=start_playback),
         ):
             playback = asyncio.create_task(bot.play_chat_tts(guild, "hello"))
             await asyncio.sleep(0)
             self.assertFalse(playback.done())
+            to_thread.assert_awaited_once_with(
+                bot.synthesize_speech, "hello", "onyx"
+            )
 
             callbacks[0](None)
             await playback

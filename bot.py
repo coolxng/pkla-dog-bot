@@ -61,6 +61,7 @@ OPENAI_TTS_VOICES = {
     "sage": "Sage",
     "shimmer": "Shimmer",
 }
+CHAT_TTS_VOICE = "onyx"
 OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "alloy")
 if OPENAI_TTS_VOICE not in OPENAI_TTS_VOICES:
     print(f"Ignoring unsupported OPENAI_TTS_VOICE: {OPENAI_TTS_VOICE!r}")
@@ -1696,7 +1697,7 @@ async def play_chat_tts(guild, text: str) -> None:
         await asyncio.sleep(0.1)
 
     speech_path = await asyncio.to_thread(
-        synthesize_speech, text, OPENAI_TTS_VOICE
+        synthesize_speech, text, CHAT_TTS_VOICE
     )
     loop = asyncio.get_running_loop()
     playback_finished = loop.create_future()
