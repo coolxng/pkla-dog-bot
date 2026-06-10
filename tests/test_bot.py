@@ -312,6 +312,80 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         call_model.assert_not_awaited()
 
 
+class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        bot.last_tts_at.clear()
+
+    async def test_tts_command_speaks_following_message(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True, is_playing=lambda: False
+        )
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        guild = SimpleNamespace(id=456, voice_client=voice_client)
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=123, display_name="Tester"),
+            channel=text_channel,
+            content="!tts Hello from Discord",
+            guild=guild,
+        )
+        speech_path = Path("/tmp/generated-speech.mp3")
+
+        with (
+            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
+            patch.object(bot.time, "monotonic", return_value=100.0),
+            patch.object(
+                bot.asyncio,
+                "to_thread",
+                new=AsyncMock(return_value=speech_path),
+            ) as to_thread,
+            patch.object(bot, "play_audio", return_value=True) as play_audio,
+        ):
+            await bot.on_message(message)
+
+        to_thread.assert_awaited_once_with(
+            bot.synthesize_speech, "Hello from Discord", bot.OPENAI_TTS_VOICE
+        )
+        play_audio.assert_called_once_with(voice_client, speech_path, delete_after=True)
+        text_channel.send.assert_awaited_once_with("speaking")
+        call_model.assert_not_awaited()
+        self.assertEqual(bot.last_tts_at[456], 100.0)
+
+    async def test_tts_command_requires_message_text(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=123, display_name="Tester"),
+            channel=text_channel,
+            content="!tts",
+            guild=SimpleNamespace(id=456, voice_client=None),
+        )
+
+        with patch.object(bot, "speak_in_guild", new_callable=AsyncMock) as speak:
+            await bot.on_message(message)
+
+        speak.assert_not_awaited()
+        text_channel.send.assert_awaited_once_with("add a message after !tts")
+
+    async def test_tts_command_reports_when_bot_is_not_connected(self):
+        message = SimpleNamespace(
+            guild=SimpleNamespace(id=456, voice_client=None),
+        )
+
+        response = await bot.speak_message(message, "hello")
+
+        self.assertEqual(response, "Join me to a voice channel first with !join")
+
+    async def test_tts_command_rejects_overlong_text(self):
+        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=None))
+
+        response = await bot.speak_message(message, "x" * (bot.TTS_TEXT_LIMIT + 1))
+
+        self.assertEqual(
+            response, f"TTS messages cannot exceed {bot.TTS_TEXT_LIMIT} characters"
+        )
+
+
 class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_tts_at.clear()
