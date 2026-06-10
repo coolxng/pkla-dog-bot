@@ -84,6 +84,7 @@ BARK_COMMAND_COOLDOWN_SECONDS = 5
 PINGDEAF_COOLDOWN_SECONDS = 60
 PINGDEAF_INTERVAL_SECONDS = 2
 PINGDEAF_RECEIVER_VIEW_TIMEOUT_SECONDS = 60
+PINGDEAF_DELETE_DELAY_SECONDS = 2 * 60
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 EXTERNAL_BARK_SOUNDS = {
@@ -331,6 +332,8 @@ last_pingdeaf_at: dict[int, float] = {}
 pingdeaf_tasks: dict[int, asyncio.Task] = {}
 pingdeaf_senders: dict[int, discord.abc.User] = {}
 pingdeaf_sender_views: dict[int, discord.ui.View] = {}
+pingdeaf_messages: dict[int, list[discord.Message]] = {}
+pingdeaf_cleanup_tasks: set[asyncio.Task] = set()
 
 # Universal memory is RAM-only and is wiped on restart; it is not persistent storage.
 universal_memory: list[str] = []
@@ -1832,6 +1835,23 @@ def pingdeaf_message(channel_name: str) -> str:
     )
 
 
+async def delete_pingdeaf_messages(messages: list[discord.Message]) -> None:
+    await asyncio.sleep(PINGDEAF_DELETE_DELAY_SECONDS)
+    for message in messages:
+        try:
+            await message.delete()
+        except discord.HTTPException as error:
+            print(f"Could not delete /pingdeaf DM {message.id}: {error}")
+
+
+def schedule_pingdeaf_message_cleanup(messages: list[discord.Message]) -> None:
+    if not messages:
+        return
+    task = asyncio.create_task(delete_pingdeaf_messages(messages))
+    pingdeaf_cleanup_tasks.add(task)
+    task.add_done_callback(pingdeaf_cleanup_tasks.discard)
+
+
 def stop_pingdeaf(target_id: int) -> discord.abc.User | None:
     task = pingdeaf_tasks.pop(target_id, None)
     sender = pingdeaf_senders.pop(target_id, None)
@@ -1894,6 +1914,7 @@ class PingDeafReceiverView(discord.ui.View):
             )
             return
 
+        messages = pingdeaf_messages.get(self.target.id)
         sender = stop_pingdeaf(self.target.id)
         if sender is None:
             await interaction.response.edit_message(
@@ -1905,9 +1926,11 @@ class PingDeafReceiverView(discord.ui.View):
             content="You stopped the undeafen DM reminders.", view=None
         )
         try:
-            await sender.send(
+            notification = await sender.send(
                 f"{self.target.mention} used **Stop the spam**, so the undeafen DMs stopped."
             )
+            if messages is not None:
+                messages.append(notification)
         except discord.HTTPException as error:
             print(
                 f"Could not notify /pingdeaf sender {sender.id} that "
@@ -1915,7 +1938,11 @@ class PingDeafReceiverView(discord.ui.View):
             )
 
 
-async def pingdeaf_until_undeafened(user: discord.Member) -> None:
+async def pingdeaf_until_undeafened(
+    user: discord.Member, messages: list[discord.Message] | None = None
+) -> None:
+    if messages is None:
+        messages = []
     try:
         while True:
             await asyncio.sleep(PINGDEAF_INTERVAL_SECONDS)
@@ -1928,10 +1955,11 @@ async def pingdeaf_until_undeafened(user: discord.Member) -> None:
                 return
 
             try:
-                await user.send(
+                message = await user.send(
                     pingdeaf_message(voice_state.channel.name),
                     view=PingDeafReceiverView(user),
                 )
+                messages.append(message)
             except discord.HTTPException as error:
                 print(f"Could not continue /pingdeaf DMs to user {user.id}: {error}")
                 return
@@ -1943,6 +1971,9 @@ async def pingdeaf_until_undeafened(user: discord.Member) -> None:
             sender_view = pingdeaf_sender_views.pop(user.id, None)
             if sender_view is not None:
                 sender_view.stop()
+        if pingdeaf_messages.get(user.id) is messages:
+            pingdeaf_messages.pop(user.id, None)
+        schedule_pingdeaf_message_cleanup(messages)
 
 
 async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
@@ -1983,7 +2014,7 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
     last_pingdeaf_at[user.id] = now
     receiver_view = PingDeafReceiverView(user)
     try:
-        await user.send(
+        first_message = await user.send(
             pingdeaf_message(voice_state.channel.name), view=receiver_view
         )
     except discord.HTTPException:
@@ -1995,9 +2026,13 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
         return
 
     sender_view = PingDeafSenderView(user, interaction.user.id)
+    messages = [first_message]
     pingdeaf_senders[user.id] = interaction.user
     pingdeaf_sender_views[user.id] = sender_view
-    pingdeaf_tasks[user.id] = asyncio.create_task(pingdeaf_until_undeafened(user))
+    pingdeaf_messages[user.id] = messages
+    pingdeaf_tasks[user.id] = asyncio.create_task(
+        pingdeaf_until_undeafened(user, messages)
+    )
     await interaction.response.send_message(
         f"DMing {user.mention} every 2 seconds until they undeafen.",
         ephemeral=True,
