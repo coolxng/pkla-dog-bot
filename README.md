@@ -39,8 +39,9 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `OPENAI_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`.
 3. Confirm the start command uses the `Procfile`: `worker: python bot.py`.
 4. Deploy the service.
-5. In Discord, invite the bot with message-content permissions enabled, grant it **Connect** and **Speak** permissions in voice channels, and add the target channel IDs to `TARGET_CHANNEL_IDS`.
-6. Keep a single Railway replica running. The bot stores conversation and universal memory in RAM, so multiple replicas will not share state.
+5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
+6. Invite the bot, grant it **Connect** and **Speak** permissions in voice channels, and add the target channel IDs to `TARGET_CHANNEL_IDS`.
+7. Keep a single Railway replica running. The bot stores conversation and universal memory in RAM, so multiple replicas will not share state.
 
 ## Bot commands
 
@@ -65,9 +66,9 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | Queues up to 500 characters to be read with the Onyx voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
-| `/pingdeaf user:@member` | DMs a deafened voice member to undeafen, with a 60-second per-target cooldown. |
+| `/pingdeaf user:@member` | DMs a deafened voice member every two seconds until they undeafen. The sender sees a live count of reminder DMs sent, both people get a stop button, the sender is notified if the receiver stops the reminders, and the bot deletes its reminder DMs two minutes after the reminders stop. |
 
-The bot synchronizes `/pingdeaf` globally at startup and removes obsolete server-specific commands registered to the same Discord application.
+The bot synchronizes `/pingdeaf` globally at startup and removes obsolete server-specific commands registered to the same Discord application. Discord controls the member picker's initial suggestions, so it may show only a few members before you type; enter part of a member's display name or username to search the rest of the server. **Server Members Intent** must be enabled in the Developer Portal and in the bot configuration above.
 
 ## Send a message from outside Discord
 

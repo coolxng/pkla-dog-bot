@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
+from unittest.mock import ANY, AsyncMock, Mock, PropertyMock, call, patch
 
 import bot
 
@@ -59,21 +59,77 @@ class PingResponseTests(unittest.TestCase):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
 
+class DiscordIntentTests(unittest.TestCase):
+    def test_member_and_message_content_intents_are_enabled(self):
+        self.assertTrue(bot.intents.members)
+        self.assertTrue(bot.intents.message_content)
+
+
 class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_pingdeaf_at.clear()
+        bot.pingdeaf_tasks.clear()
+        bot.pingdeaf_senders.clear()
+        bot.pingdeaf_sender_views.clear()
+        bot.pingdeaf_messages.clear()
+        bot.pingdeaf_cleanup_tasks.clear()
+
+    async def asyncTearDown(self):
+        tasks = list(bot.pingdeaf_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        cleanup_tasks = list(bot.pingdeaf_cleanup_tasks)
+        for task in cleanup_tasks:
+            task.cancel()
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+
+        bot.pingdeaf_tasks.clear()
+        bot.pingdeaf_senders.clear()
+        bot.pingdeaf_sender_views.clear()
+        bot.pingdeaf_messages.clear()
+        bot.pingdeaf_cleanup_tasks.clear()
 
     @staticmethod
     def interaction():
-        return SimpleNamespace(response=SimpleNamespace(send_message=AsyncMock()))
+        notification = SimpleNamespace(id=789, delete=AsyncMock())
+        return SimpleNamespace(
+            user=SimpleNamespace(
+                id=999,
+                mention="<@999>",
+                send=AsyncMock(return_value=notification),
+                sent_notification=notification,
+            ),
+            response=SimpleNamespace(
+                send_message=AsyncMock(), edit_message=AsyncMock()
+            ),
+            edit_original_response=AsyncMock(),
+        )
+
+    @staticmethod
+    def button_interaction(user_id):
+        return SimpleNamespace(
+            user=SimpleNamespace(id=user_id),
+            response=SimpleNamespace(
+                send_message=AsyncMock(), edit_message=AsyncMock()
+            ),
+        )
 
     @staticmethod
     def member(*, channel=None, self_deaf=False, deaf=False):
         voice = None
         if channel is not None:
             voice = SimpleNamespace(channel=channel, self_deaf=self_deaf, deaf=deaf)
+        message = SimpleNamespace(id=456, delete=AsyncMock())
         return SimpleNamespace(
-            id=123, mention="<@123>", voice=voice, send=AsyncMock()
+            id=123,
+            mention="<@123>",
+            voice=voice,
+            send=AsyncMock(return_value=message),
+            sent_message=message,
         )
 
     def test_pingdeaf_is_registered_with_required_member_option(self):
@@ -156,12 +212,159 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
             await bot.handle_pingdeaf(interaction, member)
 
         member.send.assert_awaited_once_with(
-            "🔇 People are trying to talk to you in **General**. Undeafen when you can."
+            "🔇 People are trying to talk to you in **General**. "
+            "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen.",
+            view=ANY,
         )
         interaction.response.send_message.assert_awaited_once_with(
-            "Sent <@123> a DM to undeafen.", ephemeral=True
+            "DMing <@123> every 2 seconds until they undeafen.\n"
+            "Messages sent: **1**",
+            ephemeral=True,
+            view=ANY,
+        )
+        self.assertIsInstance(
+            member.send.await_args.kwargs["view"], bot.PingDeafReceiverView
+        )
+        self.assertIsInstance(
+            interaction.response.send_message.await_args.kwargs["view"],
+            bot.PingDeafSenderView,
         )
         self.assertEqual(bot.last_pingdeaf_at[123], 100.0)
+        self.assertIn(member.id, bot.pingdeaf_tasks)
+        self.assertEqual(bot.pingdeaf_messages[member.id], [member.sent_message])
+
+    async def test_repeats_every_two_seconds_until_member_undeafens(self):
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        sleep_count = 0
+
+        async def sleep_then_update_voice_state(seconds):
+            nonlocal sleep_count
+            self.assertEqual(seconds, 2)
+            sleep_count += 1
+            if sleep_count == 2:
+                member.voice.self_deaf = False
+
+        interaction = self.interaction()
+        messages = [SimpleNamespace(id=1, delete=AsyncMock())]
+        sender_view = bot.PingDeafSenderView(
+            member, interaction.user.id, messages
+        )
+        with patch.object(
+            bot.asyncio, "sleep", new=AsyncMock(side_effect=sleep_then_update_voice_state)
+        ):
+            await bot.pingdeaf_until_undeafened(
+                member, messages, interaction, sender_view
+            )
+
+        member.send.assert_awaited_once_with(
+            "🔇 People are trying to talk to you in **General**. "
+            "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen.",
+            view=ANY,
+        )
+        interaction.edit_original_response.assert_awaited_once_with(
+            content="DMing <@123> every 2 seconds until they undeafen.\n"
+            "Messages sent: **2**",
+            view=sender_view,
+        )
+
+    async def test_deletes_reminder_messages_two_minutes_after_stopping(self):
+        messages = [
+            SimpleNamespace(id=1, delete=AsyncMock()),
+            SimpleNamespace(id=2, delete=AsyncMock()),
+        ]
+
+        with patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep:
+            await bot.delete_pingdeaf_messages(messages)
+
+        sleep.assert_awaited_once_with(2 * 60)
+        for message in messages:
+            message.delete.assert_awaited_once_with()
+
+    async def test_cleanup_continues_if_one_reminder_was_already_deleted(self):
+        failed_message = SimpleNamespace(id=1, delete=AsyncMock())
+        failed_message.delete.side_effect = bot.discord.NotFound(
+            Mock(status=404, reason="Not Found"),
+            {"message": "Unknown Message", "code": 10008},
+        )
+        remaining_message = SimpleNamespace(id=2, delete=AsyncMock())
+
+        with patch.object(bot.asyncio, "sleep", new=AsyncMock()):
+            await bot.delete_pingdeaf_messages(
+                [failed_message, remaining_message]
+            )
+
+        failed_message.delete.assert_awaited_once_with()
+        remaining_message.delete.assert_awaited_once_with()
+
+    async def test_sender_stop_button_stops_reminders(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        await bot.handle_pingdeaf(interaction, member)
+        sender_view = interaction.response.send_message.await_args.kwargs["view"]
+        button_interaction = self.button_interaction(interaction.user.id)
+
+        await sender_view.children[0].callback(button_interaction)
+
+        self.assertNotIn(member.id, bot.pingdeaf_tasks)
+        self.assertNotIn(member.id, bot.pingdeaf_senders)
+        button_interaction.response.edit_message.assert_awaited_once_with(
+            content="Stopped DMing <@123>.\nMessages sent: **1**", view=None
+        )
+
+    async def test_receiver_stop_button_stops_and_notifies_sender(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        await bot.handle_pingdeaf(interaction, member)
+        receiver_view = member.send.await_args.kwargs["view"]
+        tracked_messages = bot.pingdeaf_messages[member.id]
+        button_interaction = self.button_interaction(member.id)
+
+        await receiver_view.children[0].callback(button_interaction)
+
+        self.assertNotIn(member.id, bot.pingdeaf_tasks)
+        button_interaction.response.edit_message.assert_awaited_once_with(
+            content="You stopped the undeafen DM reminders.", view=None
+        )
+        interaction.user.send.assert_awaited_once_with(
+            "<@123> used **Stop the spam**, so the undeafen DMs stopped. "
+            "Messages sent: **1**"
+        )
+        self.assertIn(interaction.user.sent_notification, tracked_messages)
+
+    async def test_receiver_stop_button_rejects_other_users(self):
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        receiver_view = bot.PingDeafReceiverView(member)
+        button_interaction = self.button_interaction(456)
+
+        await receiver_view.children[0].callback(button_interaction)
+
+        button_interaction.response.send_message.assert_awaited_once_with(
+            "Only the person receiving these DMs can use this button.",
+            ephemeral=True,
+        )
+
+    async def test_does_not_start_a_duplicate_reminder_loop(self):
+        interaction = self.interaction()
+        member = self.member(
+            channel=SimpleNamespace(name="General"), self_deaf=True
+        )
+        active_task = asyncio.create_task(asyncio.sleep(60))
+        bot.pingdeaf_tasks[member.id] = active_task
+
+        await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "<@123> is already being DM'd every 2 seconds.", ephemeral=True
+        )
 
     async def test_dms_server_deafened_member(self):
         interaction = self.interaction()
