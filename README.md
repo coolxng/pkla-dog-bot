@@ -65,6 +65,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | Queues up to 500 characters to be read with the Onyx voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
+| `/pingdeaf user:@member` | DMs a deafened voice member to undeafen, with a 60-second per-target cooldown. |
 
 ## Send a message from outside Discord
 
