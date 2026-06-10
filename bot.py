@@ -67,9 +67,9 @@ if OPENAI_TTS_VOICE not in OPENAI_TTS_VOICES:
     OPENAI_TTS_VOICE = "alloy"
 TTS_TEXT_LIMIT = 500
 # Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
-MAX_UPLOADED_MP3_BYTES = 8 * 1024 * 1024
-# Allow multipart headers and form fields in addition to the MP3 payload itself.
-MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_MP3_BYTES + (1024 * 1024)
+MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
+# Allow multipart headers and form fields in addition to the audio payload itself.
+MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_AUDIO_BYTES + (1024 * 1024)
 EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
 TTS_COOLDOWN_SECONDS = 30
 CENTRAL_TIME = ZoneInfo("America/Chicago")
@@ -104,7 +104,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_EXTERNAL_SAY_REQUEST_BYTES
 @app.errorhandler(RequestEntityTooLarge)
 def external_request_too_large(_error):
     return (
-        f"Upload request is too large. MP3 files must be {MAX_UPLOADED_MP3_BYTES // (1024 * 1024)} MiB or smaller.",
+        f"Upload request is too large. Audio files must be {MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024)} MiB or smaller.",
         413,
     )
 
@@ -444,14 +444,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     </section>
       </div>
       <aside class="upload-panel" aria-labelledby="upload-heading">
-        <h2 id="upload-heading">Upload MP3</h2>
-        <p class="voice-help">Upload an MP3 up to {{ max_upload_mp3_mib }} MiB. The bot must already be connected to the selected voice channel.</p>
+        <h2 id="upload-heading">Upload audio</h2>
+        <p class="voice-help">Upload an MP3 or MP4 up to {{ max_upload_audio_mib }} MiB. For MP4 files, only the audio is played. The bot must already be connected to the selected voice channel.</p>
         <form method="post" enctype="multipart/form-data">
           <input type="hidden" name="action" value="upload_audio">
           <label for="upload-voice-channel-id">Voice channel ID</label>
           <input id="upload-voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
-          <label for="audio-file">MP3 file</label>
-          <input id="audio-file" name="audio_file" type="file" accept=".mp3,audio/mpeg" required>
+          <label for="audio-file">MP3 or MP4 file</label>
+          <input id="audio-file" name="audio_file" type="file" accept=".mp3,.mp4,audio/mpeg,video/mp4" required>
           <button class="upload-button" type="submit">Upload and play</button>
         </form>
       </aside>
@@ -542,37 +542,42 @@ def external_say_authentication_required():
     )
 
 
-def uploaded_mp3_has_plausible_signature(header: bytes) -> bool:
-    return header.startswith(b"ID3") or (
-        len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0
-    )
+def uploaded_audio_has_plausible_signature(extension: str, header: bytes) -> bool:
+    if extension == ".mp3":
+        return header.startswith(b"ID3") or (
+            len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0
+        )
+    return extension == ".mp4" and len(header) >= 12 and header[4:8] == b"ftyp"
 
 
-def save_uploaded_mp3(upload) -> Path:
+def save_uploaded_audio(upload) -> Path:
     filename = upload.filename or ""
-    if Path(filename).suffix.lower() != ".mp3":
-        raise ValueError("Upload a file with an .mp3 extension.")
+    extension = Path(filename).suffix.lower()
+    if extension not in {".mp3", ".mp4"}:
+        raise ValueError("Upload a file with an .mp3 or .mp4 extension.")
 
     temporary_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temporary_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temporary_file:
             temporary_path = Path(temporary_file.name)
             total_bytes = 0
             header = b""
             while chunk := upload.stream.read(64 * 1024):
                 total_bytes += len(chunk)
-                if total_bytes > MAX_UPLOADED_MP3_BYTES:
+                if total_bytes > MAX_UPLOADED_AUDIO_BYTES:
                     raise ValueError(
-                        f"MP3 files cannot exceed {MAX_UPLOADED_MP3_BYTES // (1024 * 1024)} MiB."
+                        f"Audio files cannot exceed {MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024)} MiB."
                     )
-                if len(header) < 3:
-                    header += chunk[: 3 - len(header)]
+                if len(header) < 12:
+                    header += chunk[: 12 - len(header)]
                 temporary_file.write(chunk)
 
         if total_bytes == 0:
-            raise ValueError("The uploaded MP3 file is empty.")
-        if not uploaded_mp3_has_plausible_signature(header):
-            raise ValueError("The uploaded file does not appear to be a valid MP3.")
+            raise ValueError("The uploaded audio file is empty.")
+        if not uploaded_audio_has_plausible_signature(extension, header):
+            raise ValueError(
+                f"The uploaded file does not appear to be a valid {extension[1:].upper()} file."
+            )
         return temporary_path
     except Exception:
         if temporary_path is not None:
@@ -669,8 +674,8 @@ def external_say():
                     elif action == "upload_audio":
                         upload = request.files.get("audio_file")
                         if upload is None or not upload.filename:
-                            raise ValueError("Choose an MP3 file to upload.")
-                        temporary_path = save_uploaded_mp3(upload)
+                            raise ValueError("Choose an MP3 or MP4 file to upload.")
+                        temporary_path = save_uploaded_audio(upload)
                         status = submit_external_uploaded_audio(channel_id, temporary_path)
                     elif action == "speak":
                         speech_text = request.form.get("speech_text", "").strip()
@@ -724,7 +729,7 @@ def external_say():
         bark_sounds=EXTERNAL_BARK_SOUNDS,
         voice_channel_id=external_voice_channel_id(),
         tts_text_limit=TTS_TEXT_LIMIT,
-        max_upload_mp3_mib=MAX_UPLOADED_MP3_BYTES // (1024 * 1024),
+        max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
     ), response_status
@@ -1480,7 +1485,7 @@ def play_audio(voice_client, audio_path: Path, *, delete_after: bool = False) ->
             cleanup()
 
     try:
-        voice_client.play(discord.FFmpegPCMAudio(str(audio_path)), after=after_playback)
+        voice_client.play(discord.FFmpegPCMAudio(str(audio_path), options="-vn"), after=after_playback)
     except Exception:
         cleanup()
         raise
@@ -1631,7 +1636,7 @@ async def control_external_uploaded_audio(
             raise RuntimeError("Another sound is already playing")
 
         playback_started = True
-        return f"playing uploaded MP3 in {voice_channel.mention}"
+        return f"playing uploaded audio in {voice_channel.mention}"
     finally:
         if not playback_started:
             temporary_path.unlink(missing_ok=True)
