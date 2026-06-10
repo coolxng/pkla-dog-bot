@@ -338,7 +338,7 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
             await bot.on_message(message)
 
         enqueue_chat_tts.assert_called_once_with(guild, "Hello from Discord")
-        text_channel.send.assert_awaited_once_with("queued for TTS")
+        text_channel.send.assert_not_awaited()
         call_model.assert_not_awaited()
         self.assertEqual(bot.last_tts_at[guild.id], 100.0)
 

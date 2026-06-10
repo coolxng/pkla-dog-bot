@@ -1750,7 +1750,7 @@ def enqueue_chat_tts(guild, text: str) -> None:
         )
 
 
-async def speak_message(message, text: str) -> str:
+async def speak_message(message, text: str) -> str | None:
     if message.guild is None:
         return "use !tts in the server"
     if not text:
@@ -1763,7 +1763,7 @@ async def speak_message(message, text: str) -> str:
         return "Join me to a voice channel first with !join"
 
     enqueue_chat_tts(message.guild, text)
-    return "queued for TTS"
+    return None
 
 
 async def control_external_speech(channel_id: int, text: str, voice: str) -> str:
@@ -1862,8 +1862,9 @@ async def on_message(message):
         and content[len("!tts")].isspace()
     ):
         response = await speak_message(message, content[len("!tts"):].strip())
-        record_command_exchange(message, response, is_dm=is_dm)
-        await message.channel.send(response)
+        if response:
+            record_command_exchange(message, response, is_dm=is_dm)
+            await message.channel.send(response)
         return
 
     ping_response = ping_response_for(content)
