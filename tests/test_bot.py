@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, call, patch
 
 import bot
 
@@ -84,6 +84,45 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(command.parameters), 1)
         self.assertEqual(command.parameters[0].name, "user")
         self.assertTrue(command.parameters[0].required)
+
+    async def test_sync_keeps_global_command_and_clears_guild_commands(self):
+        guilds = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+
+        with (
+            patch.object(
+                type(bot.client),
+                "guilds",
+                new_callable=PropertyMock,
+                return_value=guilds,
+            ),
+            patch.object(bot.command_tree, "sync", new=AsyncMock()) as sync,
+            patch.object(bot.command_tree, "clear_commands") as clear_commands,
+        ):
+            synced = await bot.sync_slash_commands()
+
+        self.assertTrue(synced)
+        self.assertEqual(
+            sync.await_args_list,
+            [call(), call(guild=guilds[0]), call(guild=guilds[1])],
+        )
+        self.assertEqual(
+            clear_commands.call_args_list,
+            [call(guild=guilds[0]), call(guild=guilds[1])],
+        )
+
+    async def test_sync_failure_is_reported_for_retry(self):
+        with patch.object(
+            bot.command_tree,
+            "sync",
+            new=AsyncMock(
+                side_effect=bot.discord.HTTPException(
+                    Mock(status=500, reason="Server Error"), "sync failed"
+                )
+            ),
+        ):
+            synced = await bot.sync_slash_commands()
+
+        self.assertFalse(synced)
 
     async def test_rejects_member_not_in_voice(self):
         interaction = self.interaction()

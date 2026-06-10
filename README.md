@@ -67,6 +67,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
 | `/pingdeaf user:@member` | DMs a deafened voice member to undeafen, with a 60-second per-target cooldown. |
 
+The bot synchronizes `/pingdeaf` globally at startup and removes obsolete server-specific commands registered to the same Discord application.
+
 ## Send a message from outside Discord
 
 You can make the bot post a message from a web browser:

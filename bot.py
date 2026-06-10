@@ -1873,17 +1873,26 @@ async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> No
     await handle_pingdeaf(interaction, user)
 
 
+async def sync_slash_commands() -> bool:
+    try:
+        await command_tree.sync()
+        for guild in client.guilds:
+            # This bot only uses global commands. Clear obsolete guild commands that
+            # would otherwise remain visible and override the working global command.
+            command_tree.clear_commands(guild=guild)
+            await command_tree.sync(guild=guild)
+    except discord.HTTPException as error:
+        print(f"Could not sync slash commands: {error}")
+        return False
+    return True
+
+
 @client.event
 async def on_ready():
     global discord_event_loop, slash_commands_synced
     discord_event_loop = asyncio.get_running_loop()
     if not slash_commands_synced:
-        try:
-            await command_tree.sync()
-        except discord.HTTPException as error:
-            print(f"Could not sync slash commands: {error}")
-        else:
-            slash_commands_synced = True
+        slash_commands_synced = await sync_slash_commands()
     print(f"Logged in as {client.user}")
 
 
