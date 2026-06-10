@@ -87,7 +87,7 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
             played = bot.play_bark(voice_client)
 
         self.assertTrue(played)
-        ffmpeg_audio.assert_called_once_with(str(bot.BARK_AUDIO_PATH))
+        ffmpeg_audio.assert_called_once_with(str(bot.BARK_AUDIO_PATH), options="-vn")
         voice_client.play.assert_called_once()
         self.assertIs(voice_client.play.call_args.args[0], audio_source)
         self.assertIn("after", voice_client.play.call_args.kwargs)
@@ -1183,7 +1183,7 @@ class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):
             ):
                 response = await bot.control_external_uploaded_audio(123, audio_path)
 
-            self.assertEqual(response, "playing uploaded MP3 in #General")
+            self.assertEqual(response, "playing uploaded audio in #General")
             play_audio.assert_called_once_with(voice_client, audio_path, delete_after=True)
             audio_path.unlink()
 
@@ -1246,34 +1246,49 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertIn(b'enctype="multipart/form-data"', response.data)
         self.assertIn(b'name="action" value="upload_audio"', response.data)
         self.assertIn(b'name="audio_file"', response.data)
-        self.assertIn(b'accept=".mp3,audio/mpeg"', response.data)
+        self.assertIn(b'accept=".mp3,.mp4,audio/mpeg,video/mp4"', response.data)
         self.assertIn(b"The bot must already be connected", response.data)
-        self.assertIn(str(bot.MAX_UPLOADED_MP3_BYTES // (1024 * 1024)).encode(), response.data)
+        self.assertIn(str(bot.MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024)).encode(), response.data)
 
     def test_valid_upload_submits_channel_and_redirects(self):
-        submitted = []
+        for content, filename in (
+            (b"ID3audio", "clip.mp3"),
+            (b"\x00\x00\x00\x18ftypisom", "clip.mp4"),
+        ):
+            with self.subTest(filename=filename):
+                submitted = []
 
-        def submit(channel_id, audio_path):
-            submitted.append((channel_id, audio_path))
-            return "playing uploaded MP3 in #General"
+                def submit(channel_id, audio_path):
+                    submitted.append((channel_id, audio_path))
+                    return "playing uploaded audio in #General"
 
-        with patch.object(bot, "submit_external_uploaded_audio", side_effect=submit):
-            response = self.client.post(
-                "/say", data=self.upload_data(), content_type="multipart/form-data"
-            )
+                with patch.object(bot, "submit_external_uploaded_audio", side_effect=submit):
+                    response = self.client.post(
+                        "/say",
+                        data=self.upload_data(content=content, filename=filename),
+                        content_type="multipart/form-data",
+                    )
 
-        self.assertEqual(response.status_code, 303)
-        self.assertIn("status=playing+uploaded+MP3+in+%23General", response.headers["Location"])
-        self.assertEqual(submitted[0][0], 123)
-        self.assertTrue(submitted[0][1].is_file())
-        submitted[0][1].unlink()
+                self.assertEqual(response.status_code, 303)
+                self.assertIn(
+                    "status=playing+uploaded+audio+in+%23General",
+                    response.headers["Location"],
+                )
+                self.assertEqual(submitted[0][0], 123)
+                self.assertEqual(submitted[0][1].suffix, Path(filename).suffix)
+                self.assertTrue(submitted[0][1].is_file())
+                submitted[0][1].unlink()
 
-    def test_missing_empty_non_mp3_malformed_and_oversized_uploads_are_rejected(self):
+    def test_missing_empty_unsupported_malformed_and_oversized_uploads_are_rejected(self):
         cases = (
-            (None, b"Choose an MP3 file"),
+            (None, b"Choose an MP3 or MP4 file"),
             (self.upload_data(content=b""), b"empty"),
-            (self.upload_data(filename="clip.wav"), b".mp3 extension"),
+            (self.upload_data(filename="clip.wav"), b".mp3 or .mp4 extension"),
             (self.upload_data(content=b"not an mp3"), b"does not appear"),
+            (
+                self.upload_data(content=b"not an mp4", filename="clip.mp4"),
+                b"does not appear",
+            ),
         )
         for data, expected in cases:
             with self.subTest(expected=expected):
@@ -1285,7 +1300,7 @@ class ExternalSayUploadFormTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn(expected, response.data)
 
-        with patch.object(bot, "MAX_UPLOADED_MP3_BYTES", 4):
+        with patch.object(bot, "MAX_UPLOADED_AUDIO_BYTES", 4):
             response = self.client.post(
                 "/say",
                 data=self.upload_data(content=b"ID3too large"),
