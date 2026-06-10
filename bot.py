@@ -274,7 +274,7 @@ Core behavior:
 Bot capabilities and boundaries:
 - Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
 - `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. The bot does not listen to, record, or process incoming voice audio.
-- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!leave` stops scheduled barking and disconnects from voice.
+- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` reads the message in the connected voice channel with a 30-second server-wide cooldown. `!leave` stops scheduled barking and disconnects from voice.
 - The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, and speak up to 500 characters with text to speech. Those web controls are separate from normal chat commands.
 - `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
 - A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
@@ -1642,15 +1642,12 @@ async def control_external_uploaded_audio(
             temporary_path.unlink(missing_ok=True)
 
 
-async def control_external_speech(channel_id: int, text: str, voice: str) -> str:
-    voice_channel = client.get_channel(channel_id)
-    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
-        raise RuntimeError("That Discord voice channel is unavailable")
-
-    guild = voice_channel.guild
+async def speak_in_guild(
+    guild, text: str, voice: str, *, not_connected_message: str
+) -> None:
     voice_client = guild.voice_client
     if not voice_client or not voice_client.is_connected():
-        raise RuntimeError("Join the selected voice call before speaking")
+        raise RuntimeError(not_connected_message)
     if voice_client.is_playing():
         raise RuntimeError("Another sound is already playing")
 
@@ -1682,6 +1679,45 @@ async def control_external_speech(channel_id: int, text: str, voice: str) -> str
     except Exception:
         restore_previous_cooldown()
         raise
+
+
+async def speak_message(message, text: str) -> str:
+    if message.guild is None:
+        return "use !tts in the server"
+    if not text:
+        return "add a message after !tts"
+    if len(text) > TTS_TEXT_LIMIT:
+        return f"TTS messages cannot exceed {TTS_TEXT_LIMIT} characters"
+
+    try:
+        await speak_in_guild(
+            message.guild,
+            text,
+            OPENAI_TTS_VOICE,
+            not_connected_message="Join me to a voice channel first with !join",
+        )
+    except RuntimeError as error:
+        return str(error)
+    except discord.DiscordException as error:
+        print(f"TTS playback error: {error}")
+        return "couldn't play that message; check my Speak permission and try again"
+    except Exception as error:
+        print(f"TTS command error: {error}")
+        return "couldn't generate speech right now"
+    return "speaking"
+
+
+async def control_external_speech(channel_id: int, text: str, voice: str) -> str:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+
+    await speak_in_guild(
+        voice_channel.guild,
+        text,
+        voice,
+        not_connected_message="Join the selected voice call before speaking",
+    )
     return f"speaking in {voice_channel.mention}"
 
 
@@ -1757,6 +1793,16 @@ async def on_message(message):
 
     if normalized_content == "!bark":
         response = bark_on_command(message)
+        record_command_exchange(message, response, is_dm=is_dm)
+        await message.channel.send(response)
+        return
+
+    if normalized_content == "!tts" or (
+        normalized_content.startswith("!tts")
+        and len(content) > len("!tts")
+        and content[len("!tts")].isspace()
+    ):
+        response = await speak_message(message, content[len("!tts"):].strip())
         record_command_exchange(message, response, is_dm=is_dm)
         await message.channel.send(response)
         return

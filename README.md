@@ -63,6 +63,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!forget` | Owner-only command that clears shared memory. |
 | `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. The bot does not record or process incoming audio. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
+| `!tts <message>` | Reads up to 500 characters in the voice channel where the bot is connected. Uses the configured TTS voice and has a 30-second server-wide cooldown. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
 
 ## Send a message from outside Discord
