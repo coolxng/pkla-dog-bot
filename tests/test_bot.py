@@ -421,6 +421,147 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(member.id, bot.last_pingdeaf_at)
 
 
+class DeleteDmMessagesTests(unittest.IsolatedAsyncioTestCase):
+    class FakeDMChannel:
+        def __init__(self, channel_id, messages):
+            self.id = channel_id
+            self._messages = messages
+
+        def history(self, *, limit):
+            if limit is not None:
+                raise AssertionError("DM cleanup must request the complete history")
+
+            async def iterate_messages():
+                for message in self._messages:
+                    yield message
+
+            return iterate_messages()
+
+    async def test_deletes_bot_messages_from_all_dm_channels(self):
+        first_bot_message = SimpleNamespace(
+            id=1, author=SimpleNamespace(id=999), delete=AsyncMock()
+        )
+        user_message = SimpleNamespace(
+            id=2, author=SimpleNamespace(id=123), delete=AsyncMock()
+        )
+        second_bot_message = SimpleNamespace(
+            id=3, author=SimpleNamespace(id=999), delete=AsyncMock()
+        )
+        channels = [
+            self.FakeDMChannel(10, [first_bot_message, user_message]),
+            self.FakeDMChannel(20, [second_bot_message]),
+        ]
+
+        result = await bot.delete_bot_dm_messages(channels, 999)
+
+        self.assertEqual(result, (2, 0, 0))
+        first_bot_message.delete.assert_awaited_once_with()
+        second_bot_message.delete.assert_awaited_once_with()
+        user_message.delete.assert_not_awaited()
+
+    async def test_continues_after_message_and_channel_failures(self):
+        failed_message = SimpleNamespace(
+            id=1, author=SimpleNamespace(id=999), delete=AsyncMock()
+        )
+        failed_message.delete.side_effect = bot.discord.Forbidden(
+            Mock(status=403, reason="Forbidden"),
+            {"message": "Cannot delete", "code": 50013},
+        )
+        remaining_message = SimpleNamespace(
+            id=2, author=SimpleNamespace(id=999), delete=AsyncMock()
+        )
+        failed_channel = self.FakeDMChannel(20, [])
+        failed_channel.history = Mock(
+            side_effect=bot.discord.Forbidden(
+                Mock(status=403, reason="Forbidden"),
+                {"message": "Cannot read", "code": 50013},
+            )
+        )
+        channels = [
+            self.FakeDMChannel(10, [failed_message]),
+            failed_channel,
+            self.FakeDMChannel(30, [remaining_message]),
+        ]
+
+        result = await bot.delete_bot_dm_messages(channels, 999)
+
+        self.assertEqual(result, (1, 1, 1))
+        remaining_message.delete.assert_awaited_once_with()
+
+    def test_cleanup_channels_include_all_cached_dms_and_invoking_dm_once(self):
+        invoking_channel = self.FakeDMChannel(10, [])
+        another_channel = self.FakeDMChannel(20, [])
+
+        with (
+            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
+            patch.object(
+                type(bot.client),
+                "private_channels",
+                new_callable=PropertyMock,
+                return_value=[invoking_channel, another_channel, SimpleNamespace(id=30)],
+            ),
+        ):
+            channels = bot.dm_channels_for_cleanup(invoking_channel)
+
+        self.assertEqual(channels, [invoking_channel, another_channel])
+
+    async def test_authorized_user_cleans_all_available_dms(self):
+        channel = self.FakeDMChannel(10, [])
+        other_channel = self.FakeDMChannel(20, [])
+        message = SimpleNamespace(
+            author=SimpleNamespace(
+                id=bot.DEFAULT_OWNER_ID,
+                display_name="Owner",
+            ),
+            channel=channel,
+            content="!deletedms",
+            add_reaction=AsyncMock(),
+        )
+
+        with (
+            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
+            patch.object(bot.client._connection, "user", SimpleNamespace(id=999)),
+            patch.object(
+                bot,
+                "dm_channels_for_cleanup",
+                return_value=[channel, other_channel],
+            ),
+            patch.object(
+                bot,
+                "delete_bot_dm_messages",
+                new=AsyncMock(return_value=(25, 0, 0)),
+            ) as delete_messages,
+            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
+        ):
+            await bot.on_message(message)
+
+        delete_messages.assert_awaited_once_with([channel, other_channel], 999)
+        message.add_reaction.assert_awaited_once_with("✅")
+        call_model.assert_not_awaited()
+
+    async def test_delete_command_is_ignored_for_every_other_user(self):
+        channel = self.FakeDMChannel(10, [])
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=123, display_name="Other"),
+            channel=channel,
+            content="!deletedms",
+            add_reaction=AsyncMock(),
+        )
+
+        with (
+            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
+            patch.object(
+                bot, "delete_bot_dm_messages", new_callable=AsyncMock
+            ) as delete_messages,
+            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
+        ):
+            await bot.on_message(message)
+
+        delete_messages.assert_not_awaited()
+        message.add_reaction.assert_not_awaited()
+        call_model.assert_not_awaited()
+
+
 class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
     def test_bark_audio_file_exists(self):
         self.assertTrue(bot.BARK_AUDIO_PATH.is_file())

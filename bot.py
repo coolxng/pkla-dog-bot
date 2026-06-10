@@ -2084,6 +2084,69 @@ async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> No
     await handle_pingdeaf(interaction, user)
 
 
+async def delete_bot_dm_messages(
+    channels: list[discord.DMChannel], bot_user_id: int
+) -> tuple[int, int, int]:
+    deleted_count = 0
+    failed_message_count = 0
+    failed_channel_count = 0
+
+    for channel in channels:
+        try:
+            async for dm_message in channel.history(limit=None):
+                if dm_message.author.id != bot_user_id:
+                    continue
+
+                try:
+                    await dm_message.delete()
+                    deleted_count += 1
+                except discord.NotFound:
+                    # The message was removed after history returned it.
+                    continue
+                except discord.HTTPException as error:
+                    failed_message_count += 1
+                    print(f"Could not delete DM message {dm_message.id}: {error}")
+        except discord.HTTPException as error:
+            failed_channel_count += 1
+            print(f"Could not read DM channel {channel.id}: {error}")
+
+    return deleted_count, failed_message_count, failed_channel_count
+
+
+def dm_channels_for_cleanup(invoking_channel: discord.DMChannel) -> list[discord.DMChannel]:
+    channels_by_id = {
+        channel.id: channel
+        for channel in client.private_channels
+        if isinstance(channel, discord.DMChannel)
+    }
+    channels_by_id[invoking_channel.id] = invoking_channel
+    return list(channels_by_id.values())
+
+
+async def handle_delete_dms_command(message) -> None:
+    bot_user = client.user
+    if bot_user is None:
+        print("Could not delete DM history because the Discord client user is unavailable.")
+        return
+
+    channels = dm_channels_for_cleanup(message.channel)
+    deleted_count, failed_message_count, failed_channel_count = (
+        await delete_bot_dm_messages(channels, bot_user.id)
+    )
+    failed_count = failed_message_count + failed_channel_count
+    reaction = "⚠️" if failed_count else "✅"
+    print(
+        f"Deleted {deleted_count} bot messages across {len(channels)} DM channels; "
+        f"{failed_message_count} message deletions and "
+        f"{failed_channel_count} channel reads failed."
+    )
+
+    try:
+        await message.add_reaction(reaction)
+    except discord.HTTPException as error:
+        print(f"Could not add DM cleanup result reaction: {error}")
+
+
 async def sync_slash_commands() -> bool:
     try:
         await command_tree.sync()
@@ -2112,19 +2175,27 @@ async def on_message(message):
     if message.author == client.user:
         return
 
+    content = message.content.strip()
+    if not content:
+        return
+
+    normalized_content = content.lower().strip()
+    if normalized_content == "!deletedms":
+        if (
+            isinstance(message.channel, discord.DMChannel)
+            and message.author.id == DEFAULT_OWNER_ID
+        ):
+            await handle_delete_dms_command(message)
+        return
+
     is_dm = isinstance(message.channel, discord.DMChannel) and message.author.id == OWNER_ID
     is_target_channel = message.channel.id in TARGET_CHANNEL_IDS
 
     if not is_dm and not is_target_channel:
         return
 
-    content = message.content.strip()
-    if not content:
-        return
-
     user_id = message.author.id
     display_name = message.author.display_name
-    normalized_content = content.lower().strip()
 
     if normalized_content == "!join":
         response = await join_author_voice(message)
