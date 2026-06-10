@@ -1851,7 +1851,7 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
     try:
         await user.send(
             f"🔇 People are trying to talk to you in **{voice_state.channel.name}**. "
-            "Undeafen when you can."
+            "Undeafen RIGHT NOW 😠."
         )
     except discord.HTTPException:
         if last_pingdeaf_at.get(user.id) == now:
