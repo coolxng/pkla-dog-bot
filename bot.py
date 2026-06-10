@@ -274,7 +274,7 @@ Core behavior:
 Bot capabilities and boundaries:
 - Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
 - `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. The bot does not listen to, record, or process incoming voice audio.
-- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` reads the message in the connected voice channel with a 30-second server-wide cooldown. `!leave` stops scheduled barking and disconnects from voice.
+- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` queues the message to be read in the connected voice channel without overlapping other `!tts` messages. `!leave` stops scheduled barking and disconnects from voice.
 - The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, and speak up to 500 characters with text to speech. Those web controls are separate from normal chat commands.
 - `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
 - A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
@@ -1466,9 +1466,13 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
 bark_tasks: dict[int, asyncio.Task] = {}
 last_command_bark_at: dict[int, float] = {}
 last_tts_at: dict[int, float] = {}
+chat_tts_queues: dict[int, asyncio.Queue] = {}
+chat_tts_tasks: dict[int, asyncio.Task] = {}
 
 
-def play_audio(voice_client, audio_path: Path, *, delete_after: bool = False) -> bool:
+def play_audio(
+    voice_client, audio_path: Path, *, delete_after: bool = False, after=None
+) -> bool:
     def cleanup() -> None:
         if delete_after:
             audio_path.unlink(missing_ok=True)
@@ -1481,6 +1485,8 @@ def play_audio(voice_client, audio_path: Path, *, delete_after: bool = False) ->
         try:
             if error:
                 print(f"Audio playback error: {error}")
+            if after:
+                after(error)
         finally:
             cleanup()
 
@@ -1681,6 +1687,69 @@ async def speak_in_guild(
         raise
 
 
+async def play_chat_tts(guild, text: str) -> None:
+    voice_client = guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("Join me to a voice channel first with !join")
+
+    while voice_client.is_playing():
+        await asyncio.sleep(0.1)
+
+    speech_path = await asyncio.to_thread(
+        synthesize_speech, text, OPENAI_TTS_VOICE
+    )
+    loop = asyncio.get_running_loop()
+    playback_finished = loop.create_future()
+
+    def finish_playback(error) -> None:
+        def set_result() -> None:
+            if not playback_finished.done():
+                playback_finished.set_result(error)
+
+        loop.call_soon_threadsafe(set_result)
+
+    if not play_audio(
+        voice_client, speech_path, delete_after=True, after=finish_playback
+    ):
+        raise RuntimeError("Another sound started before TTS playback")
+
+    playback_error = await playback_finished
+    if playback_error:
+        raise RuntimeError("Discord could not finish TTS playback") from playback_error
+
+
+async def process_chat_tts_queue(guild_id: int) -> None:
+    queue = chat_tts_queues[guild_id]
+    try:
+        while not queue.empty():
+            guild, text = await queue.get()
+            try:
+                await play_chat_tts(guild, text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                print(f"Queued TTS error: {error}")
+            finally:
+                queue.task_done()
+    finally:
+        current_task = asyncio.current_task()
+        if chat_tts_tasks.get(guild_id) is current_task:
+            chat_tts_tasks.pop(guild_id, None)
+        if queue.empty():
+            chat_tts_queues.pop(guild_id, None)
+
+
+def enqueue_chat_tts(guild, text: str) -> None:
+    queue = chat_tts_queues.setdefault(guild.id, asyncio.Queue())
+    queue.put_nowait((guild, text))
+
+    task = chat_tts_tasks.get(guild.id)
+    if task is None or task.done():
+        chat_tts_tasks[guild.id] = asyncio.create_task(
+            process_chat_tts_queue(guild.id)
+        )
+
+
 async def speak_message(message, text: str) -> str:
     if message.guild is None:
         return "use !tts in the server"
@@ -1689,22 +1758,12 @@ async def speak_message(message, text: str) -> str:
     if len(text) > TTS_TEXT_LIMIT:
         return f"TTS messages cannot exceed {TTS_TEXT_LIMIT} characters"
 
-    try:
-        await speak_in_guild(
-            message.guild,
-            text,
-            OPENAI_TTS_VOICE,
-            not_connected_message="Join me to a voice channel first with !join",
-        )
-    except RuntimeError as error:
-        return str(error)
-    except discord.DiscordException as error:
-        print(f"TTS playback error: {error}")
-        return "couldn't play that message; check my Speak permission and try again"
-    except Exception as error:
-        print(f"TTS command error: {error}")
-        return "couldn't generate speech right now"
-    return "speaking"
+    voice_client = message.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        return "Join me to a voice channel first with !join"
+
+    enqueue_chat_tts(message.guild, text)
+    return "queued for TTS"
 
 
 async def control_external_speech(channel_id: int, text: str, voice: str) -> str:

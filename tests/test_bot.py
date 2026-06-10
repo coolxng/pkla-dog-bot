@@ -315,41 +315,89 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_tts_at.clear()
+        bot.chat_tts_queues.clear()
+        bot.chat_tts_tasks.clear()
 
-    async def test_tts_command_speaks_following_message(self):
+    async def test_tts_command_queues_following_message(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        voice_client = SimpleNamespace(
-            is_connected=lambda: True, is_playing=lambda: False
-        )
+        voice_client = SimpleNamespace(is_connected=lambda: True)
         text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
         guild = SimpleNamespace(id=456, voice_client=voice_client)
+        bot.last_tts_at[guild.id] = 100.0
         message = SimpleNamespace(
             author=SimpleNamespace(id=123, display_name="Tester"),
             channel=text_channel,
             content="!tts Hello from Discord",
             guild=guild,
         )
-        speech_path = Path("/tmp/generated-speech.mp3")
 
         with (
             patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-            patch.object(bot.time, "monotonic", return_value=100.0),
-            patch.object(
-                bot.asyncio,
-                "to_thread",
-                new=AsyncMock(return_value=speech_path),
-            ) as to_thread,
-            patch.object(bot, "play_audio", return_value=True) as play_audio,
+            patch.object(bot, "enqueue_chat_tts") as enqueue_chat_tts,
         ):
             await bot.on_message(message)
 
-        to_thread.assert_awaited_once_with(
-            bot.synthesize_speech, "Hello from Discord", bot.OPENAI_TTS_VOICE
-        )
-        play_audio.assert_called_once_with(voice_client, speech_path, delete_after=True)
-        text_channel.send.assert_awaited_once_with("speaking")
+        enqueue_chat_tts.assert_called_once_with(guild, "Hello from Discord")
+        text_channel.send.assert_awaited_once_with("queued for TTS")
         call_model.assert_not_awaited()
-        self.assertEqual(bot.last_tts_at[456], 100.0)
+        self.assertEqual(bot.last_tts_at[guild.id], 100.0)
+
+    async def test_chat_tts_queue_processes_messages_without_overlap(self):
+        voice_client = SimpleNamespace(is_connected=lambda: True)
+        guild = SimpleNamespace(id=456, voice_client=voice_client)
+        first_started = asyncio.Event()
+        allow_first_to_finish = asyncio.Event()
+        playback_order = []
+
+        async def play_speech(_guild, text):
+            playback_order.append(f"start:{text}")
+            if text == "first":
+                first_started.set()
+                await allow_first_to_finish.wait()
+            playback_order.append(f"finish:{text}")
+
+        with patch.object(bot, "play_chat_tts", side_effect=play_speech):
+            bot.enqueue_chat_tts(guild, "first")
+            queue = bot.chat_tts_queues[guild.id]
+            await first_started.wait()
+            bot.enqueue_chat_tts(guild, "second")
+            await asyncio.sleep(0)
+
+            self.assertEqual(playback_order, ["start:first"])
+
+            allow_first_to_finish.set()
+            await queue.join()
+
+        self.assertEqual(
+            playback_order,
+            ["start:first", "finish:first", "start:second", "finish:second"],
+        )
+
+    async def test_chat_tts_waits_for_discord_playback_to_finish(self):
+        callbacks = []
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True,
+            is_playing=lambda: False,
+        )
+        guild = SimpleNamespace(id=456, voice_client=voice_client)
+        speech_path = Path("generated-speech.mp3")
+
+        def start_playback(*args, **kwargs):
+            callbacks.append(kwargs["after"])
+            return True
+
+        with (
+            patch.object(
+                bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
+            ),
+            patch.object(bot, "play_audio", side_effect=start_playback),
+        ):
+            playback = asyncio.create_task(bot.play_chat_tts(guild, "hello"))
+            await asyncio.sleep(0)
+            self.assertFalse(playback.done())
+
+            callbacks[0](None)
+            await playback
 
     async def test_tts_command_requires_message_text(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
@@ -361,10 +409,10 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
             guild=SimpleNamespace(id=456, voice_client=None),
         )
 
-        with patch.object(bot, "speak_in_guild", new_callable=AsyncMock) as speak:
+        with patch.object(bot, "enqueue_chat_tts") as enqueue_chat_tts:
             await bot.on_message(message)
 
-        speak.assert_not_awaited()
+        enqueue_chat_tts.assert_not_called()
         text_channel.send.assert_awaited_once_with("add a message after !tts")
 
     async def test_tts_command_reports_when_bot_is_not_connected(self):
