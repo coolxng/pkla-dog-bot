@@ -1448,12 +1448,38 @@ class CasualReplyStyleTests(unittest.TestCase):
         self.assertEqual(bot.keep_first_reply_line(reply), "🦦")
 
 
-class OpenAIConfigTests(unittest.TestCase):
-    def test_default_model_uses_chatgpt_like_alias(self):
-        self.assertEqual(bot.DEFAULT_OPENAI_MODEL, "chat-latest")
+class GroqConfigTests(unittest.TestCase):
+    def test_default_chat_model_is_supported_groq_production_model(self):
+        self.assertEqual(bot.DEFAULT_GROQ_MODEL, "llama-3.3-70b-versatile")
 
-    def test_gpt5_reasoning_effort_defaults_to_none(self):
-        self.assertEqual(bot.default_reasoning_effort("gpt-5.5"), "none")
+    def test_chat_completion_uses_groq_api(self):
+        response = {"choices": [{"message": {"content": "hello"}}]}
+        with (
+            patch.dict(
+                bot.os.environ,
+                {"GROQ_API_KEY": "secret", "GROQ_MODEL": "llama-3.1-8b-instant"},
+            ),
+            patch.object(bot, "post_json", return_value=response) as post_json,
+        ):
+            result = bot.create_chat_completion(
+                [{"role": "user", "content": "hi"}], max_tokens=25
+            )
+
+        self.assertEqual(result, "hello")
+        post_json.assert_called_once_with(
+            "https://api.groq.com/openai/v1/chat/completions",
+            {
+                "model": "llama-3.1-8b-instant",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_completion_tokens": 25,
+            },
+            headers={"Authorization": "Bearer secret"},
+        )
+
+    def test_chat_completion_requires_groq_api_key(self):
+        with patch.dict(bot.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY is not set"):
+                bot.create_chat_completion([], max_tokens=25)
 
     def test_system_prompt_uses_natural_discord_conversation_style(self):
         self.assertIn("real person participating in a Discord conversation", bot.SYSTEM_PROMPT)
@@ -1469,9 +1495,9 @@ class OpenAIConfigTests(unittest.TestCase):
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
         self.assertIn("`!join`", bot.SYSTEM_PROMPT)
         self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
-        self.assertIn("Joining never starts recording or transcription", bot.SYSTEM_PROMPT)
+        self.assertIn("Joining never starts recording", bot.SYSTEM_PROMPT)
         self.assertIn("listen to live call audio in the browser", bot.SYSTEM_PROMPT)
-        self.assertIn("start or stop call transcription", bot.SYSTEM_PROMPT)
+        self.assertNotIn("transcription", bot.SYSTEM_PROMPT.lower())
         self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
         self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
         self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
@@ -2307,256 +2333,22 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class FakeTranscriptionProvider:
-    def __init__(self, results=None, error=None):
-        self.results = results or [{"text": "hello", "final": True}]
-        self.error = error
-        self.audio = []
-
-    def transcribe(self, wav_audio):
-        self.audio.append(wav_audio)
-        if self.error:
-            raise self.error
-        return self.results
-
-
-class TranscriptionSessionTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        bot.transcription_sessions.clear()
-
-    async def asyncTearDown(self):
-        await bot.cleanup_all_transcriptions()
-
-    async def test_fake_receive_sink_attributes_speaker_and_partial_state(self):
-        provider = FakeTranscriptionProvider(
-            [{"text": "testing one two", "final": False}]
-        )
-        voice_client = SimpleNamespace(is_listening=lambda: False)
-        session = bot.TranscriptionSession(1, 2, voice_client, provider)
-        user = SimpleNamespace(id=42, display_name="Alice")
-        session.sink.write(user, SimpleNamespace(pcm=b"\x01\x02" * 100))
-        await asyncio.sleep(0)
-        pending = session._buffers.pop(42)
-        session._queue_chunk(pending, bytes(pending.pcm))
-        await asyncio.gather(*list(session._pending_tasks))
-
-        self.assertEqual(
-            session.snapshot(),
-            [
-                {
-                    "sequence": 1,
-                    "timestamp": session.snapshot()[0]["timestamp"],
-                    "user_id": "42",
-                    "display_name": "Alice",
-                    "text": "testing one two",
-                    "final": False,
-                }
-            ],
-        )
-
-    async def test_chunks_are_bounded_before_provider_submission(self):
-        provider = FakeTranscriptionProvider()
-        session = bot.TranscriptionSession(
-            1, 2, SimpleNamespace(is_listening=lambda: False), provider
-        )
-        with patch.object(bot, "TRANSCRIPTION_MAX_CHUNK_BYTES", 8):
-            session.accept_audio(42, "Alice", b"x" * 20, received_at=1.0)
-            await asyncio.gather(*list(session._pending_tasks))
-
-        frame_lengths = []
-        for wav_audio in provider.audio:
-            with bot.wave.open(io.BytesIO(wav_audio), "rb") as wav_file:
-                frame_lengths.append(len(wav_file.readframes(wav_file.getnframes())))
-        self.assertEqual(frame_lengths, [8, 8])
-        self.assertEqual(bytes(session._buffers[42].pcm), b"x" * 4)
-
-    async def test_retention_limit_keeps_only_latest_entries(self):
-        with patch.object(bot, "TRANSCRIPT_RETENTION_LIMIT", 2):
-            session = bot.TranscriptionSession(
-                1, 2, SimpleNamespace(is_listening=lambda: False), FakeTranscriptionProvider()
-            )
-        session.add_entry(1, "A", "one", True)
-        session.add_entry(2, "B", "two", True)
-        session.add_entry(3, "C", "three", True)
-
-        self.assertEqual([entry["text"] for entry in session.snapshot()], ["two", "three"])
-
-    async def test_provider_failure_becomes_visible_transcript_entry(self):
-        provider = FakeTranscriptionProvider(error=RuntimeError("provider down"))
-        session = bot.TranscriptionSession(
-            1, 2, SimpleNamespace(is_listening=lambda: False), provider
-        )
-        await session._transcribe_chunk(42, "Alice", b"\0" * 16)
-
-        self.assertIn("Transcription failed: provider down", session.snapshot()[0]["text"])
-
-    async def test_closing_transcription_does_not_stop_shared_browser_receiver(self):
-        voice_client = SimpleNamespace(
-            is_listening=lambda: True, stop_listening=Mock()
-        )
-        session = bot.TranscriptionSession(1, 2, voice_client, FakeTranscriptionProvider())
-
-        await session.close(discard_audio=True)
-
-        voice_client.stop_listening.assert_not_called()
-
-    async def test_disconnect_cleanup_discards_session_state(self):
-        voice_client = SimpleNamespace(
-            is_listening=lambda: False, stop_listening=Mock()
-        )
-        session = bot.TranscriptionSession(1, 2, voice_client, FakeTranscriptionProvider())
-        session.add_entry(42, "Alice", "hello", True)
-        bot.transcription_sessions[1] = session
-
-        await bot.cleanup_transcription_for_guild(1)
-
-        self.assertNotIn(1, bot.transcription_sessions)
-        self.assertFalse(session.active)
-
-    async def test_transcript_snapshot_is_safe_during_concurrent_updates(self):
-        session = bot.TranscriptionSession(
-            1, 2, SimpleNamespace(is_listening=lambda: False), FakeTranscriptionProvider()
-        )
-
-        async def read_repeatedly():
-            return await asyncio.to_thread(
-                lambda: [session.snapshot() for _ in range(100)]
-            )
-
-        reader = asyncio.create_task(read_repeatedly())
-        for index in range(100):
-            session.add_entry(index, f"User {index}", str(index), True)
-            await asyncio.sleep(0)
-        snapshots = await reader
-
-        self.assertTrue(snapshots)
-        self.assertEqual(session.snapshot()[-1]["text"], "99")
-
-
-class TranscriptionControlTests(unittest.IsolatedAsyncioTestCase):
-    async def asyncSetUp(self):
-        bot.transcription_sessions.clear()
-
-    async def asyncTearDown(self):
-        await bot.cleanup_all_transcriptions()
-
-    async def test_start_and_stop_use_fake_receive_and_provider_adapters(self):
-        class FakeVoiceRecvClient:
-            def __init__(self):
-                self.channel = None
-                self.sink = None
-                self.listening = False
-
-            def is_connected(self):
-                return True
-
-            def listen(self, sink):
-                self.sink = sink
-                self.listening = True
-
-            def is_listening(self):
-                return self.listening
-
-            def stop_listening(self):
-                self.listening = False
-
-        class FakeVoiceChannel:
-            pass
-
-        channel = FakeVoiceChannel()
-        channel.id = 123
-        channel.mention = "#General"
-        channel.send = AsyncMock()
-        channel.permissions_for = Mock(
-            return_value=SimpleNamespace(
-                view_channel=True, connect=True, send_messages=True
-            )
-        )
-        voice_client = FakeVoiceRecvClient()
-        voice_client.channel = channel
-        channel.guild = SimpleNamespace(id=9, voice_client=voice_client, me=object())
-        fake_receive = SimpleNamespace(VoiceRecvClient=FakeVoiceRecvClient)
-        fake_client = SimpleNamespace(get_channel=lambda _channel_id: channel)
-
-        with (
-            patch.object(bot, "TRANSCRIPTION_ENABLED", True),
-            patch.object(bot, "voice_recv", fake_receive),
-            patch.object(bot, "client", fake_client),
-            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot, "create_transcription_provider", return_value=FakeTranscriptionProvider()),
-            patch.object(bot, "create_browser_audio_sink", return_value=object()),
-        ):
-            started = await bot.start_transcription(123)
-            stopped = await bot.stop_transcription(123)
-
-        self.assertEqual(started, "transcription started in #General")
-        self.assertEqual(stopped, "transcription stopped in #General")
-        self.assertIsNotNone(voice_client.sink)
-        self.assertFalse(voice_client.listening)
-        channel.send.assert_awaited_once_with(
-            "⚪ **Transcription stopped.** Call audio is no longer being captured."
-        )
-        self.assertFalse(bot.transcription_sessions[9].active)
-
-
-class ExternalTranscriptionRouteTests(unittest.TestCase):
+class ExternalListeningFeatureTests(unittest.TestCase):
     def setUp(self):
         self.client = bot.app.test_client()
 
-    def test_page_shows_live_listening_and_transcription_without_notice(self):
+    def test_page_keeps_browser_listening_without_transcription_controls(self):
         response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn(b"Audio capture notice", response.data)
-        self.assertNotIn(b'name="transcription_consent"', response.data)
         self.assertIn(b"Listen in browser", response.data)
         self.assertIn(b"Start listening", response.data)
         self.assertIn(b"Stop listening", response.data)
-        self.assertIn(b'value="start_transcription"', response.data)
-        self.assertIn(b"Clear transcript", response.data)
-        self.assertIn(b'id="transcript-list"', response.data)
-        self.assertIn(b"window.setInterval(refreshTranscript, 2000)", response.data)
+        self.assertNotIn(b"Call transcription", response.data)
+        self.assertNotIn(b"/say/transcript", response.data)
+        self.assertNotIn(b'value="start_transcription"', response.data)
 
-    def test_transcription_is_enabled_by_default(self):
-        self.assertTrue(bot.TRANSCRIPTION_ENABLED)
+    def test_transcript_route_is_removed(self):
+        response = self.client.get("/say/transcript?voice_channel_id=123")
 
-    def test_start_route_submits_without_consent_field(self):
-        with (
-            patch.object(bot, "require_transcription_control_authentication"),
-            patch.object(
-                bot, "submit_transcription_action", return_value="transcription started"
-            ) as submit,
-        ):
-            response = self.client.post(
-                "/say",
-                data={"action": "start_transcription", "voice_channel_id": "123"},
-            )
-
-        self.assertEqual(response.status_code, 303)
-        submit.assert_called_once_with("start_transcription", 123)
-
-    def test_transcript_route_requires_authentication(self):
-        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"):
-            response = self.client.get("/say/transcript?voice_channel_id=123")
-
-        self.assertEqual(response.status_code, 401)
-        self.assertIn("Basic", response.headers["WWW-Authenticate"])
-
-    def test_authenticated_transcript_route_returns_entries(self):
-        payload = {"active": True, "entries": [{"sequence": 1, "text": "hello"}]}
-
-        def run_and_close(coroutine, _message):
-            coroutine.close()
-            return payload
-
-        with (
-            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
-            patch.object(bot, "run_discord_coroutine", side_effect=run_and_close),
-        ):
-            response = self.client.get(
-                "/say/transcript?voice_channel_id=123&after=0",
-                headers={"Authorization": "Basic dXNlcjpzZWNyZXQ="},
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), payload)
+        self.assertEqual(response.status_code, 404)

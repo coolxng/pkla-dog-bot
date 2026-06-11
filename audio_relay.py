@@ -35,7 +35,6 @@ class SlowClientError(RelayError):
 class RelayState:
     listener_count: int
     running: bool
-    transcription_active: bool
     encoder_error: str | None
 
 
@@ -91,7 +90,6 @@ class AudioRelay:
         self._process = None
         self._mixer_thread: threading.Thread | None = None
         self._reader_thread: threading.Thread | None = None
-        self._transcription_active = False
         self._encoder_error: str | None = None
 
     @property
@@ -104,7 +102,6 @@ class AudioRelay:
             return RelayState(
                 listener_count=len(self._listeners),
                 running=self._process is not None,
-                transcription_active=self._transcription_active,
                 encoder_error=self._encoder_error,
             )
 
@@ -125,17 +122,7 @@ class AudioRelay:
         became_idle = False
         with self._lock:
             removed = self._listeners.pop(listener_id, None)
-            if removed is not None and not self._listeners and not self._transcription_active:
-                self._stop_locked()
-                became_idle = True
-        if became_idle and self._on_idle:
-            self._on_idle()
-
-    def set_transcription_active(self, active: bool) -> None:
-        became_idle = False
-        with self._lock:
-            self._transcription_active = active
-            if not active and not self._listeners:
+            if removed is not None and not self._listeners:
                 self._stop_locked()
                 became_idle = True
         if became_idle and self._on_idle:
@@ -159,7 +146,6 @@ class AudioRelay:
                 self._encoder_error = reason
             listeners = list(self._listeners.values())
             self._listeners.clear()
-            self._transcription_active = False
             self._stop_locked()
         for chunks in listeners:
             self._force_put(chunks, _STOP)
@@ -267,7 +253,7 @@ class AudioRelay:
                     slow_listeners.append((listener_id, chunks))
             for listener_id, _chunks in slow_listeners:
                 self._listeners.pop(listener_id, None)
-            should_stop = not self._listeners and not self._transcription_active
+            should_stop = not self._listeners
             if should_stop:
                 self._stop_locked()
         for _listener_id, chunks in slow_listeners:

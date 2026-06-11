@@ -1,6 +1,6 @@
 # Discord Bot
 
-A Python Discord bot with OpenAI-backed chat responses, optional web search, voice playback, explicitly controlled call transcription, lightweight in-memory DM/channel conversation history, and optional universal memory commands.
+A Python Discord bot with Groq-backed chat responses, optional OpenAI web search and text to speech, voice playback, browser-based live call listening, lightweight in-memory DM/channel conversation history, and optional universal memory commands.
 
 ## Required environment variables
 
@@ -9,24 +9,21 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | Variable | Required | Description |
 | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | Discord bot token used by `discord.py`. |
-| `OPENAI_API_KEY` | Yes | OpenAI API key for chat completions and OpenAI web search. |
+| `GROQ_API_KEY` | Yes | Groq API key used for normal bot replies and optional automatic memory extraction. |
+| `OPENAI_API_KEY` | For OpenAI features | OpenAI API key used only for OpenAI web search and text to speech. |
 | `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. Defaults to the existing hardcoded channel list if unset. |
 | `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. Defaults to the existing owner ID if unset. |
 | `EXTERNAL_CHANNEL_ID` | Required for `/say` | Discord channel ID where messages from the external send page are posted. It must also appear in `TARGET_CHANNEL_IDS`. |
-| `EXTERNAL_SAY_CONTROL_TOKEN` | Required for transcription | Long random password used for HTTP Basic authentication on transcription controls and transcript retrieval. Store it as a secret. |
 
 ## Optional environment variables
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OPENAI_MODEL` | `chat-latest` | Model used for normal bot replies. `chat-latest` is the API model alias intended for chat-style behavior close to ChatGPT. Override this if you need a specific model or lower cost. |
-| `OPENAI_SEARCH_MODEL` | `OPENAI_MODEL` or `chat-latest` | Model used for OpenAI web search requests. |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq production model used for normal bot replies and automatic memory extraction. |
+| `OPENAI_SEARCH_MODEL` | `chat-latest` | Model used for OpenAI web search requests. |
 | `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | Model used by the OpenAI Speech API for **Speak in call**. |
 | `OPENAI_TTS_VOICE` | `alloy` | Default voice selected on `/say`. Unsupported values fall back to `alloy`; the page only accepts voices from the server-side allowlist. |
-| `TRANSCRIPTION_ENABLED` | `true` | Enables authenticated, explicitly started call transcription. Set to `false` as an emergency or deployment-level kill switch. |
-| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | Speech-to-text model used for call transcription. |
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
-| `OPENAI_REASONING_EFFORT` | `none` for GPT-5 models, otherwise `minimal` | Reasoning effort for chat completions when supported. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
 | `AUTO_MEMORY_ENABLED` | `false` | Enables automatic extraction of shared memory facts from conversations. Off by default. |
 | `TAVILY_API_KEY` | unset | Optional fallback search provider. |
@@ -34,19 +31,19 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
 | `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, and audio upload controls. |
-| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming call audio or transcripts can start. Store it as a secret; do not commit it. |
+| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming browser audio can start. Store it as a secret; do not commit it. |
 
 ## Railway deploy steps
 
 1. Create a new Railway project from this repository.
-2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `OPENAI_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`.
+2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`. Add `OPENAI_API_KEY` if you use OpenAI web search or text to speech.
 3. Confirm the start command uses the `Procfile`: `worker: python bot.py`.
 4. Deploy the service.
 5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
-6. Invite the bot and grant **View Channel**, **Connect**, **Speak**, and **Send Messages** in voice channels that may be transcribed. **Send Messages** is required so the bot can post the transcription stop notice in the voice channel's text chat. Add text target IDs to `TARGET_CHANNEL_IDS`.
+6. Invite the bot and grant **View Channel**, **Connect**, and **Speak** in voice channels used for playback or browser listening. Add text target IDs to `TARGET_CHANNEL_IDS`.
 7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support) and the pinned DAVE-compatible `discord-ext-voice-recv` revision. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
-8. To use transcription, set `OPENAI_API_KEY` and a strong `EXTERNAL_SAY_CONTROL_TOKEN`; choose `OPENAI_TRANSCRIPTION_MODEL` if desired. Transcription is enabled by default and can be disabled with `TRANSCRIPTION_ENABLED=false`. Restart after changing environment settings.
-9. Keep a single Railway replica running. Conversation history, universal memory, transcription sessions, and transcripts are RAM-only and are not shared between replicas.
+8. To use browser listening, set a strong `EXTERNAL_SAY_CONTROL_TOKEN` and restart after changing environment settings.
+9. Keep a single Railway replica running. Conversation history and universal memory are RAM-only and are not shared between replicas.
 
 ## Bot commands
 
@@ -68,7 +65,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
 | `!deletedms` | Available only in DMs to Discord user `575057023046123520`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
-| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is processed only while transcription is active. |
+| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is received only while a browser listener is connected. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | Queues up to 500 characters to be read with the Onyx voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
@@ -89,9 +86,9 @@ You can make the bot post a message from a web browser:
 7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, choose one of the allowed voices, and select **Speak in call**. The bot must remain connected to that selected channel, and each server can start TTS at most once every 30 seconds.
 8. To play your own clip, use the right-side **Upload audio** panel. Select the same voice channel the bot already joined, choose an `.mp3` or `.mp4` file, and select **Upload and play**. Uploads are limited to 8 MiB. The server checks both the filename extension and the corresponding MP3 or MP4 header signature instead of trusting the browser MIME type. Video streams in MP4 files are ignored; only their audio is played.
 
-9. To hear the call in the browser, set `EXTERNAL_SAY_CONTROL_TOKEN`, join the selected voice channel, and select **Start listening**. **Mute** affects only that browser, while **Stop listening** closes its stream. Live listening and transcription share one Discord receive session, so either feature can be started first.
+9. To hear the call in the browser, set `EXTERNAL_SAY_CONTROL_TOKEN`, join the selected voice channel, and select **Start listening**. **Mute** affects only that browser, while **Stop listening** closes its stream. The receive session stops after the last browser listener disconnects.
 
-The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send Messages** permissions in the selected voice channel for all controls. Uploading and transcription do not connect or move the bot: it must already be connected to that exact channel. Only one clip can play at a time. Select **Stop audio** to end the current sound, uploaded audio, or text-to-speech playback without disconnecting the bot.
+The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send Messages** permissions in the selected voice channel for all controls. Uploading and browser listening do not connect or move the bot: it must already be connected to that exact channel. Only one clip can play at a time. Select **Stop audio** to end the current sound, uploaded audio, or text-to-speech playback without disconnecting the bot.
 
 Uploaded files receive server-generated temporary paths with server-selected `.mp3` or `.mp4` extensions; submitted filenames are never used as filesystem paths. Temporary files are removed when validation, Discord scheduling, or playback startup fails, and successful uploads are removed by the playback completion callback (including playback errors). Files can remain briefly only if the process is forcibly terminated before cleanup runs.
 
@@ -99,17 +96,17 @@ If Railway already shows a public domain under **Settings** → **Networking**, 
 
 Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, `/say` shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 
-If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-capture `/say` controls remain unauthenticated for backward compatibility. **Transcript capabilities refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS. Keeping the URL private is not equivalent to authentication.
+If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-listening `/say` controls remain unauthenticated for backward compatibility. **Browser listening refuses to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS. Keeping the URL private is not equivalent to authentication.
 
 The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 
-OpenAI text-to-speech and transcription requests use billable APIs associated with `OPENAI_API_KEY`. Transcription sends per-user WAV chunks outside the Discord event-loop thread. Chunks end after configured silence or at the bounded duration, and at most four provider chunks are queued per guild; overload and provider errors appear as transcript entries. These controls and limits reduce accidental usage, but they are not substitutes for participant consent, authentication, or provider-side budget limits.
+Normal chat and optional automatic memory extraction use the Groq API associated with `GROQ_API_KEY`. OpenAI web search and text-to-speech remain billable OpenAI APIs associated with `OPENAI_API_KEY`. Browser listening does not call either AI provider.
 
 ## Voice receive dependency
 
 `discord.py==2.7.1` provides outbound voice playback and DAVE session handling but no supported inbound receive pipeline. The June 2025 PyPI release of `discord-ext-voice-recv` predates Discord's March 2026 DAVE enforcement and cannot correctly decode current encrypted receive packets. This project therefore pins the full stabilized DAVE receive pipeline at revision `ee160c0f36516927b6214bc9d6babe524016770f`, which adds DAVE payload handling, media-kind filtering, unknown-SSRC recovery, jitter recovery, and hardened Opus decoding for long-running receive sessions. This is an upstream community revision rather than a stable PyPI release, so test voice receive after dependency or Discord voice changes before deploying. If the extension cannot be imported, the connected client was created without receive support, credentials are missing, or required Discord permissions are absent, `/say` returns a clear error and does not begin capture.
 
-Received audio is never persisted by this bot. Only bounded WAV request bodies exist transiently for provider calls, and only the newest `TRANSCRIPT_RETENTION_LIMIT` text entries are retained in memory. Entries include timestamp, Discord user ID, display name, text, and partial/final status. Stopping retains the bounded transcript for review; clearing it, disconnecting voice, losing the Discord connection, or restarting removes state.
+Received audio is relayed live to connected authenticated browsers and is not persisted or sent to an AI transcription provider by this bot.
 
 ## Channel setup
 
@@ -123,14 +120,13 @@ If `TARGET_CHANNEL_IDS` is unset or invalid, the bot falls back to the existing 
 
 ## API provider setup
 
-OpenAI is the primary provider for chat, web search, optional text to speech, and optional call transcription. Set `OPENAI_API_KEY` and optionally override `OPENAI_MODEL`, `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, or `OPENAI_TRANSCRIPTION_MODEL`. The default `chat-latest` model is chosen for ChatGPT-like chat behavior, while deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. OpenAI web search runs first when available. Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers if configured or available.
+Groq handles normal chat replies and optional automatic memory extraction. Set `GROQ_API_KEY` and optionally override `GROQ_MODEL`; the default is the production `llama-3.3-70b-versatile` model. OpenAI remains responsible for web search and text to speech, configured with `OPENAI_API_KEY`, `OPENAI_SEARCH_MODEL`, `OPENAI_TTS_MODEL`, and `OPENAI_TTS_VOICE`. Deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. OpenAI web search runs first when available, while Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers.
 
 ## Known limitations
 
 - Conversation history is RAM-only and is wiped on restart. Server-channel history is shared by channel, while DM history remains per user.
 - Universal memory is RAM-only and is wiped on restart.
-- Voice transcripts are bounded and RAM-only. They are removed on clear, voice disconnect, Discord disconnect, or restart; no cross-replica transcript synchronization exists.
-- Voice receive depends on an alpha extension built on Discord's undocumented/reverse-engineered receive behavior, so Discord changes can disrupt transcription independently of outbound playback.
+- Voice receive depends on an alpha extension built on Discord's undocumented/reverse-engineered receive behavior, so Discord changes can disrupt browser listening independently of outbound playback.
 - Auto-memory extraction is disabled by default because it can store personal facts across users.
 - The bot should run as a single replica because in-memory history and memory are not shared across processes.
 - There is no time-based expiry for conversation history; users and channels are evicted silently when the in-memory caps are reached.

@@ -34,16 +34,6 @@ class RelayLifecycleTests(unittest.TestCase):
         self.assertFalse(relay.state().running)
         idle.assert_called_once_with()
 
-    def test_transcription_reference_keeps_encoder_alive(self):
-        relay = StubRelay()
-        listener = relay.add_listener()
-        relay.set_transcription_active(True)
-
-        listener.close()
-        self.assertTrue(relay.state().running)
-        relay.set_transcription_active(False)
-        self.assertFalse(relay.state().running)
-
     def test_client_close_removes_listener(self):
         relay = StubRelay()
         listener = relay.add_listener()
@@ -196,17 +186,13 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
         voice_client.listen.assert_called_once_with(sink)
         self.assertEqual(bot.active_receive_channel_id, 123)
 
-    async def test_shared_sink_forwards_pcm_to_browser_and_transcription(self):
+    async def test_shared_sink_forwards_pcm_to_browser(self):
         class FakeAudioSink:
             def __init__(self):
                 pass
 
         channel = SimpleNamespace(id=123, guild=SimpleNamespace(id=9))
         voice_client = SimpleNamespace(channel=channel, is_playing=lambda: False)
-        transcription_sink = Mock()
-        bot.transcription_sessions[9] = SimpleNamespace(
-            active=True, channel_id=123, sink=transcription_sink
-        )
         user = SimpleNamespace(id=42)
         data = SimpleNamespace(pcm=b"\x01\x02" * 1920)
         with (
@@ -217,9 +203,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
             sink = bot.create_browser_audio_sink(voice_client)
             sink.write(user, data)
 
-        transcription_sink.write.assert_called_once_with(user, data)
         submit_pcm.assert_called_once_with(data.pcm, source_id=42)
-        bot.transcription_sessions.clear()
 
     async def test_shared_sink_relays_participants_while_bot_is_playing(self):
         class FakeAudioSink:
@@ -248,7 +232,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.browser_audio_relay, "state") as state,
             patch.object(bot.client, "get_channel", return_value=channel),
         ):
-            state.return_value = SimpleNamespace(listener_count=0, transcription_active=False)
+            state.return_value = SimpleNamespace(listener_count=0)
             await bot.stop_receive_session_if_idle()
 
         voice_client.stop_listening.assert_called_once_with()
