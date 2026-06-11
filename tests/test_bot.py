@@ -2255,6 +2255,44 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertIn(b"window.setTimeout(pollActivity, 3000)", response.data)
         self.assertIn(b'document.addEventListener("visibilitychange"', response.data)
 
+    def test_say_page_submits_controls_without_reloading(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="control-status"', response.data)
+        self.assertIn(b'document.querySelectorAll(\'main form[method="post"]\')', response.data)
+        self.assertIn(b'headers: { "X-Requested-With": "fetch" }', response.data)
+        self.assertIn(b'event.preventDefault()', response.data)
+
+    def test_fetch_control_request_returns_json_without_redirect(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="joined #General",
+        ):
+            response = self.client.post(
+                "/say",
+                data={"action": "join", "voice_channel_id": "123"},
+                headers={"X-Requested-With": "fetch"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "joined #General"})
+        self.assertNotIn("Location", response.headers)
+
+    def test_invalid_fetch_control_request_returns_json_error(self):
+        response = self.client.post(
+            "/say",
+            data={"action": "join", "voice_channel_id": "not-a-channel"},
+            headers={"X-Requested-With": "fetch"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {"status": "Enter a valid numeric voice channel ID."},
+        )
+
     def test_say_page_uses_spacious_panel_layout_and_local_serif_display_font(self):
         response = self.client.get("/say")
 
