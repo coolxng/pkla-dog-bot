@@ -326,7 +326,7 @@ Bot capabilities and boundaries:
 - Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
 - `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. Joining never starts recording or transcription.
 - `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` queues the message to be read in the connected voice channel without overlapping other `!tts` messages. `!leave` stops scheduled barking and disconnects from voice.
-- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, listen to live call audio in the browser, and explicitly start or stop call transcription when the features are configured. Transcription is off by default, keeps only a bounded in-memory rolling transcript, and visibly announces capture in the voice channel text chat. Those web controls are separate from normal chat commands.
+- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, listen to live call audio in the browser, and explicitly start or stop call transcription when the features are configured. Transcription starts only when explicitly requested, keeps only a bounded in-memory rolling transcript, and posts a stop notice in the voice channel text chat. Those web controls are separate from normal chat commands.
 - `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
 - A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
 
@@ -722,11 +722,6 @@ async def start_transcription(channel_id: int) -> str:
     transcription_sessions[voice_channel.guild.id] = session
     try:
         await ensure_receive_session(voice_channel)
-        await voice_channel.send(
-            "🔴 **Transcription started.** Audio in this call is being captured and sent "
-            "to a speech-to-text service. Leave the call or ask the operator to stop if "
-            "you do not consent."
-        )
     except Exception:
         if previous_session is None:
             transcription_sessions.pop(voice_channel.guild.id, None)

@@ -2491,8 +2491,9 @@ class TranscriptionControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stopped, "transcription stopped in #General")
         self.assertIsNotNone(voice_client.sink)
         self.assertFalse(voice_client.listening)
-        self.assertEqual(channel.send.await_count, 2)
-        self.assertIn("Audio in this call is being captured", channel.send.await_args_list[0].args[0])
+        channel.send.assert_awaited_once_with(
+            "⚪ **Transcription stopped.** Call audio is no longer being captured."
+        )
         self.assertFalse(bot.transcription_sessions[9].active)
 
 
