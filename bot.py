@@ -23,6 +23,8 @@ from ddgs import DDGS
 from flask import Flask, Response, redirect, render_template_string, request, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 
+from audio_relay import AudioRelay, RelayError
+
 
 app = Flask(__name__)
 
@@ -346,6 +348,17 @@ client = discord.Client(intents=intents)
 command_tree = app_commands.CommandTree(client)
 slash_commands_synced = False
 discord_event_loop: asyncio.AbstractEventLoop | None = None
+active_receive_channel_id: int | None = None
+active_receive_sink = None
+
+
+def schedule_receive_idle_cleanup() -> None:
+    if discord_event_loop is None or discord_event_loop.is_closed():
+        return
+    asyncio.run_coroutine_threadsafe(stop_receive_session_if_idle(), discord_event_loop)
+
+
+browser_audio_relay = AudioRelay(on_idle=schedule_receive_idle_cleanup)
 
 EXTERNAL_SAY_PAGE = """<!doctype html>
 <html lang="en">
@@ -381,6 +394,18 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .join-button { background: #047857; }
     .stop-button { background: #b45309; }
     .leave-button { background: #b91c1c; }
+    .listen-panel { margin-top: 1.25rem; padding: 1rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
+    .listen-panel h3 { margin: 0 0 .25rem; }
+    .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
+    .listen-button { background: #047857; }
+    .mute-button { background: #b45309; }
+    .listen-stop-button { background: #b91c1c; }
+    .relay-details { display: grid; gap: .3rem; margin: .75rem 0 0; color: #d1d5db; font-size: .9rem; }
+    .live-indicator { display: inline-flex; align-items: center; gap: .4rem; color: #9ca3af; font-weight: 700; }
+    .live-indicator::before { content: ""; width: .65rem; height: .65rem; border-radius: 50%; background: #6b7280; }
+    .live-indicator.live { color: #fca5a5; }
+    .live-indicator.live::before { background: #ef4444; box-shadow: 0 0 0 .25rem rgb(239 68 68 / 20%); }
+    button:disabled { cursor: not-allowed; opacity: .55; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
     .ping-list { display: grid; gap: .6rem; }
     .ping-member { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; padding: .65rem; background: #111827; border-radius: .5rem; }
@@ -423,6 +448,22 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
       </div>
+      <section class="listen-panel" aria-labelledby="listen-heading">
+        <h3 id="listen-heading">Listen in browser</h3>
+        <p class="voice-help">Relays live participant audio without retaining it. Playback starts only when you select Start listening.</p>
+        {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
+        <div class="listen-actions">
+          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening</button>
+          <button id="mute-listening" class="mute-button" type="button" disabled>Mute</button>
+          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop listening</button>
+        </div>
+        <div class="relay-details" aria-live="polite">
+          <span>Selected Discord channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
+          <span>Relay: <strong id="relay-state">Stopped</strong></span>
+          <span id="capture-indicator" class="live-indicator">Not capturing</span>
+        </div>
+        <audio id="discord-audio" preload="none"></audio>
+      </section>
       <h3 class="sound-heading">Sound clips</h3>
       <p class="voice-help">Play a sound after the bot has joined the voice call.</p>
       <div class="sound-actions">
@@ -478,8 +519,73 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const message = document.getElementById("message");
     const voiceChannel = document.getElementById("voice-channel-id");
     const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
-    voiceChannel.addEventListener("input", () => { uploadVoiceChannel.value = voiceChannel.value; });
-    uploadVoiceChannel.addEventListener("input", () => { voiceChannel.value = uploadVoiceChannel.value; });
+    const relayChannel = document.getElementById("relay-channel");
+    const relayState = document.getElementById("relay-state");
+    const captureIndicator = document.getElementById("capture-indicator");
+    const audio = document.getElementById("discord-audio");
+    const startListening = document.getElementById("start-listening");
+    const muteListening = document.getElementById("mute-listening");
+    const stopListening = document.getElementById("stop-listening");
+    voiceChannel.addEventListener("input", () => {
+      uploadVoiceChannel.value = voiceChannel.value;
+      relayChannel.textContent = voiceChannel.value || "None";
+    });
+    uploadVoiceChannel.addEventListener("input", () => {
+      voiceChannel.value = uploadVoiceChannel.value;
+      relayChannel.textContent = uploadVoiceChannel.value || "None";
+    });
+
+    function setRelayState(state, live) {
+      relayState.textContent = state;
+      captureIndicator.textContent = live ? "Live capture" : "Not capturing";
+      captureIndicator.classList.toggle("live", live);
+    }
+
+    startListening.addEventListener("click", async () => {
+      if (!voiceChannel.checkValidity()) {
+        voiceChannel.reportValidity();
+        return;
+      }
+      audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}`;
+      audio.muted = false;
+      setRelayState("Connecting…", false);
+      try {
+        await audio.play();
+        setRelayState("Connected", true);
+        startListening.disabled = true;
+        muteListening.disabled = false;
+        stopListening.disabled = false;
+      } catch (error) {
+        audio.removeAttribute("src");
+        audio.load();
+        setRelayState("Connection failed", false);
+      }
+    });
+
+    muteListening.addEventListener("click", () => {
+      audio.muted = !audio.muted;
+      muteListening.textContent = audio.muted ? "Unmute" : "Mute";
+      setRelayState(audio.muted ? "Connected — muted" : "Connected", true);
+    });
+
+    stopListening.addEventListener("click", () => {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      startListening.disabled = false;
+      muteListening.disabled = true;
+      stopListening.disabled = true;
+      muteListening.textContent = "Mute";
+      setRelayState("Stopped", false);
+    });
+
+    audio.addEventListener("error", () => {
+      if (!audio.getAttribute("src")) return;
+      setRelayState("Disconnected", false);
+      startListening.disabled = false;
+      muteListening.disabled = true;
+      stopListening.disabled = true;
+    });
 
     document.querySelectorAll(".ping-button").forEach((button) => {
       button.addEventListener("click", () => {
@@ -557,6 +663,19 @@ def external_say_authentication_required():
         401,
         {"WWW-Authenticate": 'Basic realm="Discord bot controls"'},
     )
+
+
+def incoming_audio_is_authorized() -> bool:
+    return bool(EXTERNAL_SAY_CONTROL_TOKEN) and external_say_is_authorized()
+
+
+@app.after_request
+def prevent_external_capture_caching(response):
+    if request.path.startswith("/say"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 def uploaded_audio_has_plausible_signature(extension: str, header: bytes) -> bool:
@@ -649,6 +768,30 @@ def submit_external_uploaded_audio(channel_id: int, temporary_path: Path) -> str
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def submit_browser_audio_session(channel_id: int) -> None:
+    run_discord_coroutine(
+        start_browser_audio_session(channel_id),
+        "Discord took too long to start incoming audio",
+    )
+
+
+@app.route("/say/audio/<int:channel_id>")
+def external_audio_stream(channel_id: int):
+    if not incoming_audio_is_authorized():
+        return external_say_authentication_required()
+    try:
+        submit_browser_audio_session(channel_id)
+        listener = browser_audio_relay.add_listener()
+    except (RuntimeError, RelayError) as error:
+        print(f"External audio relay error: {error}")
+        return str(error), 503
+
+    response = Response(listener.iter_chunks(), mimetype="audio/mpeg", direct_passthrough=True)
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Content-Disposition"] = "inline"
+    return response
 
 
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
@@ -749,6 +892,7 @@ def external_say():
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
+        incoming_audio_enabled=bool(EXTERNAL_SAY_CONTROL_TOKEN),
     ), response_status
 
 
@@ -1487,6 +1631,83 @@ chat_tts_queues: dict[int, asyncio.Queue] = {}
 chat_tts_tasks: dict[int, asyncio.Task] = {}
 
 
+def voice_receive_client_class():
+    from discord.ext import voice_recv
+
+    return voice_recv.VoiceRecvClient
+
+
+def create_browser_audio_sink(voice_client):
+    from discord.ext import voice_recv
+
+    class BrowserAudioSink(voice_recv.AudioSink):
+        def __init__(self):
+            super().__init__()
+
+        def wants_opus(self):
+            return False
+
+        def write(self, user, data):
+            bot_user = client.user
+            if user is None or (bot_user is not None and user.id == bot_user.id):
+                return
+            if voice_client.is_playing():
+                return
+            browser_audio_relay.submit_pcm(data.pcm, source_id=user.id)
+
+        def cleanup(self):
+            return None
+
+    return BrowserAudioSink()
+
+
+async def start_browser_audio_session(channel_id: int) -> None:
+    global active_receive_channel_id, active_receive_sink
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        raise RuntimeError(
+            "EXTERNAL_SAY_CONTROL_TOKEN must be set before incoming audio can start"
+        )
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("Join the selected voice call before listening")
+    if getattr(voice_client, "channel", None) != voice_channel:
+        raise RuntimeError("The bot is connected to a different voice channel")
+    if not hasattr(voice_client, "listen"):
+        raise RuntimeError("Reconnect the bot before starting incoming audio")
+    if active_receive_channel_id not in {None, channel_id}:
+        raise RuntimeError("Incoming audio is already active for another voice channel")
+    if not voice_client.is_listening():
+        active_receive_sink = create_browser_audio_sink(voice_client)
+        voice_client.listen(active_receive_sink)
+    active_receive_channel_id = channel_id
+
+
+async def stop_receive_session_if_idle() -> None:
+    global active_receive_channel_id, active_receive_sink
+    state = browser_audio_relay.state()
+    if state.listener_count or state.transcription_active:
+        return
+    channel_id = active_receive_channel_id
+    active_receive_channel_id = None
+    active_receive_sink = None
+    if channel_id is None:
+        return
+    voice_channel = client.get_channel(channel_id)
+    voice_client = getattr(getattr(voice_channel, "guild", None), "voice_client", None)
+    if voice_client and hasattr(voice_client, "is_listening") and voice_client.is_listening():
+        voice_client.stop_listening()
+
+
+def close_receive_session(reason: str) -> None:
+    global active_receive_channel_id, active_receive_sink
+    active_receive_channel_id = None
+    active_receive_sink = None
+    browser_audio_relay.disconnect(reason)
+
+
 def play_audio(
     voice_client, audio_path: Path, *, delete_after: bool = False, after=None
 ) -> bool:
@@ -1587,9 +1808,15 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
             if voice_client.channel == voice_channel:
                 already_in_channel = True
             else:
+                await asyncio.to_thread(
+                    close_receive_session, "Discord voice channel changed"
+                )
                 await voice_client.move_to(voice_channel)
         else:
-            voice_client = await voice_channel.connect(self_deaf=False, self_mute=False)
+            connect_options = {"self_deaf": False, "self_mute": False}
+            if EXTERNAL_SAY_CONTROL_TOKEN:
+                connect_options["cls"] = voice_receive_client_class()
+            voice_client = await voice_channel.connect(**connect_options)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
         print(f"Voice connection error: {error}")
         return "couldn't join that voice channel; check my Connect permission and try again"
@@ -1622,6 +1849,7 @@ async def leave_guild_voice(guild) -> str:
     if not voice_client or not voice_client.is_connected():
         return "i'm not in a voice channel"
 
+    await asyncio.to_thread(close_receive_session, "Discord voice connection closed")
     try:
         await voice_client.disconnect()
     except (asyncio.TimeoutError, discord.DiscordException) as error:
@@ -2168,6 +2396,16 @@ async def on_ready():
     if not slash_commands_synced:
         slash_commands_synced = await sync_slash_commands()
     print(f"Logged in as {client.user}")
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    if client.user is None or member.id != client.user.id:
+        return
+    if before.channel is not None and after.channel is None:
+        await asyncio.to_thread(
+            close_receive_session, "Discord voice connection closed"
+        )
 
 
 @client.event
