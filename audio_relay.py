@@ -131,14 +131,15 @@ class AudioRelay:
     def submit_pcm(self, pcm: bytes, *, source_id: object | None = None) -> bool:
         if not pcm:
             return True
-        frame = pcm[:PCM_FRAME_BYTES]
-        if len(frame) < PCM_FRAME_BYTES:
-            frame += bytes(PCM_FRAME_BYTES - len(frame))
-        try:
-            self._input_frames.put_nowait((source_id, frame))
-            return True
-        except queue.Full:
-            return False
+
+        accepted_all_frames = True
+        for frame in chunk_pcm_frames(pcm):
+            try:
+                self._input_frames.put_nowait((source_id, frame))
+            except queue.Full:
+                accepted_all_frames = False
+                break
+        return accepted_all_frames
 
     def disconnect(self, reason: str | None = None) -> None:
         with self._lock:
@@ -258,8 +259,6 @@ class AudioRelay:
                 self._stop_locked()
         for _listener_id, chunks in slow_listeners:
             self._force_put(chunks, SlowClientError("Audio stream closed because the client was too slow"))
-        if slow_listeners and should_stop and self._on_idle:
-            self._on_idle()
 
     def _fail_encoder(self, message: str) -> None:
         with self._lock:
@@ -284,6 +283,15 @@ class AudioRelay:
             except queue.Empty:
                 pass
             chunks.put_nowait(item)
+
+
+def chunk_pcm_frames(pcm: bytes) -> Iterator[bytes]:
+    """Yield fixed-size 20 ms PCM frames, padding the final partial frame."""
+    for offset in range(0, len(pcm), PCM_FRAME_BYTES):
+        frame = pcm[offset: offset + PCM_FRAME_BYTES]
+        if len(frame) < PCM_FRAME_BYTES:
+            frame += bytes(PCM_FRAME_BYTES - len(frame))
+        yield frame
 
 
 def mix_pcm_frames(frames: list[bytes]) -> bytes:
