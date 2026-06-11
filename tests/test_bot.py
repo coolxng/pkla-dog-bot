@@ -2262,6 +2262,8 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertIn(b'class="page-header"', response.data)
         self.assertIn(b'class="panel message-panel"', response.data)
         self.assertIn(b'class="voice-tools"', response.data)
+        self.assertIn(b"color-scheme: dark", response.data)
+        self.assertIn(b"--canvas: #11100f", response.data)
         self.assertIn(b'--display-font: "Iowan Old Style"', response.data)
         self.assertNotIn(b"fonts.googleapis.com", response.data)
 
