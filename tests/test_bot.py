@@ -1459,7 +1459,8 @@ class OpenAIConfigTests(unittest.TestCase):
         self.assertIn("`!join`", bot.SYSTEM_PROMPT)
         self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
         self.assertIn("Joining never starts recording or transcription", bot.SYSTEM_PROMPT)
-        self.assertIn("consent-gated call transcription", bot.SYSTEM_PROMPT)
+        self.assertIn("listen to live call audio in the browser", bot.SYSTEM_PROMPT)
+        self.assertIn("start or stop call transcription", bot.SYSTEM_PROMPT)
         self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
         self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
         self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
@@ -2009,17 +2010,43 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertIn(b"Upload request is too large", response.data)
 
-    def test_authentication_is_required_when_control_token_is_enabled(self):
+    def test_control_token_popup_authenticates_browser_with_cookie(self):
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
-            unauthorized = self.client.get("/say")
-            authorized = self.client.get(
-                "/say",
-                headers={"Authorization": "Basic dXNlcjpzZWNyZXQtdG9rZW4="},
+            locked_page = self.client.get("/say")
+            invalid_login = self.client.post(
+                "/say/login", json={"token": "wrong-token"}
+            )
+            valid_login = self.client.post(
+                "/say/login", json={"token": "secret-token"}
+            )
+            unlocked_page = self.client.get("/say")
+
+        self.assertEqual(locked_page.status_code, 200)
+        self.assertIn(b'id="control-token-dialog"', locked_page.data)
+        self.assertIn(b'id="control-token-form"', locked_page.data)
+        self.assertEqual(invalid_login.status_code, 401)
+        self.assertEqual(valid_login.status_code, 200)
+        self.assertIn(bot.EXTERNAL_SAY_AUTH_COOKIE, valid_login.headers["Set-Cookie"])
+        self.assertIn("HttpOnly", valid_login.headers["Set-Cookie"])
+        self.assertNotIn(b'id="control-token-dialog"', unlocked_page.data)
+
+    def test_control_posts_still_require_authentication(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
+            response = self.client.post(
+                "/say", data={"action": "join", "voice_channel_id": "123"}
             )
 
-        self.assertEqual(unauthorized.status_code, 401)
-        self.assertIn("Basic", unauthorized.headers["WWW-Authenticate"])
-        self.assertEqual(authorized.status_code, 200)
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Basic", response.headers["WWW-Authenticate"])
+
+    def test_missing_server_token_shows_setup_popup(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", ""):
+            response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="control-token-dialog"', response.data)
+        self.assertIn(b"External control token not configured", response.data)
+        self.assertNotIn(b'id="control-token-form"', response.data)
 
 
 class ExternalVoiceStatusRouteTests(unittest.TestCase):
@@ -2350,6 +2377,16 @@ class TranscriptionSessionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Transcription failed: provider down", session.snapshot()[0]["text"])
 
+    async def test_closing_transcription_does_not_stop_shared_browser_receiver(self):
+        voice_client = SimpleNamespace(
+            is_listening=lambda: True, stop_listening=Mock()
+        )
+        session = bot.TranscriptionSession(1, 2, voice_client, FakeTranscriptionProvider())
+
+        await session.close(discard_audio=True)
+
+        voice_client.stop_listening.assert_not_called()
+
     async def test_disconnect_cleanup_discards_session_state(self):
         voice_client = SimpleNamespace(
             is_listening=lambda: False, stop_listening=Mock()
@@ -2389,10 +2426,6 @@ class TranscriptionControlTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await bot.cleanup_all_transcriptions()
-
-    async def test_start_requires_affirmative_consent(self):
-        with self.assertRaisesRegex(ValueError, "Confirm that participants"):
-            await bot.start_transcription(123, consent=False)
 
     async def test_start_and_stop_use_fake_receive_and_provider_adapters(self):
         class FakeVoiceRecvClient:
@@ -2438,8 +2471,9 @@ class TranscriptionControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "client", fake_client),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
             patch.object(bot, "create_transcription_provider", return_value=FakeTranscriptionProvider()),
+            patch.object(bot, "create_browser_audio_sink", return_value=object()),
         ):
-            started = await bot.start_transcription(123, consent=True)
+            started = await bot.start_transcription(123)
             stopped = await bot.stop_transcription(123)
 
         self.assertEqual(started, "transcription started in #General")
@@ -2455,18 +2489,21 @@ class ExternalTranscriptionRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = bot.app.test_client()
 
-    def test_page_shows_notice_confirmation_controls_and_panel(self):
+    def test_page_shows_live_listening_and_transcription_without_notice(self):
         response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Audio capture notice", response.data)
-        self.assertIn(b'name="transcription_consent"', response.data)
+        self.assertNotIn(b"Audio capture notice", response.data)
+        self.assertNotIn(b'name="transcription_consent"', response.data)
+        self.assertIn(b"Listen in browser", response.data)
+        self.assertIn(b"Start listening", response.data)
+        self.assertIn(b"Stop listening", response.data)
         self.assertIn(b'value="start_transcription"', response.data)
         self.assertIn(b"Clear transcript", response.data)
         self.assertIn(b'id="transcript-list"', response.data)
         self.assertIn(b"window.setInterval(refreshTranscript, 2000)", response.data)
 
-    def test_start_route_forwards_affirmative_consent(self):
+    def test_start_route_submits_without_consent_field(self):
         with (
             patch.object(bot, "require_transcription_control_authentication"),
             patch.object(
@@ -2475,32 +2512,11 @@ class ExternalTranscriptionRouteTests(unittest.TestCase):
         ):
             response = self.client.post(
                 "/say",
-                data={
-                    "action": "start_transcription",
-                    "voice_channel_id": "123",
-                    "transcription_consent": "yes",
-                },
-            )
-
-        self.assertEqual(response.status_code, 303)
-        submit.assert_called_once_with("start_transcription", 123, consent=True)
-
-    def test_start_route_rejects_missing_consent(self):
-        with (
-            patch.object(bot, "require_transcription_control_authentication"),
-            patch.object(
-                bot,
-                "submit_transcription_action",
-                side_effect=ValueError("Confirm that participants were notified"),
-            ),
-        ):
-            response = self.client.post(
-                "/say",
                 data={"action": "start_transcription", "voice_channel_id": "123"},
             )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn(b"Confirm that participants were notified", response.data)
+        self.assertEqual(response.status_code, 303)
+        submit.assert_called_once_with("start_transcription", 123)
 
     def test_transcript_route_requires_authentication(self):
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"):
