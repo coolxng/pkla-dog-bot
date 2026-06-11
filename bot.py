@@ -747,8 +747,6 @@ async def stop_transcription(channel_id: int, *, announce: bool = True) -> str:
         raise RuntimeError("Transcription is not active in the selected voice channel")
     await session.close(discard_audio=False)
     await stop_receive_session_if_idle()
-    if announce:
-        await voice_channel.send("⚪ **Transcription stopped.** Call audio is no longer being captured.")
     return f"transcription stopped in {voice_channel.mention}"
 
 
