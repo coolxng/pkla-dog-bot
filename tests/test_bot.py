@@ -1449,15 +1449,15 @@ class CasualReplyStyleTests(unittest.TestCase):
 
 
 class GroqConfigTests(unittest.TestCase):
-    def test_default_chat_model_is_supported_groq_production_model(self):
-        self.assertEqual(bot.DEFAULT_GROQ_MODEL, "llama-3.3-70b-versatile")
+    def test_default_chat_model_is_cheap_fast_groq_model(self):
+        self.assertEqual(bot.DEFAULT_GROQ_CHAT_MODEL, "llama-3.1-8b-instant")
 
     def test_chat_completion_uses_groq_api(self):
         response = {"choices": [{"message": {"content": "hello"}}]}
         with (
             patch.dict(
                 bot.os.environ,
-                {"GROQ_API_KEY": "secret", "GROQ_MODEL": "llama-3.1-8b-instant"},
+                {"GROQ_API_KEY": "secret", "GROQ_CHAT_MODEL": "llama-3.1-8b-instant"},
             ),
             patch.object(bot, "post_json", return_value=response) as post_json,
         ):
@@ -1476,10 +1476,62 @@ class GroqConfigTests(unittest.TestCase):
             headers={"Authorization": "Bearer secret"},
         )
 
-    def test_chat_completion_requires_groq_api_key(self):
-        with patch.dict(bot.os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "GROQ_API_KEY is not set"):
+    def test_chat_completion_does_not_fallback_to_openai_by_default(self):
+        with (
+            patch.dict(bot.os.environ, {"OPENAI_API_KEY": "secret"}, clear=True),
+            patch.object(bot, "create_openai_chat_completion") as openai_chat,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "OPENAI_CHAT_FALLBACK is disabled"):
                 bot.create_chat_completion([], max_tokens=25)
+
+        openai_chat.assert_not_called()
+
+    def test_chat_completion_uses_openai_only_when_fallback_is_enabled(self):
+        with (
+            patch.dict(
+                bot.os.environ,
+                {
+                    "OPENAI_API_KEY": "secret",
+                    "OPENAI_CHAT_FALLBACK": "true",
+                },
+                clear=True,
+            ),
+            patch.object(
+                bot, "create_openai_chat_completion", return_value="fallback"
+            ) as openai_chat,
+        ):
+            result = bot.create_chat_completion([], max_tokens=25)
+
+        self.assertEqual(result, "fallback")
+        openai_chat.assert_called_once_with([], max_tokens=25)
+
+    def test_legacy_groq_model_env_is_still_supported(self):
+        response = {"choices": [{"message": {"content": "hello"}}]}
+        with (
+            patch.dict(
+                bot.os.environ,
+                {"GROQ_API_KEY": "secret", "GROQ_MODEL": "legacy-model"},
+                clear=True,
+            ),
+            patch.object(bot, "post_json", return_value=response) as post_json,
+        ):
+            bot.create_chat_completion([], max_tokens=25)
+
+        self.assertEqual(post_json.call_args.args[1]["model"], "legacy-model")
+
+    def test_listen_in_and_transcription_flags_default_safely(self):
+        with patch.dict(bot.os.environ, {}, clear=True):
+            self.assertTrue(bot.env_bool("ENABLE_LISTEN_IN", True))
+            self.assertFalse(bot.env_bool("ENABLE_TRANSCRIPTION", False))
+
+    def test_openai_web_search_is_disabled_by_default(self):
+        with (
+            patch.dict(bot.os.environ, {"OPENAI_API_KEY": "secret"}, clear=True),
+            patch.object(bot, "post_json") as post_json,
+        ):
+            self.assertEqual(bot.openai_web_search("query", recent=False), [])
+
+        post_json.assert_not_called()
 
     def test_system_prompt_uses_natural_discord_conversation_style(self):
         self.assertIn("real person participating in a Discord conversation", bot.SYSTEM_PROMPT)
