@@ -324,7 +324,7 @@ Bot capabilities and boundaries:
 - Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
 - `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. Joining never starts recording or transcription.
 - `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` queues the message to be read in the connected voice channel without overlapping other `!tts` messages. `!leave` stops scheduled barking and disconnects from voice.
-- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, and explicitly start or stop consent-gated call transcription when the feature is configured. Transcription is off by default, keeps only a bounded in-memory rolling transcript, and visibly announces capture in the voice channel text chat. Those web controls are separate from normal chat commands.
+- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, and explicitly start or stop call transcription when the feature is configured. Transcription is off by default, keeps only a bounded in-memory rolling transcript, and visibly announces capture in the voice channel text chat. Those web controls are separate from normal chat commands.
 - `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
 - A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
 
@@ -675,11 +675,7 @@ class TranscriptionSession:
 transcription_sessions: dict[int, TranscriptionSession] = {}
 
 
-async def start_transcription(channel_id: int, *, consent: bool) -> str:
-    if not consent:
-        raise ValueError(
-            "Confirm that participants were notified and consent and recording rules were considered."
-        )
+async def start_transcription(channel_id: int) -> str:
     if not TRANSCRIPTION_ENABLED:
         raise RuntimeError("Transcription is disabled by TRANSCRIPTION_ENABLED")
     if voice_recv is None:
@@ -843,17 +839,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .join-button { background: #047857; }
     .stop-button { background: #b45309; }
     .leave-button { background: #b91c1c; }
-    .listen-panel { margin-top: 1.25rem; padding: 1rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
-    .listen-panel h3 { margin: 0 0 .25rem; }
-    .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
-    .listen-button { background: #047857; }
-    .mute-button { background: #b45309; }
-    .listen-stop-button { background: #b91c1c; }
-    .relay-details { display: grid; gap: .3rem; margin: .75rem 0 0; color: #d1d5db; font-size: .9rem; }
-    .live-indicator { display: inline-flex; align-items: center; gap: .4rem; color: #9ca3af; font-weight: 700; }
-    .live-indicator::before { content: ""; width: .65rem; height: .65rem; border-radius: 50%; background: #6b7280; }
-    .live-indicator.live { color: #fca5a5; }
-    .live-indicator.live::before { background: #ef4444; box-shadow: 0 0 0 .25rem rgb(239 68 68 / 20%); }
     button:disabled { cursor: not-allowed; opacity: .55; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
     .ping-list { display: grid; gap: .6rem; }
@@ -865,9 +850,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .copy-button.copied { background: #047857; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
-    .consent-notice { margin-top: 1rem; padding: 1rem; border: 2px solid #f59e0b; background: #451a03; border-radius: .75rem; }
-    .consent-check { display: flex; gap: .65rem; align-items: flex-start; font-weight: 600; }
-    .consent-check input { width: auto; margin-top: .25rem; }
     .transcription-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
     .record-button { background: #b91c1c; }
     .clear-button { background: #4b5563; }
@@ -911,22 +893,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
       </div>
-      <section class="listen-panel" aria-labelledby="listen-heading">
-        <h3 id="listen-heading">Listen in browser</h3>
-        <p class="voice-help">Relays live participant audio without retaining it. Playback starts only when you select Start listening.</p>
-        {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
-        <div class="listen-actions">
-          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening</button>
-          <button id="mute-listening" class="mute-button" type="button" disabled>Mute</button>
-          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop listening</button>
-        </div>
-        <div class="relay-details" aria-live="polite">
-          <span>Selected Discord channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
-          <span>Relay: <strong id="relay-state">Stopped</strong></span>
-          <span id="capture-indicator" class="live-indicator">Not capturing</span>
-        </div>
-        <audio id="discord-audio" preload="none"></audio>
-      </section>
       <h3 class="sound-heading">Sound clips</h3>
       <p class="voice-help">Play a sound after the bot has joined the voice call.</p>
       <div class="sound-actions">
@@ -947,14 +913,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
       <section aria-labelledby="transcription-heading">
         <h3 class="sound-heading" id="transcription-heading">Call transcription</h3>
-        <div class="consent-notice">
-          <strong>Audio capture notice</strong>
-          <p>Starting transcription captures each participant's call audio and sends bounded audio chunks to the configured speech-to-text service. Notify everyone first and follow Discord/server rules and all applicable recording-consent laws.</p>
-          <label class="consent-check" for="transcription-consent">
-            <input id="transcription-consent" name="transcription_consent" type="checkbox" value="yes">
-            I affirmatively confirm that participants were notified and consent requirements and server rules were considered.
-          </label>
-        </div>
         <p id="transcript-status" class="transcript-status">Transcription status: checking…</p>
         <div class="transcription-actions">
           <button class="record-button" type="submit" name="action" value="start_transcription">Start transcription</button>
@@ -1009,72 +967,11 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const message = document.getElementById("message");
     const voiceChannel = document.getElementById("voice-channel-id");
     const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
-    const relayChannel = document.getElementById("relay-channel");
-    const relayState = document.getElementById("relay-state");
-    const captureIndicator = document.getElementById("capture-indicator");
-    const audio = document.getElementById("discord-audio");
-    const startListening = document.getElementById("start-listening");
-    const muteListening = document.getElementById("mute-listening");
-    const stopListening = document.getElementById("stop-listening");
     voiceChannel.addEventListener("input", () => {
       uploadVoiceChannel.value = voiceChannel.value;
-      relayChannel.textContent = voiceChannel.value || "None";
     });
     uploadVoiceChannel.addEventListener("input", () => {
       voiceChannel.value = uploadVoiceChannel.value;
-      relayChannel.textContent = uploadVoiceChannel.value || "None";
-    });
-
-    function setRelayState(state, live) {
-      relayState.textContent = state;
-      captureIndicator.textContent = live ? "Live capture" : "Not capturing";
-      captureIndicator.classList.toggle("live", live);
-    }
-
-    startListening.addEventListener("click", async () => {
-      if (!voiceChannel.checkValidity()) {
-        voiceChannel.reportValidity();
-        return;
-      }
-      audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}`;
-      audio.muted = false;
-      setRelayState("Connecting…", false);
-      try {
-        await audio.play();
-        setRelayState("Connected", true);
-        startListening.disabled = true;
-        muteListening.disabled = false;
-        stopListening.disabled = false;
-      } catch (error) {
-        audio.removeAttribute("src");
-        audio.load();
-        setRelayState("Connection failed", false);
-      }
-    });
-
-    muteListening.addEventListener("click", () => {
-      audio.muted = !audio.muted;
-      muteListening.textContent = audio.muted ? "Unmute" : "Mute";
-      setRelayState(audio.muted ? "Connected — muted" : "Connected", true);
-    });
-
-    stopListening.addEventListener("click", () => {
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
-      startListening.disabled = false;
-      muteListening.disabled = true;
-      stopListening.disabled = true;
-      muteListening.textContent = "Mute";
-      setRelayState("Stopped", false);
-    });
-
-    audio.addEventListener("error", () => {
-      if (!audio.getAttribute("src")) return;
-      setRelayState("Disconnected", false);
-      startListening.disabled = false;
-      muteListening.disabled = true;
-      stopListening.disabled = true;
     });
 
     document.querySelectorAll(".ping-button").forEach((button) => {
@@ -1348,6 +1245,22 @@ def external_audio_stream(channel_id: int):
     return response
 
 
+def submit_transcription_action(action: str, channel_id: int) -> str:
+    actions = {
+        "start_transcription": start_transcription,
+        "stop_transcription": stop_transcription,
+        "clear_transcript": clear_transcript,
+    }
+    try:
+        coroutine = actions[action](channel_id)
+    except KeyError as error:
+        raise ValueError("Unknown transcription action") from error
+    return run_discord_coroutine(
+        coroutine,
+        "Discord took too long to update transcription",
+    )
+
+
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
     if action not in {"join", "stop", "leave", "play_sound"}:
         raise ValueError("Unknown voice action")
@@ -1430,11 +1343,7 @@ def external_say():
                         "start_transcription", "stop_transcription", "clear_transcript"
                     }:
                         require_transcription_control_authentication()
-                        status = submit_transcription_action(
-                            action,
-                            channel_id,
-                            consent=request.form.get("transcription_consent") == "yes",
-                        )
+                        status = submit_transcription_action(action, channel_id)
                     elif action == "play_sound":
                         status = submit_external_voice_action(
                             action, channel_id, request.form.get("sound")
@@ -1500,7 +1409,6 @@ def external_say():
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
-        incoming_audio_enabled=bool(EXTERNAL_SAY_CONTROL_TOKEN),
     ), response_status
 
 
