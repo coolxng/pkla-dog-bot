@@ -839,17 +839,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .join-button { background: #047857; }
     .stop-button { background: #b45309; }
     .leave-button { background: #b91c1c; }
-    .listen-panel { margin-top: 1.25rem; padding: 1rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
-    .listen-panel h3 { margin: 0 0 .25rem; }
-    .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
-    .listen-button { background: #047857; }
-    .mute-button { background: #b45309; }
-    .listen-stop-button { background: #b91c1c; }
-    .relay-details { display: grid; gap: .3rem; margin: .75rem 0 0; color: #d1d5db; font-size: .9rem; }
-    .live-indicator { display: inline-flex; align-items: center; gap: .4rem; color: #9ca3af; font-weight: 700; }
-    .live-indicator::before { content: ""; width: .65rem; height: .65rem; border-radius: 50%; background: #6b7280; }
-    .live-indicator.live { color: #fca5a5; }
-    .live-indicator.live::before { background: #ef4444; box-shadow: 0 0 0 .25rem rgb(239 68 68 / 20%); }
     button:disabled { cursor: not-allowed; opacity: .55; }
     .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
     .ping-list { display: grid; gap: .6rem; }
@@ -994,16 +983,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const message = document.getElementById("message");
     const voiceChannel = document.getElementById("voice-channel-id");
     const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
-    const relayChannel = document.getElementById("relay-channel");
-    const relayState = document.getElementById("relay-state");
-    const captureIndicator = document.getElementById("capture-indicator");
-    const audio = document.getElementById("discord-audio");
-    const startListening = document.getElementById("start-listening");
-    const muteListening = document.getElementById("mute-listening");
-    const stopListening = document.getElementById("stop-listening");
     voiceChannel.addEventListener("input", () => {
       uploadVoiceChannel.value = voiceChannel.value;
-      relayChannel.textContent = voiceChannel.value || "None";
     });
     uploadVoiceChannel.addEventListener("input", () => {
       voiceChannel.value = uploadVoiceChannel.value;
@@ -1500,7 +1481,6 @@ def external_say():
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
-        incoming_audio_enabled=bool(EXTERNAL_SAY_CONTROL_TOKEN),
     ), response_status
 
 
