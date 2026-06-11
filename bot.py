@@ -1156,6 +1156,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const transcriptStatus = document.getElementById("transcript-status");
     const newTranscriptButton = document.getElementById("new-transcript");
     let lastTranscriptSequence = 0;
+    let transcriptTimer;
 
     function scrollTranscriptToLatest() {
       transcriptList.scrollTop = transcriptList.scrollHeight;
@@ -1174,6 +1175,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         if (!response.ok) throw new Error(payload.error || "Transcript unavailable");
         transcriptStatus.textContent = payload.active ? "🔴 Transcription active: call audio is being captured" : "⚪ Transcription inactive";
         transcriptStatus.classList.toggle("active", payload.active);
+        if (payload.active) transcriptTimer = window.setTimeout(refreshTranscript, 2000);
         payload.entries.forEach((entry) => {
           lastTranscriptSequence = Math.max(lastTranscriptSequence, entry.sequence);
           const item = document.createElement("div");
@@ -1202,12 +1204,12 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     }
 
     voiceChannel.addEventListener("change", () => {
+      window.clearTimeout(transcriptTimer);
       lastTranscriptSequence = 0;
       transcriptList.replaceChildren();
       refreshTranscript();
     });
     refreshTranscript();
-    window.setInterval(refreshTranscript, 2000);
 
     document.querySelectorAll(".copy-button").forEach((button) => {
       button.addEventListener("click", async () => {
