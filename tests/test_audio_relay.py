@@ -221,6 +221,25 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
         submit_pcm.assert_called_once_with(data.pcm, source_id=42)
         bot.transcription_sessions.clear()
 
+    async def test_shared_sink_relays_participants_while_bot_is_playing(self):
+        class FakeAudioSink:
+            def __init__(self):
+                pass
+
+        channel = SimpleNamespace(id=123, guild=SimpleNamespace(id=9))
+        voice_client = SimpleNamespace(channel=channel, is_playing=lambda: True)
+        user = SimpleNamespace(id=42)
+        data = SimpleNamespace(pcm=b"\x01\x02" * 1920)
+        with (
+            patch.object(bot, "voice_recv", SimpleNamespace(AudioSink=FakeAudioSink)),
+            patch.object(bot, "client", SimpleNamespace(user=None)),
+            patch.object(bot.browser_audio_relay, "submit_pcm") as submit_pcm,
+        ):
+            sink = bot.create_browser_audio_sink(voice_client)
+            sink.write(user, data)
+
+        submit_pcm.assert_called_once_with(data.pcm, source_id=42)
+
     async def test_idle_receive_session_stops_discord_listener(self):
         voice_client = SimpleNamespace(is_listening=lambda: True, stop_listening=Mock())
         channel = SimpleNamespace(guild=SimpleNamespace(voice_client=voice_client))

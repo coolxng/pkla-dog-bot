@@ -59,6 +59,15 @@ class PingResponseTests(unittest.TestCase):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
 
+class VoiceReceiveDependencyTests(unittest.TestCase):
+    def test_voice_receive_dependency_includes_dave_fix(self):
+        requirements = Path("requirements.txt").read_text()
+
+        self.assertIn("discord-ext-voice-recv", requirements)
+        self.assertIn("/ddd28601fe556f585b869e215f29c8236b95f88f.zip", requirements)
+        self.assertNotIn("discord-ext-voice-recv==0.5.2a179", requirements)
+
+
 class DiscordIntentTests(unittest.TestCase):
     def test_member_and_message_content_intents_are_enabled(self):
         self.assertTrue(bot.intents.members)

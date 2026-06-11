@@ -2524,8 +2524,7 @@ def create_browser_audio_sink(voice_client):
             ):
                 session.sink.write(user, data)
 
-            if not voice_client.is_playing():
-                browser_audio_relay.submit_pcm(bytes(pcm), source_id=user.id)
+            browser_audio_relay.submit_pcm(bytes(pcm), source_id=user.id)
 
         def cleanup(self):
             return None
