@@ -94,7 +94,7 @@ class AudioAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate, private")
 
-    def test_listening_controls_do_not_embed_control_token(self):
+    def test_page_does_not_show_browser_listening_controls(self):
         encoded = base64.b64encode(b"user:secret-token").decode()
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
             response = self.client.get(
@@ -102,9 +102,8 @@ class AudioAuthorizationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Start listening", response.data)
-        self.assertIn(b"Mute", response.data)
-        self.assertIn(b"Stop listening", response.data)
+        self.assertNotIn(b"Start listening", response.data)
+        self.assertNotIn(b"Stop listening", response.data)
         self.assertNotIn(b"secret-token", response.data)
         self.assertEqual(
             response.headers["Cache-Control"],
