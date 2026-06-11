@@ -1476,6 +1476,59 @@ class GroqConfigTests(unittest.TestCase):
             headers={"Authorization": "Bearer secret"},
         )
 
+    def test_groq_trims_railway_env_values(self):
+        response = {"choices": [{"message": {"content": "hello"}}]}
+        with (
+            patch.dict(
+                bot.os.environ,
+                {
+                    "GROQ_API_KEY": " secret\n",
+                    "GROQ_CHAT_MODEL": " llama-3.1-8b-instant ",
+                },
+                clear=True,
+            ),
+            patch.object(bot, "post_json", return_value=response) as post_json,
+        ):
+            bot.create_groq_chat_completion([], max_tokens=25)
+
+        self.assertEqual(
+            post_json.call_args.kwargs["headers"]["Authorization"], "Bearer secret"
+        )
+        self.assertEqual(post_json.call_args.args[1]["model"], "llama-3.1-8b-instant")
+
+    def test_groq_retries_transient_rate_limit(self):
+        response = {"choices": [{"message": {"content": "hello"}}]}
+        rate_limit = bot.JsonHTTPError(
+            "https://api.groq.com/openai/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            '{"error":{"message":"rate limit"}}',
+        )
+        with (
+            patch.dict(bot.os.environ, {"GROQ_API_KEY": "secret"}, clear=True),
+            patch.object(bot, "post_json", side_effect=[rate_limit, response]) as post_json,
+            patch.object(bot.time, "sleep") as sleep,
+        ):
+            result = bot.create_groq_chat_completion([], max_tokens=25)
+
+        self.assertEqual(result, "hello")
+        self.assertEqual(post_json.call_count, 2)
+        sleep.assert_called_once_with(0.5)
+
+    def test_groq_context_keeps_system_and_recent_messages_within_budget(self):
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old" * 100},
+            {"role": "assistant", "content": "recent reply"},
+            {"role": "user", "content": "latest question"},
+        ]
+
+        trimmed = bot.trim_chat_messages(messages, char_budget=45)
+
+        self.assertEqual(trimmed[0], messages[0])
+        self.assertEqual(trimmed[-2:], messages[-2:])
+        self.assertNotIn(messages[1], trimmed)
+
     def test_chat_completion_does_not_fallback_to_openai_by_default(self):
         with (
             patch.dict(bot.os.environ, {"OPENAI_API_KEY": "secret"}, clear=True),
@@ -1532,6 +1585,12 @@ class GroqConfigTests(unittest.TestCase):
             self.assertEqual(bot.openai_web_search("query", recent=False), [])
 
         post_json.assert_not_called()
+
+    def test_groq_failure_uses_requested_discord_message(self):
+        self.assertEqual(
+            bot.error_reply(RuntimeError("Groq chat failed")),
+            "stfu bitch ass boy",
+        )
 
     def test_system_prompt_uses_natural_discord_conversation_style(self):
         self.assertIn("real person participating in a Discord conversation", bot.SYSTEM_PROMPT)

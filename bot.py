@@ -64,6 +64,9 @@ DEFAULT_GROQ_CHAT_MODEL = "llama-3.1-8b-instant"
 DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_OPENAI_SEARCH_MODEL = "chat-latest"
 DEFAULT_CHAT_MAX_COMPLETION_TOKENS = 150
+GROQ_CHAT_INPUT_CHAR_BUDGET = 12_000
+GROQ_REQUEST_MAX_ATTEMPTS = 3
+GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
 # OpenAI documents gpt-4o-mini-tts and alloy as supported Speech API defaults.
 OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 OPENAI_TTS_VOICES = {
@@ -217,8 +220,39 @@ def log_chat_usage(provider: str, model: str, response: dict) -> None:
     print(f"[AI] provider={provider} model={model}{suffix}")
 
 
+def trim_chat_messages(
+    messages: list[dict], char_budget: int = GROQ_CHAT_INPUT_CHAR_BUDGET
+) -> list[dict]:
+    if sum(len(str(message.get("content", ""))) for message in messages) <= char_budget:
+        return messages
+
+    system_messages = [message for message in messages if message.get("role") == "system"]
+    recent_messages = [message for message in messages if message.get("role") != "system"]
+    trimmed = []
+    if system_messages:
+        system_message = system_messages[0]
+        system_content = str(system_message.get("content", ""))[:char_budget]
+        trimmed.append({**system_message, "content": system_content})
+    remaining = char_budget - sum(
+        len(str(message.get("content", ""))) for message in trimmed
+    )
+    selected = []
+    for message in reversed(recent_messages):
+        content = str(message.get("content", ""))
+        if len(content) <= remaining:
+            selected.append(message)
+            remaining -= len(content)
+            continue
+        if not selected and remaining > 0:
+            selected.append({**message, "content": content[-remaining:]})
+        break
+
+    trimmed.extend(reversed(selected))
+    return trimmed
+
+
 def create_groq_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is not set")
 
@@ -226,18 +260,37 @@ def create_groq_chat_completion(messages: list[dict], *, max_tokens: int) -> str
         os.environ.get("GROQ_CHAT_MODEL")
         or os.environ.get("GROQ_MODEL")
         or DEFAULT_GROQ_CHAT_MODEL
-    )
-    response = post_json(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {"model": model, "messages": messages, "max_completion_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {api_key}"},
-    )
-    log_chat_usage("groq", model, response)
-    return chat_completion_content(response, "Groq")
+    ).strip()
+    request_messages = trim_chat_messages(messages)
+    for attempt in range(1, GROQ_REQUEST_MAX_ATTEMPTS + 1):
+        try:
+            response = post_json(
+                "https://api.groq.com/openai/v1/chat/completions",
+                {
+                    "model": model,
+                    "messages": request_messages,
+                    "max_completion_tokens": max_tokens,
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            log_chat_usage("groq", model, response)
+            return chat_completion_content(response, "Groq")
+        except (JsonHTTPError, URLError, TimeoutError) as error:
+            status_code = getattr(error, "status_code", None)
+            retryable = status_code in GROQ_RETRYABLE_STATUS_CODES or status_code is None
+            print(
+                f"[AI] provider=groq model={model} attempt={attempt} "
+                f"error={error}"
+            )
+            if not retryable or attempt == GROQ_REQUEST_MAX_ATTEMPTS:
+                raise
+            time.sleep(0.5 * attempt)
+
+    raise RuntimeError("Groq request failed")
 
 
 def create_openai_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set for chat fallback")
 
@@ -255,6 +308,7 @@ def create_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
     try:
         return create_groq_chat_completion(messages, max_tokens=max_tokens)
     except Exception as groq_error:
+        print(f"[AI] provider=groq failed error={groq_error}")
         if not env_bool("OPENAI_CHAT_FALLBACK", False):
             raise RuntimeError(
                 "Groq chat failed and OPENAI_CHAT_FALLBACK is disabled"
@@ -1412,6 +1466,14 @@ def synthesize_speech(text: str, voice: str) -> Path:
         raise
 
 
+class JsonHTTPError(RuntimeError):
+    def __init__(self, url: str, status_code: int, reason: str, body: str):
+        super().__init__(
+            f"POST {url} failed with HTTP {status_code} {reason}: {body}"
+        )
+        self.status_code = status_code
+
+
 def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: int = 30) -> dict:
     body = json.dumps(payload).encode("utf-8")
     request_headers = {"Content-Type": "application/json", **(headers or {})}
@@ -1419,11 +1481,11 @@ def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: 
     try:
         with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
-    except HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"POST {url} failed with HTTP {e.code} {e.reason}: {error_body}"
-        ) from e
+    except HTTPError as error:
+        error_body = error.read().decode("utf-8", errors="replace")
+        raise JsonHTTPError(
+            url, error.code, error.reason, error_body
+        ) from error
 
 
 def extract_openai_text(response: dict) -> str:
@@ -1764,7 +1826,7 @@ def error_reply(error: Exception, *, during_search: bool = False) -> str:
         return "my bad, search failed while checking that."
     error_text = str(error).lower()
     if "groq" in error_text or "groq_api_key" in error_text or "chat/completions" in error_text:
-        return "my bad, Groq failed to return a response."
+        return "stfu bitch ass boy"
     if "openai" in error_text:
         return "my bad, OpenAI failed to return a response."
     return "my bad, something failed while handling that message."
