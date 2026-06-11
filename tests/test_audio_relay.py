@@ -5,7 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import bot
-from audio_relay import AudioRelay, RelayError, SlowClientError, mix_pcm_frames
+from audio_relay import (
+    PCM_FRAME_BYTES,
+    AudioRelay,
+    RelayError,
+    SlowClientError,
+    chunk_pcm_frames,
+    mix_pcm_frames,
+)
 
 
 class StubRelay(AudioRelay):
@@ -55,6 +62,30 @@ class RelayLifecycleTests(unittest.TestCase):
         relay = StubRelay(input_frame_limit=1)
         self.assertTrue(relay.submit_pcm(b"\x00\x00"))
         self.assertFalse(relay.submit_pcm(b"\x00\x00"))
+
+    def test_larger_pcm_chunks_are_split_into_20_ms_frames(self):
+        pcm = b"\x01\x02" * (PCM_FRAME_BYTES + 100)
+        frames = list(chunk_pcm_frames(pcm))
+
+        self.assertEqual(len(frames), 2)
+        self.assertEqual(len(frames[0]), PCM_FRAME_BYTES)
+        self.assertEqual(len(frames[1]), PCM_FRAME_BYTES)
+        self.assertEqual(frames[0], pcm[:PCM_FRAME_BYTES])
+        self.assertTrue(frames[1].startswith(pcm[PCM_FRAME_BYTES:]))
+
+    def test_submit_pcm_queues_all_frames_from_large_chunk(self):
+        relay = StubRelay(input_frame_limit=3)
+        pcm = b"\x01\x02" * (PCM_FRAME_BYTES + 100)
+
+        self.assertTrue(relay.submit_pcm(pcm, source_id=42))
+        self.assertEqual(relay._input_frames.qsize(), 2)
+
+        first_source, first_frame = relay._input_frames.get_nowait()
+        second_source, second_frame = relay._input_frames.get_nowait()
+        self.assertEqual(first_source, 42)
+        self.assertEqual(second_source, 42)
+        self.assertEqual(first_frame, pcm[:PCM_FRAME_BYTES])
+        self.assertEqual(len(second_frame), PCM_FRAME_BYTES)
 
     def test_encoder_failure_closes_all_listeners(self):
         idle = Mock()
