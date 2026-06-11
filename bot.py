@@ -1824,9 +1824,23 @@ def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:
 def error_reply(error: Exception, *, during_search: bool = False) -> str:
     if during_search:
         return "my bad, search failed while checking that."
-    error_text = str(error).lower()
-    if "groq" in error_text or "groq_api_key" in error_text or "chat/completions" in error_text:
-        return "stfu bitch ass boy"
+
+    error_chain = []
+    current_error = error
+    while current_error is not None and current_error not in error_chain:
+        error_chain.append(current_error)
+        current_error = current_error.__cause__ or current_error.__context__
+
+    error_text = " ".join(str(item).lower() for item in error_chain)
+    status_codes = {getattr(item, "status_code", None) for item in error_chain}
+    if "groq" in error_text or "chat/completions" in error_text:
+        if "groq_api_key is not set" in error_text:
+            return "AI chat isn't configured. Set GROQ_API_KEY in Variables, then redeploy."
+        if status_codes & {401, 403}:
+            return "Groq rejected the API key. Check GROQ_API_KEY in Variables, then redeploy."
+        if 429 in status_codes:
+            return "Groq is rate-limited right now. Try again in a minute."
+        return "Groq couldn't return a response right now. Check the deployment logs."
     if "openai" in error_text:
         return "my bad, OpenAI failed to return a response."
     return "my bad, something failed while handling that message."

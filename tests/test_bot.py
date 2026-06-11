@@ -1586,10 +1586,50 @@ class GroqConfigTests(unittest.TestCase):
 
         post_json.assert_not_called()
 
-    def test_groq_failure_uses_requested_discord_message(self):
+    def test_missing_groq_key_returns_configuration_guidance(self):
+        groq_error = RuntimeError("GROQ_API_KEY is not set")
+        error = RuntimeError("Groq chat failed")
+        error.__cause__ = groq_error
+
+        self.assertEqual(
+            bot.error_reply(error),
+            "AI chat isn't configured. Set GROQ_API_KEY in Variables, then redeploy.",
+        )
+
+    def test_rejected_groq_key_returns_key_guidance(self):
+        groq_error = bot.JsonHTTPError(
+            "https://api.groq.com/openai/v1/chat/completions",
+            401,
+            "Unauthorized",
+            '{"error":{"message":"invalid API key"}}',
+        )
+        error = RuntimeError("Groq chat failed")
+        error.__cause__ = groq_error
+
+        self.assertEqual(
+            bot.error_reply(error),
+            "Groq rejected the API key. Check GROQ_API_KEY in Variables, then redeploy.",
+        )
+
+    def test_groq_rate_limit_returns_retry_guidance(self):
+        groq_error = bot.JsonHTTPError(
+            "https://api.groq.com/openai/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            '{"error":{"message":"rate limit"}}',
+        )
+        error = RuntimeError("Groq chat failed")
+        error.__cause__ = groq_error
+
+        self.assertEqual(
+            bot.error_reply(error),
+            "Groq is rate-limited right now. Try again in a minute.",
+        )
+
+    def test_other_groq_failure_returns_safe_provider_guidance(self):
         self.assertEqual(
             bot.error_reply(RuntimeError("Groq chat failed")),
-            "stfu bitch ass boy",
+            "Groq couldn't return a response right now. Check the deployment logs.",
         )
 
     def test_system_prompt_uses_natural_discord_conversation_style(self):
