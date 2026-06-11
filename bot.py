@@ -60,8 +60,13 @@ def start_web_server():
     Thread(target=run_web_server, daemon=True).start()
 
 
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GROQ_CHAT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_OPENAI_CHAT_MODEL = "gpt-4o-mini"
 DEFAULT_OPENAI_SEARCH_MODEL = "chat-latest"
+DEFAULT_CHAT_MAX_COMPLETION_TOKENS = 150
+GROQ_CHAT_INPUT_CHAR_BUDGET = 12_000
+GROQ_REQUEST_MAX_ATTEMPTS = 3
+GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
 # OpenAI documents gpt-4o-mini-tts and alloy as supported Speech API defaults.
 OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 OPENAI_TTS_VOICES = {
@@ -193,23 +198,123 @@ def model_supports_reasoning_effort(model: str) -> bool:
     return model.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
-def create_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY is not set")
-
-    model = os.environ.get("GROQ_MODEL", DEFAULT_GROQ_MODEL)
-    response = post_json(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {"model": model, "messages": messages, "max_completion_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {api_key}"},
-    )
+def chat_completion_content(response: dict, provider: str) -> str:
     choice = response.get("choices", [{}])[0]
     content = choice.get("message", {}).get("content") or ""
     if not content.strip():
         finish_reason = choice.get("finish_reason", "unknown")
-        raise RuntimeError(f"Groq returned an empty message; finish_reason={finish_reason}")
+        raise RuntimeError(
+            f"{provider} returned an empty message; finish_reason={finish_reason}"
+        )
     return content
+
+
+def log_chat_usage(provider: str, model: str, response: dict) -> None:
+    usage = response.get("usage") or {}
+    usage_fields = " ".join(
+        f"{name}={usage[name]}"
+        for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if usage.get(name) is not None
+    )
+    suffix = f" {usage_fields}" if usage_fields else ""
+    print(f"[AI] provider={provider} model={model}{suffix}")
+
+
+def trim_chat_messages(
+    messages: list[dict], char_budget: int = GROQ_CHAT_INPUT_CHAR_BUDGET
+) -> list[dict]:
+    if sum(len(str(message.get("content", ""))) for message in messages) <= char_budget:
+        return messages
+
+    system_messages = [message for message in messages if message.get("role") == "system"]
+    recent_messages = [message for message in messages if message.get("role") != "system"]
+    trimmed = []
+    if system_messages:
+        system_message = system_messages[0]
+        system_content = str(system_message.get("content", ""))[:char_budget]
+        trimmed.append({**system_message, "content": system_content})
+    remaining = char_budget - sum(
+        len(str(message.get("content", ""))) for message in trimmed
+    )
+    selected = []
+    for message in reversed(recent_messages):
+        content = str(message.get("content", ""))
+        if len(content) <= remaining:
+            selected.append(message)
+            remaining -= len(content)
+            continue
+        if not selected and remaining > 0:
+            selected.append({**message, "content": content[-remaining:]})
+        break
+
+    trimmed.extend(reversed(selected))
+    return trimmed
+
+
+def create_groq_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not set")
+
+    model = (
+        os.environ.get("GROQ_CHAT_MODEL")
+        or os.environ.get("GROQ_MODEL")
+        or DEFAULT_GROQ_CHAT_MODEL
+    ).strip()
+    request_messages = trim_chat_messages(messages)
+    for attempt in range(1, GROQ_REQUEST_MAX_ATTEMPTS + 1):
+        try:
+            response = post_json(
+                "https://api.groq.com/openai/v1/chat/completions",
+                {
+                    "model": model,
+                    "messages": request_messages,
+                    "max_completion_tokens": max_tokens,
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            log_chat_usage("groq", model, response)
+            return chat_completion_content(response, "Groq")
+        except (JsonHTTPError, URLError, TimeoutError) as error:
+            status_code = getattr(error, "status_code", None)
+            retryable = status_code in GROQ_RETRYABLE_STATUS_CODES or status_code is None
+            print(
+                f"[AI] provider=groq model={model} attempt={attempt} "
+                f"error={error}"
+            )
+            if not retryable or attempt == GROQ_REQUEST_MAX_ATTEMPTS:
+                raise
+            time.sleep(0.5 * attempt)
+
+    raise RuntimeError("Groq request failed")
+
+
+def create_openai_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set for chat fallback")
+
+    model = os.environ.get("OPENAI_CHAT_MODEL", DEFAULT_OPENAI_CHAT_MODEL)
+    response = post_json(
+        "https://api.openai.com/v1/chat/completions",
+        {"model": model, "messages": messages, "max_completion_tokens": max_tokens},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    log_chat_usage("openai", model, response)
+    return chat_completion_content(response, "OpenAI")
+
+
+def create_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
+    try:
+        return create_groq_chat_completion(messages, max_tokens=max_tokens)
+    except Exception as groq_error:
+        print(f"[AI] provider=groq failed error={groq_error}")
+        if not env_bool("OPENAI_CHAT_FALLBACK", False):
+            raise RuntimeError(
+                "Groq chat failed and OPENAI_CHAT_FALLBACK is disabled"
+            ) from groq_error
+        print(f"[AI] Groq chat failed; using explicit OpenAI fallback: {groq_error}")
+        return create_openai_chat_completion(messages, max_tokens=max_tokens)
 
 
 # Defaults keep the existing server/channel behavior when env vars are not set.
@@ -267,40 +372,19 @@ SOUND_CLIP_LABELS = ", ".join(sound["label"] for sound in EXTERNAL_BARK_SOUNDS.v
 
 SYSTEM_PROMPT = f"""You are pkla dog, a helpful assistant in a Discord server.
 
-Core behavior:
-- Respond like a real person participating in a Discord conversation: helpful, natural, clear, and conversational.
-- Match the size and energy of the message. For short casual messages, usually reply with one short sentence or reaction instead of turning every message into a joke or performance.
-- Use recent messages for context, not as a template for your wording. Do not keep repeating your own previous cadence, punchline structure, or running bit.
-- Do not write like a meme account or a viral post. Avoid theatrical narration, fake courtroom or announcer framing, staged captions, "bro really..." setups, and forced closing punchlines unless the user is explicitly asking for that style.
-- Do not merely echo the user's words and add a scripted punchline. Sometimes a simple response like "lmao", "yeah", or "we got him" is enough.
-- Treat emoji-only messages like a person would: reply with at most one emoji or a few plain words. Never explain, name, caption, rate, or invent lore about the emoji.
-- Use emojis sparingly and only when they fit naturally. Usually use zero or one; do not repeatedly stack crying, skull, gaming, chart, or other decorative emojis.
-- Keep casual replies concise, but give fuller explanations when the user asks for help, reasoning, or details.
-- Answer the actual question.
-- Do not pretend to know things you do not know. Say when you are guessing.
-- Do not invent live data, search status, sources, prices, scores, dates, or facts.
-- When live web context is provided, use it for current facts, but do not list sources or URLs unless the user asks for links or sources.
-- If web context is missing, weak, unclear, or conflicting, say that instead of guessing.
-- Use the exact Central Time current date and time when the user asks about dates, time, or current events.
-- Do not restate today's date in casual greetings or unrelated replies.
-- Format dates like 5/13/26.
-- Never include internal labels like [searching], [current price], or bracketed tool notes in your reply.
-- For yes/no questions, lead with "Yes." or "No." then explain.
-- Use bullets, steps, or short sections when they make the answer easier to read.
-- Never use em dashes.
-- If anyone asks who you are, say: I'm pkla dog.
-- You can ping configured users by sending Discord mention text when the message handler matches a ping command. If recent chat history shows you sent a mention, do not deny that you did it.
-- Configured Discord mention text like <@123> contains a user ID from the bot config. If asked about a mention you just sent, answer from chat context instead of claiming you do not store or use IDs.
-- In server channels, recent chat history can include multiple users labeled as "Name: message". Use that shared channel context so another user can naturally continue the same conversation.
-- Universal memory contains facts users have explicitly shared. Reference it only when the current message directly relates to a stored fact. Never surface memory unprompted or treat it as verified if it conflicts with what the user just said.
-
-Bot capabilities and boundaries:
-- Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
-- `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. Joining never starts recording.
-- `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` queues the message to be read in the connected voice channel without overlapping other `!tts` messages. `!leave` stops scheduled barking and disconnects from voice.
-- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, and listen to live call audio in the browser when the feature is configured. Those web controls are separate from normal chat commands.
-- `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
-- A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
+- Respond like a real person participating in a Discord conversation. Be natural, clear, and concise.
+- For casual messages, usually reply with one short sentence. Use recent messages for context, not as a template for your wording.
+- Do not write like a meme account or a viral post. Do not merely echo the user's words and add a scripted punchline.
+- Treat emoji-only messages like a person would. Use emojis sparingly; Usually use zero or one.
+- Answer the actual question. Never invent current facts, search results, sources, dates, prices, or scores. Say when information could not be verified.
+- Use provided live web context for current facts. Give links only when asked.
+- For yes/no questions, lead with Yes. or No. Never use em dashes.
+- If asked who you are, say: I'm pkla dog.
+- Server history may label messages as Name: message. Universal memory is unverified shared context; use it only when directly relevant.
+- `!join` joins voice, barks immediately, and barks every five minutes. Joining never starts recording.
+- `!bark`, `!tts <message>`, `!leave`, `!search <query>`, and the memory/reset commands work as named.
+- The external `/say` web page can message, control voice, play {SOUND_CLIP_LABELS}, use TTS, and listen to live call audio in the browser.
+- A normal AI reply does not itself execute commands or web controls. Explain the exact command/control instead of claiming an action succeeded."""
 
 SEARCH_KEYWORDS = [
     "what are", "what was", "what were",
@@ -326,7 +410,7 @@ RECENT_SEARCH_KEYWORDS = [
 ]
 
 SEARCH_RESULT_LIMIT = 8
-# OpenAI web search is tried first when OPENAI_API_KEY exists.
+# OpenAI web search is tried first only when explicitly enabled and configured.
 # Other optional API-backed providers remain as fallbacks before DDGS.
 SEARCH_PROVIDER_ENV_VARS = (
     "OPENAI_API_KEY",
@@ -1354,6 +1438,7 @@ def synthesize_speech(text: str, voice: str) -> Path:
     try:
         with urlopen(speech_request, timeout=30) as response:
             audio_data = response.read()
+        print(f"[AI] provider=openai feature=tts model={OPENAI_TTS_MODEL}")
         file_descriptor, temporary_name = tempfile.mkstemp(
             prefix="discord-tts-", suffix=".mp3"
         )
@@ -1381,6 +1466,14 @@ def synthesize_speech(text: str, voice: str) -> Path:
         raise
 
 
+class JsonHTTPError(RuntimeError):
+    def __init__(self, url: str, status_code: int, reason: str, body: str):
+        super().__init__(
+            f"POST {url} failed with HTTP {status_code} {reason}: {body}"
+        )
+        self.status_code = status_code
+
+
 def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: int = 30) -> dict:
     body = json.dumps(payload).encode("utf-8")
     request_headers = {"Content-Type": "application/json", **(headers or {})}
@@ -1388,11 +1481,11 @@ def post_json(url: str, payload: dict, *, headers: dict | None = None, timeout: 
     try:
         with urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
-    except HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"POST {url} failed with HTTP {e.code} {e.reason}: {error_body}"
-        ) from e
+    except HTTPError as error:
+        error_body = error.read().decode("utf-8", errors="replace")
+        raise JsonHTTPError(
+            url, error.code, error.reason, error_body
+        ) from error
 
 
 def extract_openai_text(response: dict) -> str:
@@ -1439,6 +1532,8 @@ def collect_openai_urls(value, *, seen: set[str] | None = None) -> list[dict]:
 
 
 def openai_web_search(query: str, *, recent: bool) -> list[dict]:
+    if not env_bool("ENABLE_OPENAI_WEB_SEARCH", False):
+        return []
     if not os.environ.get("OPENAI_API_KEY"):
         return []
 
@@ -1485,6 +1580,7 @@ def openai_web_search(query: str, *, recent: bool) -> list[dict]:
         print(f"OpenAI web search failed for query {query!r}: {e}")
         raise
 
+    print(f"[AI] provider=openai feature=web_search model={model}")
     text = strip_urls(extract_openai_text(response))
     results = []
     if text:
@@ -1730,7 +1826,7 @@ def error_reply(error: Exception, *, during_search: bool = False) -> str:
         return "my bad, search failed while checking that."
     error_text = str(error).lower()
     if "groq" in error_text or "groq_api_key" in error_text or "chat/completions" in error_text:
-        return "my bad, Groq failed to return a response."
+        return "stfu bitch ass boy"
     if "openai" in error_text:
         return "my bad, OpenAI failed to return a response."
     return "my bad, something failed while handling that message."
@@ -1785,7 +1881,12 @@ async def web_search(query: str, *, recent: bool = False) -> str:
     return await loop.run_in_executor(None, do_search)
 
 
-async def call_model(history: list, user_text: str, max_tokens: int = 1024, display_name: str | None = None) -> str:
+async def call_model(
+    history: list,
+    user_text: str,
+    max_tokens: int = DEFAULT_CHAT_MAX_COMPLETION_TOKENS,
+    display_name: str | None = None,
+) -> str:
     loop = asyncio.get_running_loop()
 
     def do_call():
@@ -1955,6 +2056,8 @@ def create_browser_audio_sink(voice_client):
 
 async def ensure_receive_session(voice_channel) -> None:
     global active_receive_channel_id, active_receive_sink
+    if not env_bool("ENABLE_LISTEN_IN", True):
+        raise RuntimeError("Browser listen-in is disabled by ENABLE_LISTEN_IN")
     channel_id = voice_channel.id
     voice_client = voice_channel.guild.voice_client
     if not voice_client or not voice_client.is_connected():
@@ -2157,7 +2260,7 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
                 await voice_client.move_to(voice_channel)
         else:
             connect_options = {"self_deaf": False, "self_mute": False}
-            if EXTERNAL_SAY_CONTROL_TOKEN:
+            if EXTERNAL_SAY_CONTROL_TOKEN and env_bool("ENABLE_LISTEN_IN", True):
                 connect_options["cls"] = voice_receive_client_class()
             voice_client = await voice_channel.connect(**connect_options)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
@@ -2961,7 +3064,7 @@ async def on_message(message):
 
     async with message.channel.typing():
         try:
-            max_tokens = 60 if reply_style_guidance else 1024
+            max_tokens = 60 if reply_style_guidance else DEFAULT_CHAT_MAX_COMPLETION_TOKENS
             reply = clean_reply(
                 await call_model(
                     history_so_far,
@@ -2988,6 +3091,8 @@ async def on_message(message):
 
 
 def main():
+    if env_bool("ENABLE_TRANSCRIPTION", False):
+        print("ENABLE_TRANSCRIPTION is ignored because transcription support is removed")
     start_web_server()
     client.run(os.environ["DISCORD_TOKEN"])
 
