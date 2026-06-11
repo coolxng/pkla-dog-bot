@@ -23,6 +23,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_SEARCH_MODEL` | `OPENAI_MODEL` or `chat-latest` | Model used for OpenAI web search requests. |
 | `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | Model used by the OpenAI Speech API for **Speak in call**. |
 | `OPENAI_TTS_VOICE` | `alloy` | Default voice selected on `/say`. Unsupported values fall back to `alloy`; the page only accepts voices from the server-side allowlist. |
+| `TRANSCRIPTION_ENABLED` | `true` | Enables authenticated, explicitly started call transcription. Set to `false` as an emergency or deployment-level kill switch. |
+| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | Speech-to-text model used for call transcription. |
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
 | `OPENAI_REASONING_EFFORT` | `none` for GPT-5 models, otherwise `minimal` | Reasoning effort for chat completions when supported. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
@@ -43,7 +45,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
 6. Invite the bot and grant **View Channel**, **Connect**, **Speak**, and **Send Messages** in voice channels that may be transcribed. **Send Messages** is required so the bot can post visible start/stop capture notices in the voice channel's text chat. Add text target IDs to `TARGET_CHANNEL_IDS`.
 7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl) and the pinned `discord-ext-voice-recv` pre-release. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
-8. To enable transcription, set `TRANSCRIPTION_ENABLED=true`, set `OPENAI_API_KEY`, choose `OPENAI_TRANSCRIPTION_MODEL` if desired, and set a strong `EXTERNAL_SAY_CONTROL_TOKEN`. Restart after changing environment settings.
+8. To use transcription, set `OPENAI_API_KEY` and a strong `EXTERNAL_SAY_CONTROL_TOKEN`; choose `OPENAI_TRANSCRIPTION_MODEL` if desired. Transcription is enabled by default and can be disabled with `TRANSCRIPTION_ENABLED=false`. Restart after changing environment settings.
 9. Keep a single Railway replica running. Conversation history, universal memory, transcription sessions, and transcripts are RAM-only and are not shared between replicas.
 
 ## Bot commands

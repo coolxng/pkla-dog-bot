@@ -104,6 +104,13 @@ class AudioAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Start listening", response.data)
         self.assertIn(b"Stop listening", response.data)
+        self.assertIn(
+            b'const audio = document.getElementById("discord-audio")', response.data
+        )
+        self.assertIn(
+            b'const startListening = document.getElementById("start-listening")',
+            response.data,
+        )
         self.assertNotIn(b"secret-token", response.data)
         self.assertEqual(
             response.headers["Cache-Control"],
