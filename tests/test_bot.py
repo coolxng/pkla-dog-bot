@@ -610,7 +610,13 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
             voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
 
             with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
-                played = bot.play_audio(voice_client, audio_path, delete_after=True)
+                played = bot.play_audio(
+                    voice_client,
+                    audio_path,
+                    activity_type="tts",
+                    label="test speech",
+                    delete_after=True,
+                )
                 after_playback = voice_client.play.call_args.kwargs["after"]
                 after_playback(None)
 
@@ -1070,7 +1076,10 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response, "playing Minecraft bark")
         play_audio.assert_called_once_with(
-            voice_client, bot.EXTERNAL_BARK_SOUNDS["minecraft"]["path"]
+            voice_client,
+            bot.EXTERNAL_BARK_SOUNDS["minecraft"]["path"],
+            activity_type="sound",
+            label="Minecraft bark",
         )
 
     async def test_external_sound_requires_joined_voice_client(self):
@@ -1129,7 +1138,13 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response, "speaking in #General")
         to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "nova")
-        play_audio.assert_called_once_with(voice_client, speech_path, delete_after=True)
+        play_audio.assert_called_once_with(
+            voice_client,
+            speech_path,
+            activity_type="tts",
+            label='TTS: “hello”',
+            delete_after=True,
+        )
         self.assertEqual(bot.last_tts_at[456], 100.0)
 
     async def test_external_speech_failure_does_not_start_cooldown(self):
@@ -1443,7 +1458,8 @@ class OpenAIConfigTests(unittest.TestCase):
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
         self.assertIn("`!join`", bot.SYSTEM_PROMPT)
         self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
-        self.assertIn("does not listen to, record, or process incoming voice audio", bot.SYSTEM_PROMPT)
+        self.assertIn("Joining never starts recording or transcription", bot.SYSTEM_PROMPT)
+        self.assertIn("consent-gated call transcription", bot.SYSTEM_PROMPT)
         self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
         self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
         self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
@@ -1812,7 +1828,13 @@ class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):
                 response = await bot.control_external_uploaded_audio(123, audio_path)
 
             self.assertEqual(response, "playing uploaded audio in #General")
-            play_audio.assert_called_once_with(voice_client, audio_path, delete_after=True)
+            play_audio.assert_called_once_with(
+                voice_client,
+                audio_path,
+                activity_type="uploaded_audio",
+                label="uploaded audio",
+                delete_after=True,
+            )
             audio_path.unlink()
 
     async def test_upload_removes_file_when_playback_start_raises(self):
@@ -2000,5 +2022,508 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertEqual(authorized.status_code, 200)
 
 
+class ExternalVoiceStatusRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_say_page_contains_activity_panel_and_polling_ui(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b">Activity<", response.data)
+        self.assertIn(b"/say/status?voice_channel_id=", response.data)
+        self.assertIn(b"Connected \xe2\x80\x94 nothing is playing", response.data)
+        self.assertIn(b"Playing: ${status.label", response.data)
+        self.assertIn(b"Could not refresh activity", response.data)
+
+    def test_status_route_requires_numeric_channel_and_uses_discord_loop(self):
+        invalid = self.client.get("/say/status?voice_channel_id=nope")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.get_json()["state"], "unavailable")
+
+        with patch.object(
+            bot,
+            "run_discord_coroutine",
+            return_value={
+                "state": "playing",
+                "voice_channel_id": 123,
+                "voice_channel_name": "General",
+                "connection_state": "connected",
+                "activity_type": "sound",
+                "label": "Minecraft bark",
+                "started_at": "2026-06-11T00:00:00+00:00",
+            },
+        ) as run_coroutine:
+            response = self.client.get("/say/status?voice_channel_id=123")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["label"], "Minecraft bark")
+        coroutine = run_coroutine.call_args.args[0]
+        self.assertEqual(coroutine.cr_frame.f_locals["channel_id"], 123)
+        coroutine.close()
+
+    def test_status_route_uses_same_authentication_as_say_page(self):
+        def status_result(coroutine, _timeout_message):
+            coroutine.close()
+            return {"state": "unavailable", "voice_channel_id": 123}
+
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
+            patch.object(bot, "run_discord_coroutine", side_effect=status_result),
+        ):
+            unauthorized = self.client.get("/say/status?voice_channel_id=123")
+            authorized = self.client.get(
+                "/say/status?voice_channel_id=123",
+                headers={"Authorization": "Basic dXNlcjpzZWNyZXQtdG9rZW4="},
+            )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+
+
+class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
+    class FakeVoiceChannel:
+        pass
+
+    def setUp(self):
+        bot.voice_activity_by_guild.clear()
+        bot.last_tts_at.clear()
+
+    def voice_context(self, *, playing=False):
+        channel = self.FakeVoiceChannel()
+        channel.id = 123
+        channel.name = "General"
+        channel.mention = "#General"
+        callbacks = []
+        guild = SimpleNamespace(id=456)
+        voice_client = SimpleNamespace(
+            guild=guild,
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: playing,
+            play=Mock(side_effect=lambda _source, after: callbacks.append(after)),
+            stop=Mock(),
+            disconnect=AsyncMock(),
+        )
+        guild.voice_client = voice_client
+        channel.guild = guild
+        return guild, channel, voice_client, callbacks
+
+    async def test_join_idle_and_leave_disconnected_transitions(self):
+        guild, channel, voice_client, _callbacks = self.voice_context()
+        guild.voice_client = None
+        channel.connect = AsyncMock(return_value=voice_client)
+
+        with (
+            patch.object(bot, "start_bark_task"),
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
+            patch.object(bot, "play_bark", return_value=False),
+        ):
+            await bot.join_voice_channel(channel, guild)
+
+        self.assertEqual(bot.voice_activity_by_guild[guild.id]["connection_state"], "connected")
+        self.assertIsNone(bot.voice_activity_by_guild[guild.id]["activity_type"])
+
+        guild.voice_client = voice_client
+        with patch.object(bot, "stop_bark_task"):
+            await bot.leave_guild_voice(guild)
+
+        activity = bot.voice_activity_by_guild[guild.id]
+        self.assertEqual(activity["connection_state"], "disconnected")
+        self.assertEqual(activity["voice_channel_id"], channel.id)
+
+    async def test_sound_playback_and_completion_transition(self):
+        guild, channel, voice_client, callbacks = self.voice_context()
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+            patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()),
+        ):
+            response = await bot.control_external_voice("play_sound", channel.id, "minecraft")
+
+        self.assertEqual(response, "playing Minecraft bark")
+        activity = bot.voice_activity_by_guild[guild.id]
+        self.assertEqual(activity["activity_type"], "sound")
+        self.assertEqual(activity["label"], "Minecraft bark")
+        self.assertIsNotNone(activity["started_at"])
+
+        callbacks[0](None)
+        self.assertIsNone(bot.voice_activity_by_guild[guild.id]["activity_type"])
+
+    async def test_tts_and_uploaded_audio_use_visible_labels(self):
+        guild, channel, voice_client, callbacks = self.voice_context()
+        speech_path = Path("speech.mp3")
+        with (
+            patch.object(bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)),
+            patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()),
+        ):
+            await bot.speak_in_guild(
+                guild,
+                "This is a concise TTS preview",
+                "alloy",
+                not_connected_message="not connected",
+            )
+
+        self.assertEqual(bot.voice_activity_by_guild[guild.id]["activity_type"], "tts")
+        self.assertEqual(
+            bot.voice_activity_by_guild[guild.id]["label"],
+            "TTS: \u201cThis is a concise TTS preview\u201d",
+        )
+        callbacks.pop(0)(None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "clip.mp3"
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+                patch.object(bot.client, "get_channel", return_value=channel),
+                patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()),
+            ):
+                await bot.control_external_uploaded_audio(channel.id, audio_path)
+
+            self.assertEqual(
+                bot.voice_activity_by_guild[guild.id]["activity_type"],
+                "uploaded_audio",
+            )
+            self.assertEqual(bot.voice_activity_by_guild[guild.id]["label"], "uploaded audio")
+            callbacks.pop(0)(None)
+
+    async def test_stop_restores_idle_without_stale_completion(self):
+        guild, channel, voice_client, callbacks = self.voice_context()
+        with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
+            bot.play_audio(
+                voice_client,
+                bot.BARK_AUDIO_PATH,
+                activity_type="sound",
+                label="Wolf bark",
+            )
+
+        voice_client.is_playing = lambda: True
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+        ):
+            await bot.control_external_voice("stop", channel.id)
+
+        idle_record = bot.voice_activity_by_guild[guild.id]
+        self.assertIsNone(idle_record["activity_type"])
+        callbacks[0](None)
+        self.assertIs(bot.voice_activity_by_guild[guild.id], idle_record)
+
+    def test_playback_failure_restores_idle(self):
+        guild, _channel, voice_client, _callbacks = self.voice_context()
+        voice_client.play.side_effect = RuntimeError("ffmpeg failed")
+
+        with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
+            with self.assertRaisesRegex(RuntimeError, "ffmpeg failed"):
+                bot.play_audio(
+                    voice_client,
+                    bot.BARK_AUDIO_PATH,
+                    activity_type="sound",
+                    label="Dog bark",
+                )
+
+        activity = bot.voice_activity_by_guild[guild.id]
+        self.assertEqual(activity["connection_state"], "connected")
+        self.assertIsNone(activity["activity_type"])
+
+    async def test_status_reports_unavailable_disconnected_idle_and_playing(self):
+        guild, channel, voice_client, _callbacks = self.voice_context()
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=None),
+        ):
+            self.assertEqual((await bot.external_voice_status(channel.id))["state"], "unavailable")
+
+        guild.voice_client = None
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+        ):
+            self.assertEqual((await bot.external_voice_status(channel.id))["state"], "disconnected")
+
+        guild.voice_client = voice_client
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+        ):
+            self.assertEqual((await bot.external_voice_status(channel.id))["state"], "idle")
+            voice_client.is_playing = lambda: True
+            bot.set_voice_activity(
+                guild,
+                channel,
+                connection_state="connected",
+                activity_type="tts",
+                label="TTS: \u201chello\u201d",
+                queued_tts_count=2,
+            )
+            playing = await bot.external_voice_status(channel.id)
+
+        self.assertEqual(playing["state"], "playing")
+        self.assertEqual(playing["queued_tts_count"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeTranscriptionProvider:
+    def __init__(self, results=None, error=None):
+        self.results = results or [{"text": "hello", "final": True}]
+        self.error = error
+        self.audio = []
+
+    def transcribe(self, wav_audio):
+        self.audio.append(wav_audio)
+        if self.error:
+            raise self.error
+        return self.results
+
+
+class TranscriptionSessionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        bot.transcription_sessions.clear()
+
+    async def asyncTearDown(self):
+        await bot.cleanup_all_transcriptions()
+
+    async def test_fake_receive_sink_attributes_speaker_and_partial_state(self):
+        provider = FakeTranscriptionProvider(
+            [{"text": "testing one two", "final": False}]
+        )
+        voice_client = SimpleNamespace(is_listening=lambda: False)
+        session = bot.TranscriptionSession(1, 2, voice_client, provider)
+        user = SimpleNamespace(id=42, display_name="Alice")
+        session.sink.write(user, SimpleNamespace(pcm=b"\x01\x02" * 100))
+        await asyncio.sleep(0)
+        pending = session._buffers.pop(42)
+        session._queue_chunk(pending, bytes(pending.pcm))
+        await asyncio.gather(*list(session._pending_tasks))
+
+        self.assertEqual(
+            session.snapshot(),
+            [
+                {
+                    "sequence": 1,
+                    "timestamp": session.snapshot()[0]["timestamp"],
+                    "user_id": "42",
+                    "display_name": "Alice",
+                    "text": "testing one two",
+                    "final": False,
+                }
+            ],
+        )
+
+    async def test_chunks_are_bounded_before_provider_submission(self):
+        provider = FakeTranscriptionProvider()
+        session = bot.TranscriptionSession(
+            1, 2, SimpleNamespace(is_listening=lambda: False), provider
+        )
+        with patch.object(bot, "TRANSCRIPTION_MAX_CHUNK_BYTES", 8):
+            session.accept_audio(42, "Alice", b"x" * 20, received_at=1.0)
+            await asyncio.gather(*list(session._pending_tasks))
+
+        frame_lengths = []
+        for wav_audio in provider.audio:
+            with bot.wave.open(io.BytesIO(wav_audio), "rb") as wav_file:
+                frame_lengths.append(len(wav_file.readframes(wav_file.getnframes())))
+        self.assertEqual(frame_lengths, [8, 8])
+        self.assertEqual(bytes(session._buffers[42].pcm), b"x" * 4)
+
+    async def test_retention_limit_keeps_only_latest_entries(self):
+        with patch.object(bot, "TRANSCRIPT_RETENTION_LIMIT", 2):
+            session = bot.TranscriptionSession(
+                1, 2, SimpleNamespace(is_listening=lambda: False), FakeTranscriptionProvider()
+            )
+        session.add_entry(1, "A", "one", True)
+        session.add_entry(2, "B", "two", True)
+        session.add_entry(3, "C", "three", True)
+
+        self.assertEqual([entry["text"] for entry in session.snapshot()], ["two", "three"])
+
+    async def test_provider_failure_becomes_visible_transcript_entry(self):
+        provider = FakeTranscriptionProvider(error=RuntimeError("provider down"))
+        session = bot.TranscriptionSession(
+            1, 2, SimpleNamespace(is_listening=lambda: False), provider
+        )
+        await session._transcribe_chunk(42, "Alice", b"\0" * 16)
+
+        self.assertIn("Transcription failed: provider down", session.snapshot()[0]["text"])
+
+    async def test_disconnect_cleanup_discards_session_state(self):
+        voice_client = SimpleNamespace(
+            is_listening=lambda: False, stop_listening=Mock()
+        )
+        session = bot.TranscriptionSession(1, 2, voice_client, FakeTranscriptionProvider())
+        session.add_entry(42, "Alice", "hello", True)
+        bot.transcription_sessions[1] = session
+
+        await bot.cleanup_transcription_for_guild(1)
+
+        self.assertNotIn(1, bot.transcription_sessions)
+        self.assertFalse(session.active)
+
+    async def test_transcript_snapshot_is_safe_during_concurrent_updates(self):
+        session = bot.TranscriptionSession(
+            1, 2, SimpleNamespace(is_listening=lambda: False), FakeTranscriptionProvider()
+        )
+
+        async def read_repeatedly():
+            return await asyncio.to_thread(
+                lambda: [session.snapshot() for _ in range(100)]
+            )
+
+        reader = asyncio.create_task(read_repeatedly())
+        for index in range(100):
+            session.add_entry(index, f"User {index}", str(index), True)
+            await asyncio.sleep(0)
+        snapshots = await reader
+
+        self.assertTrue(snapshots)
+        self.assertEqual(session.snapshot()[-1]["text"], "99")
+
+
+class TranscriptionControlTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        bot.transcription_sessions.clear()
+
+    async def asyncTearDown(self):
+        await bot.cleanup_all_transcriptions()
+
+    async def test_start_requires_affirmative_consent(self):
+        with self.assertRaisesRegex(ValueError, "Confirm that participants"):
+            await bot.start_transcription(123, consent=False)
+
+    async def test_start_and_stop_use_fake_receive_and_provider_adapters(self):
+        class FakeVoiceRecvClient:
+            def __init__(self):
+                self.channel = None
+                self.sink = None
+                self.listening = False
+
+            def is_connected(self):
+                return True
+
+            def listen(self, sink):
+                self.sink = sink
+                self.listening = True
+
+            def is_listening(self):
+                return self.listening
+
+            def stop_listening(self):
+                self.listening = False
+
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        channel.id = 123
+        channel.mention = "#General"
+        channel.send = AsyncMock()
+        channel.permissions_for = Mock(
+            return_value=SimpleNamespace(
+                view_channel=True, connect=True, send_messages=True
+            )
+        )
+        voice_client = FakeVoiceRecvClient()
+        voice_client.channel = channel
+        channel.guild = SimpleNamespace(id=9, voice_client=voice_client, me=object())
+        fake_receive = SimpleNamespace(VoiceRecvClient=FakeVoiceRecvClient)
+        fake_client = SimpleNamespace(get_channel=lambda _channel_id: channel)
+
+        with (
+            patch.object(bot, "TRANSCRIPTION_ENABLED", True),
+            patch.object(bot, "voice_recv", fake_receive),
+            patch.object(bot, "client", fake_client),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+            patch.object(bot, "create_transcription_provider", return_value=FakeTranscriptionProvider()),
+        ):
+            started = await bot.start_transcription(123, consent=True)
+            stopped = await bot.stop_transcription(123)
+
+        self.assertEqual(started, "transcription started in #General")
+        self.assertEqual(stopped, "transcription stopped in #General")
+        self.assertIsNotNone(voice_client.sink)
+        self.assertFalse(voice_client.listening)
+        self.assertEqual(channel.send.await_count, 2)
+        self.assertIn("Audio in this call is being captured", channel.send.await_args_list[0].args[0])
+        self.assertFalse(bot.transcription_sessions[9].active)
+
+
+class ExternalTranscriptionRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_page_shows_notice_confirmation_controls_and_panel(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Audio capture notice", response.data)
+        self.assertIn(b'name="transcription_consent"', response.data)
+        self.assertIn(b'value="start_transcription"', response.data)
+        self.assertIn(b"Clear transcript", response.data)
+        self.assertIn(b'id="transcript-list"', response.data)
+        self.assertIn(b"window.setInterval(refreshTranscript, 2000)", response.data)
+
+    def test_start_route_forwards_affirmative_consent(self):
+        with (
+            patch.object(bot, "require_transcription_control_authentication"),
+            patch.object(
+                bot, "submit_transcription_action", return_value="transcription started"
+            ) as submit,
+        ):
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "start_transcription",
+                    "voice_channel_id": "123",
+                    "transcription_consent": "yes",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        submit.assert_called_once_with("start_transcription", 123, consent=True)
+
+    def test_start_route_rejects_missing_consent(self):
+        with (
+            patch.object(bot, "require_transcription_control_authentication"),
+            patch.object(
+                bot,
+                "submit_transcription_action",
+                side_effect=ValueError("Confirm that participants were notified"),
+            ),
+        ):
+            response = self.client.post(
+                "/say",
+                data={"action": "start_transcription", "voice_channel_id": "123"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Confirm that participants were notified", response.data)
+
+    def test_transcript_route_requires_authentication(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"):
+            response = self.client.get("/say/transcript?voice_channel_id=123")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Basic", response.headers["WWW-Authenticate"])
+
+    def test_authenticated_transcript_route_returns_entries(self):
+        payload = {"active": True, "entries": [{"sequence": 1, "text": "hello"}]}
+
+        def run_and_close(coroutine, _message):
+            coroutine.close()
+            return payload
+
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
+            patch.object(bot, "run_discord_coroutine", side_effect=run_and_close),
+        ):
+            response = self.client.get(
+                "/say/transcript?voice_channel_id=123&after=0",
+                headers={"Authorization": "Basic dXNlcjpzZWNyZXQ="},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), payload)
