@@ -1,3 +1,4 @@
+
 import asyncio
 import io
 import json
@@ -1473,7 +1474,7 @@ class GroqConfigTests(unittest.TestCase):
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_completion_tokens": 25,
             },
-            headers={"Authorization": "Bearer secret"},
+            headers={"Authorization": "Bearer secret", "User-Agent": "pkla-dog/1.0"},
         )
 
     def test_groq_trims_railway_env_values(self):
