@@ -2062,6 +2062,8 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertIn(b"Connected \xe2\x80\x94 nothing is playing", response.data)
         self.assertIn(b"Playing: ${status.label", response.data)
         self.assertIn(b"Could not refresh activity", response.data)
+        self.assertIn(b"pollActivity();", response.data)
+        self.assertIn(b"window.setInterval(pollActivity, 3000)", response.data)
 
     def test_status_route_requires_numeric_channel_and_uses_discord_loop(self):
         invalid = self.client.get("/say/status?voice_channel_id=nope")
@@ -2502,6 +2504,9 @@ class ExternalTranscriptionRouteTests(unittest.TestCase):
         self.assertIn(b"Clear transcript", response.data)
         self.assertIn(b'id="transcript-list"', response.data)
         self.assertIn(b"window.setInterval(refreshTranscript, 2000)", response.data)
+
+    def test_transcription_is_enabled_by_default(self):
+        self.assertTrue(bot.TRANSCRIPTION_ENABLED)
 
     def test_start_route_submits_without_consent_field(self):
         with (

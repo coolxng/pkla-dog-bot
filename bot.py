@@ -175,7 +175,7 @@ def parse_float_env(name: str, default: float) -> float:
         return default
 
 
-TRANSCRIPTION_ENABLED = env_bool("TRANSCRIPTION_ENABLED", False)
+TRANSCRIPTION_ENABLED = env_bool("TRANSCRIPTION_ENABLED", True)
 TRANSCRIPTION_MODEL = os.environ.get(
     "OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"
 ).strip()
@@ -1036,13 +1036,59 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const message = document.getElementById("message");
     const voiceChannel = document.getElementById("voice-channel-id");
     const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
+    const relayChannel = document.getElementById("relay-channel");
+    const relayState = document.getElementById("relay-state");
+    const captureIndicator = document.getElementById("capture-indicator");
+    const audio = document.getElementById("discord-audio");
+    const startListening = document.getElementById("start-listening");
+    const muteListening = document.getElementById("mute-listening");
+    const stopListening = document.getElementById("stop-listening");
+    const activityMessage = document.getElementById("activity-message");
+    const activityError = document.getElementById("activity-error");
+    let activityTimer;
+
+    function describeActivity(status) {
+      if (status.state === "unavailable") return "Voice channel unavailable";
+      if (status.state === "disconnected") return "Not connected";
+      if (status.state === "idle") return "Connected — nothing is playing";
+      if (status.state === "playing") {
+        const queued = status.queued_tts_count ? ` (${status.queued_tts_count} TTS queued)` : "";
+        return `Playing: ${status.label || "audio"}${queued}`;
+      }
+      return "Voice status unavailable";
+    }
+
+    async function pollActivity() {
+      const channelId = voiceChannel.value.trim();
+      if (!channelId) return;
+      try {
+        const response = await fetch(`/say/status?voice_channel_id=${encodeURIComponent(channelId)}`, { cache: "no-store" });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `Status request failed (${response.status})`);
+        activityMessage.textContent = describeActivity(status);
+        activityError.textContent = "";
+      } catch (error) {
+        activityError.textContent = `Could not refresh activity: ${error.message}`;
+      }
+    }
+
+    function scheduleActivityPoll() {
+      window.clearTimeout(activityTimer);
+      activityTimer = window.setTimeout(pollActivity, 250);
+    }
+
     voiceChannel.addEventListener("input", () => {
       uploadVoiceChannel.value = voiceChannel.value;
+      relayChannel.textContent = voiceChannel.value || "None";
+      scheduleActivityPoll();
     });
     uploadVoiceChannel.addEventListener("input", () => {
       voiceChannel.value = uploadVoiceChannel.value;
       relayChannel.textContent = uploadVoiceChannel.value || "None";
+      scheduleActivityPoll();
     });
+    pollActivity();
+    window.setInterval(pollActivity, 3000);
 
     function setRelayState(state, live) {
       relayState.textContent = state;
@@ -1408,6 +1454,65 @@ def submit_external_voice_action(action: str, channel_id: int, sound_id: str | N
         control_external_voice(action, channel_id, sound_id),
         "Discord took too long to update the voice call",
     )
+
+
+async def external_voice_status(channel_id: int) -> dict:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        return {"state": "unavailable", "voice_channel_id": channel_id}
+
+    guild = voice_channel.guild
+    voice_client = guild.voice_client
+    channel_details = {
+        "voice_channel_id": voice_channel.id,
+        "voice_channel_name": voice_channel.name,
+    }
+    if (
+        not voice_client
+        or not voice_client.is_connected()
+        or getattr(voice_client, "channel", None) != voice_channel
+    ):
+        return {
+            "state": "disconnected",
+            "connection_state": "disconnected",
+            **channel_details,
+        }
+
+    record = voice_activity_by_guild.get(guild.id)
+    if not voice_client.is_playing() or not record or not record.get("activity_type"):
+        return {
+            "state": "idle",
+            "connection_state": "connected",
+            **channel_details,
+        }
+
+    status = {"state": "playing", **record}
+    status.update(channel_details)
+    return status
+
+
+@app.route("/say/status")
+def external_say_status():
+    if not external_say_is_authorized():
+        return external_say_authentication_required()
+
+    raw_channel_id = request.args.get("voice_channel_id", "").strip()
+    try:
+        channel_id = int(raw_channel_id)
+    except ValueError:
+        return jsonify(
+            state="unavailable", error="Enter a valid numeric voice channel ID."
+        ), 400
+
+    try:
+        status = run_discord_coroutine(
+            external_voice_status(channel_id),
+            "Discord took too long to report voice activity",
+        )
+    except Exception as error:
+        print(f"External voice status error: {error}")
+        return jsonify(state="unavailable", error=str(error)), 503
+    return jsonify(status)
 
 
 @app.route("/say/transcript", methods=["GET"])
@@ -2675,6 +2780,7 @@ async def leave_guild_voice(guild) -> str:
         set_voice_disconnected(guild)
         return "i'm not in a voice channel"
 
+    voice_channel = getattr(voice_client, "channel", None)
     await asyncio.to_thread(close_receive_session, "Discord voice connection closed")
     try:
         await voice_client.disconnect()
@@ -2685,6 +2791,7 @@ async def leave_guild_voice(guild) -> str:
     stop_bark_task(guild.id)
     last_command_bark_at.pop(guild.id, None)
     await cleanup_transcription_for_guild(guild.id)
+    set_voice_disconnected(guild, voice_channel)
     return "left the voice channel"
 
 
@@ -2896,6 +3003,7 @@ async def control_external_voice(
             return "nothing is playing"
         stop_playing = getattr(voice_client, "stop_playing", voice_client.stop)
         stop_playing()
+        set_voice_idle(voice_channel.guild, voice_channel)
         return f"stopped audio in {voice_channel.mention}"
 
     sound = EXTERNAL_BARK_SOUNDS.get(sound_id)
