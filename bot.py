@@ -633,7 +633,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <h1>Say it your way.</h1>
       <p class="page-intro">Send a message, join the call, or play something for everyone—without the controls getting in your way.</p>
     </header>
-    {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
+    <p id="control-status" class="status{% if error %} error{% endif %}" aria-live="polite"{% if not status %} hidden{% endif %}>{{ status or "" }}</p>
     <div class="control-grid">
       <div class="primary-column">
     <form method="post" class="panel message-panel">
@@ -784,7 +784,48 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const stopListening = document.getElementById("stop-listening");
     const activityMessage = document.getElementById("activity-message");
     const activityError = document.getElementById("activity-error");
+    const controlStatus = document.getElementById("control-status");
     let activityTimer;
+
+    function showControlStatus(message, isError = false) {
+      controlStatus.textContent = message;
+      controlStatus.classList.toggle("error", isError);
+      controlStatus.hidden = false;
+    }
+
+    document.querySelectorAll('main form[method="post"]').forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitButton = event.submitter;
+        const formData = new FormData(form);
+        if (submitButton?.name) formData.set(submitButton.name, submitButton.value);
+        const action = formData.get("action");
+        if (submitButton) submitButton.disabled = true;
+
+        try {
+          const response = await fetch("/say", {
+            method: "POST",
+            headers: { "X-Requested-With": "fetch" },
+            body: formData,
+          });
+          const contentType = response.headers.get("content-type") || "";
+          const payload = contentType.includes("application/json")
+            ? await response.json()
+            : { status: response.ok ? "Action completed." : `Request failed (${response.status})` };
+          if (!response.ok) throw new Error(payload.status || "Action failed");
+
+          showControlStatus(payload.status || "Action completed.");
+          if (action === "send") message.value = "";
+          if (action === "speak") document.getElementById("speech-text").value = "";
+          if (action === "upload_audio") document.getElementById("audio-file").value = "";
+          scheduleActivityPoll();
+        } catch (error) {
+          showControlStatus(error.message, true);
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+    });
 
     function describeActivity(status) {
       if (status.state === "unavailable") return "Voice channel unavailable";
@@ -1215,6 +1256,7 @@ def external_say_login():
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
+    fetch_request = request.headers.get("X-Requested-With") == "fetch"
     if request.method == "POST" and not external_say_is_authorized():
         return external_say_authentication_required()
 
@@ -1266,6 +1308,8 @@ def external_say():
                         status = submit_external_speech(channel_id, speech_text, voice)
                     else:
                         status = submit_external_voice_action(action, channel_id)
+                    if fetch_request:
+                        return jsonify(status=status)
                     return redirect(url_for("external_say", status=status), code=303)
                 except ValueError as voice_error:
                     status = str(voice_error)
@@ -1289,12 +1333,17 @@ def external_say():
             else:
                 try:
                     submit_external_message(message)
+                    if fetch_request:
+                        return jsonify(status="Message sent.")
                     return redirect(url_for("external_say", sent="1"), code=303)
                 except Exception as send_error:
                     print(f"External send error: {send_error}")
                     status = str(send_error)
                     error = True
                     response_status = 503
+
+    if fetch_request and request.method == "POST":
+        return jsonify(status=status or "Action failed."), response_status
 
     return render_template_string(
         EXTERNAL_SAY_PAGE,
