@@ -66,7 +66,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
 | `!deletedms` | Available only in DMs to Discord user `575057023046123520`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
-| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is processed only while an authenticated browser listener or transcription consumer is active. |
+| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is processed only while transcription is active. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | Queues up to 500 characters to be read with the Onyx voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
@@ -97,7 +97,7 @@ If Railway already shows a public domain under **Settings** → **Networking**, 
 
 Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, `/say` shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 
-If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-capture `/say` controls remain unauthenticated for backward compatibility. **Incoming call audio and transcript capabilities refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS. Keeping the URL private is not equivalent to authentication.
+If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-capture `/say` controls remain unauthenticated for backward compatibility. **Transcript capabilities refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS. Keeping the URL private is not equivalent to authentication.
 
 The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 
