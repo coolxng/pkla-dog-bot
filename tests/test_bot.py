@@ -2010,17 +2010,43 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertEqual(response.status_code, 413)
         self.assertIn(b"Upload request is too large", response.data)
 
-    def test_authentication_is_required_when_control_token_is_enabled(self):
+    def test_control_token_popup_authenticates_browser_with_cookie(self):
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
-            unauthorized = self.client.get("/say")
-            authorized = self.client.get(
-                "/say",
-                headers={"Authorization": "Basic dXNlcjpzZWNyZXQtdG9rZW4="},
+            locked_page = self.client.get("/say")
+            invalid_login = self.client.post(
+                "/say/login", json={"token": "wrong-token"}
+            )
+            valid_login = self.client.post(
+                "/say/login", json={"token": "secret-token"}
+            )
+            unlocked_page = self.client.get("/say")
+
+        self.assertEqual(locked_page.status_code, 200)
+        self.assertIn(b'id="control-token-dialog"', locked_page.data)
+        self.assertIn(b'id="control-token-form"', locked_page.data)
+        self.assertEqual(invalid_login.status_code, 401)
+        self.assertEqual(valid_login.status_code, 200)
+        self.assertIn(bot.EXTERNAL_SAY_AUTH_COOKIE, valid_login.headers["Set-Cookie"])
+        self.assertIn("HttpOnly", valid_login.headers["Set-Cookie"])
+        self.assertNotIn(b'id="control-token-dialog"', unlocked_page.data)
+
+    def test_control_posts_still_require_authentication(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
+            response = self.client.post(
+                "/say", data={"action": "join", "voice_channel_id": "123"}
             )
 
-        self.assertEqual(unauthorized.status_code, 401)
-        self.assertIn("Basic", unauthorized.headers["WWW-Authenticate"])
-        self.assertEqual(authorized.status_code, 200)
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Basic", response.headers["WWW-Authenticate"])
+
+    def test_missing_server_token_shows_setup_popup(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", ""):
+            response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="control-token-dialog"', response.data)
+        self.assertIn(b"External control token not configured", response.data)
+        self.assertNotIn(b'id="control-token-form"', response.data)
 
 
 class ExternalVoiceStatusRouteTests(unittest.TestCase):

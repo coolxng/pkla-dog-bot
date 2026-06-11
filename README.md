@@ -95,7 +95,7 @@ Uploaded files receive server-generated temporary paths with server-selected `.m
 
 If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
 
-Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, browsers show an HTTP Basic login prompt: the username may be any non-empty value and the password must be the configured token. API clients can send the same HTTP Basic credentials. Railway and similar hosts should store the token in their secret-variable UI.
+Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, `/say` shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 
 If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-capture `/say` controls remain unauthenticated for backward compatibility. **Transcript capabilities refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS. Keeping the URL private is not equivalent to authentication.
 

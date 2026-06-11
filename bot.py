@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import hmac
 import importlib
 import importlib.util
@@ -86,6 +87,7 @@ MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
 # Allow multipart headers and form fields in addition to the audio payload itself.
 MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_AUDIO_BYTES + (1024 * 1024)
 EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
+EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
 TTS_COOLDOWN_SECONDS = 30
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
@@ -850,6 +852,12 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .copy-button.copied { background: #047857; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
+    .auth-dialog { width: min(90vw, 28rem); padding: 1.5rem; border: 1px solid #4b5563; border-radius: .85rem; background: #1f2937; color: inherit; }
+    .auth-dialog::backdrop { background: rgb(0 0 0 / 70%); }
+    .auth-dialog h2 { margin-top: 0; }
+    .auth-dialog p { color: #d1d5db; }
+    .auth-dialog button { width: 100%; margin-top: 1rem; background: #5865f2; }
+    .auth-error { min-height: 1.2rem; margin-bottom: 0; color: #fca5a5; font-weight: 700; }
     .transcription-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
     .record-button { background: #b91c1c; }
     .clear-button { background: #4b5563; }
@@ -872,6 +880,23 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
   </style>
 </head>
 <body>
+  {% if not control_authenticated or not control_token_configured %}
+  <dialog id="control-token-dialog" class="auth-dialog">
+    {% if control_token_configured %}
+    <form id="control-token-form">
+      <h2>External controls login</h2>
+      <p>Enter the configured external control token to unlock `/say`, live listening, and transcription.</p>
+      <label for="control-token">External control token</label>
+      <input id="control-token" name="token" type="password" autocomplete="current-password" required autofocus>
+      <p id="control-token-error" class="auth-error" aria-live="polite"></p>
+      <button type="submit">Unlock controls</button>
+    </form>
+    {% else %}
+    <h2>External control token not configured</h2>
+    <p>Set <code>EXTERNAL_SAY_CONTROL_TOKEN</code> in the server environment and restart or redeploy the bot. The browser cannot securely create the server token.</p>
+    {% endif %}
+  </dialog>
+  {% endif %}
   <main>
     <h1>Make the bot say something</h1>
     {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
@@ -980,6 +1005,34 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     </div>
   </main>
   <script>
+    const controlTokenDialog = document.getElementById("control-token-dialog");
+    const controlTokenForm = document.getElementById("control-token-form");
+    if (controlTokenDialog) controlTokenDialog.showModal();
+    if (controlTokenForm) {
+      controlTokenForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const tokenInput = document.getElementById("control-token");
+        const errorMessage = document.getElementById("control-token-error");
+        const submitButton = controlTokenForm.querySelector("button[type=submit]");
+        errorMessage.textContent = "";
+        submitButton.disabled = true;
+        try {
+          const response = await fetch("/say/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: tokenInput.value }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Login failed");
+          window.location.reload();
+        } catch (error) {
+          errorMessage.textContent = error.message;
+          tokenInput.select();
+          submitButton.disabled = false;
+        }
+      });
+    }
+
     const message = document.getElementById("message");
     const voiceChannel = document.getElementById("voice-channel-id");
     const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
@@ -1159,8 +1212,21 @@ def external_voice_channel_id() -> int:
         return DEFAULT_EXTERNAL_VOICE_CHANNEL_ID
 
 
+def external_say_auth_cookie_value() -> str:
+    return hmac.new(
+        EXTERNAL_SAY_CONTROL_TOKEN.encode(),
+        b"external-say-browser-session",
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def external_say_is_authorized() -> bool:
     if not EXTERNAL_SAY_CONTROL_TOKEN:
+        return True
+    cookie_value = request.cookies.get(EXTERNAL_SAY_AUTH_COOKIE, "")
+    if cookie_value and hmac.compare_digest(
+        cookie_value, external_say_auth_cookie_value()
+    ):
         return True
     authorization = request.authorization
     return bool(
@@ -1379,9 +1445,32 @@ def external_say_transcript():
         )
 
 
+@app.route("/say/login", methods=["POST"])
+def external_say_login():
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        return jsonify(error="EXTERNAL_SAY_CONTROL_TOKEN is not configured on the server"), 503
+    payload = request.get_json(silent=True) or {}
+    submitted_token = str(payload.get("token", ""))
+    if not hmac.compare_digest(submitted_token, EXTERNAL_SAY_CONTROL_TOKEN):
+        return jsonify(error="Incorrect external control token"), 401
+
+    response = jsonify(ok=True)
+    forwarded_protocol = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0]
+    response.set_cookie(
+        EXTERNAL_SAY_AUTH_COOKIE,
+        external_say_auth_cookie_value(),
+        max_age=30 * 24 * 60 * 60,
+        secure=request.is_secure or forwarded_protocol == "https",
+        httponly=True,
+        samesite="Strict",
+        path="/say",
+    )
+    return response
+
+
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
-    if not external_say_is_authorized():
+    if request.method == "POST" and not external_say_is_authorized():
         return external_say_authentication_required()
 
     status = request.args.get("status")
@@ -1481,6 +1570,11 @@ def external_say():
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
+        control_token_configured=bool(EXTERNAL_SAY_CONTROL_TOKEN),
+        control_authenticated=external_say_is_authorized(),
+        incoming_audio_enabled=(
+            bool(EXTERNAL_SAY_CONTROL_TOKEN) and external_say_is_authorized()
+        ),
     ), response_status
 
 
