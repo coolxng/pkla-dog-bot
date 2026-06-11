@@ -324,7 +324,7 @@ Bot capabilities and boundaries:
 - Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
 - `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. Joining never starts recording or transcription.
 - `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` queues the message to be read in the connected voice channel without overlapping other `!tts` messages. `!leave` stops scheduled barking and disconnects from voice.
-- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, and explicitly start or stop consent-gated call transcription when the feature is configured. Transcription is off by default, keeps only a bounded in-memory rolling transcript, and visibly announces capture in the voice channel text chat. Those web controls are separate from normal chat commands.
+- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, listen to live call audio in the browser, and explicitly start or stop call transcription when the features are configured. Transcription is off by default, keeps only a bounded in-memory rolling transcript, and visibly announces capture in the voice channel text chat. Those web controls are separate from normal chat commands.
 - `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
 - A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
 
@@ -652,8 +652,6 @@ class TranscriptionSession:
         if not self.active:
             return
         self.active = False
-        if hasattr(self.voice_client, "is_listening") and self.voice_client.is_listening():
-            self.voice_client.stop_listening()
         self._sweep_task.cancel()
         await asyncio.gather(self._sweep_task, return_exceptions=True)
 
@@ -675,11 +673,7 @@ class TranscriptionSession:
 transcription_sessions: dict[int, TranscriptionSession] = {}
 
 
-async def start_transcription(channel_id: int, *, consent: bool) -> str:
-    if not consent:
-        raise ValueError(
-            "Confirm that participants were notified and consent and recording rules were considered."
-        )
+async def start_transcription(channel_id: int) -> str:
     if not TRANSCRIPTION_ENABLED:
         raise RuntimeError("Transcription is disabled by TRANSCRIPTION_ENABLED")
     if voice_recv is None:
@@ -725,7 +719,7 @@ async def start_transcription(channel_id: int, *, consent: bool) -> str:
             session._next_sequence = previous_session._next_sequence
     transcription_sessions[voice_channel.guild.id] = session
     try:
-        voice_client.listen(session.sink)
+        await ensure_receive_session(voice_channel)
         await voice_channel.send(
             "🔴 **Transcription started.** Audio in this call is being captured and sent "
             "to a speech-to-text service. Leave the call or ask the operator to stop if "
@@ -737,6 +731,7 @@ async def start_transcription(channel_id: int, *, consent: bool) -> str:
         else:
             transcription_sessions[voice_channel.guild.id] = previous_session
         await session.close(discard_audio=True)
+        await stop_receive_session_if_idle()
         raise
     return f"transcription started in {voice_channel.mention}"
 
@@ -754,6 +749,7 @@ async def stop_transcription(channel_id: int, *, announce: bool = True) -> str:
     if session is None or session.channel_id != channel_id:
         raise RuntimeError("Transcription is not active in the selected voice channel")
     await session.close(discard_audio=False)
+    await stop_receive_session_if_idle()
     if announce:
         await voice_channel.send("⚪ **Transcription stopped.** Call audio is no longer being captured.")
     return f"transcription stopped in {voice_channel.mention}"
@@ -865,9 +861,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .copy-button.copied { background: #047857; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
-    .consent-notice { margin-top: 1rem; padding: 1rem; border: 2px solid #f59e0b; background: #451a03; border-radius: .75rem; }
-    .consent-check { display: flex; gap: .65rem; align-items: flex-start; font-weight: 600; }
-    .consent-check input { width: auto; margin-top: .25rem; }
     .transcription-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
     .record-button { background: #b91c1c; }
     .clear-button { background: #4b5563; }
@@ -913,7 +906,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       </div>
       <section class="listen-panel" aria-labelledby="listen-heading">
         <h3 id="listen-heading">Listen in browser</h3>
-        <p class="voice-help">Relays live participant audio without retaining it. Playback starts only when you select Start listening.</p>
+        <p class="voice-help">Hear live participant audio from the selected Discord voice channel.</p>
         {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
         <div class="listen-actions">
           <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening</button>
@@ -923,7 +916,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <div class="relay-details" aria-live="polite">
           <span>Selected Discord channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
           <span>Relay: <strong id="relay-state">Stopped</strong></span>
-          <span id="capture-indicator" class="live-indicator">Not capturing</span>
+          <span id="capture-indicator" class="live-indicator">Not listening</span>
         </div>
         <audio id="discord-audio" preload="none"></audio>
       </section>
@@ -947,14 +940,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
       <section aria-labelledby="transcription-heading">
         <h3 class="sound-heading" id="transcription-heading">Call transcription</h3>
-        <div class="consent-notice">
-          <strong>Audio capture notice</strong>
-          <p>Starting transcription captures each participant's call audio and sends bounded audio chunks to the configured speech-to-text service. Notify everyone first and follow Discord/server rules and all applicable recording-consent laws.</p>
-          <label class="consent-check" for="transcription-consent">
-            <input id="transcription-consent" name="transcription_consent" type="checkbox" value="yes">
-            I affirmatively confirm that participants were notified and consent requirements and server rules were considered.
-          </label>
-        </div>
         <p id="transcript-status" class="transcript-status">Transcription status: checking…</p>
         <div class="transcription-actions">
           <button class="record-button" type="submit" name="action" value="start_transcription">Start transcription</button>
@@ -1027,8 +1012,19 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
 
     function setRelayState(state, live) {
       relayState.textContent = state;
-      captureIndicator.textContent = live ? "Live capture" : "Not capturing";
+      captureIndicator.textContent = live ? "Live audio" : "Not listening";
       captureIndicator.classList.toggle("live", live);
+    }
+
+    function resetListening(state = "Stopped") {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      startListening.disabled = false;
+      muteListening.disabled = true;
+      stopListening.disabled = true;
+      muteListening.textContent = "Mute";
+      setRelayState(state, false);
     }
 
     startListening.addEventListener("click", async () => {
@@ -1036,20 +1032,23 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         voiceChannel.reportValidity();
         return;
       }
-      audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}`;
+      startListening.disabled = true;
+      audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}?t=${Date.now()}`;
       audio.muted = false;
+      audio.volume = 1;
       setRelayState("Connecting…", false);
       try {
         await audio.play();
-        setRelayState("Connected", true);
-        startListening.disabled = true;
-        muteListening.disabled = false;
-        stopListening.disabled = false;
       } catch (error) {
-        audio.removeAttribute("src");
-        audio.load();
-        setRelayState("Connection failed", false);
+        resetListening("Connection failed");
       }
+    });
+
+    audio.addEventListener("playing", () => {
+      setRelayState("Connected", true);
+      startListening.disabled = true;
+      muteListening.disabled = false;
+      stopListening.disabled = false;
     });
 
     muteListening.addEventListener("click", () => {
@@ -1058,23 +1057,10 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       setRelayState(audio.muted ? "Connected — muted" : "Connected", true);
     });
 
-    stopListening.addEventListener("click", () => {
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
-      startListening.disabled = false;
-      muteListening.disabled = true;
-      stopListening.disabled = true;
-      muteListening.textContent = "Mute";
-      setRelayState("Stopped", false);
-    });
+    stopListening.addEventListener("click", () => resetListening());
 
     audio.addEventListener("error", () => {
-      if (!audio.getAttribute("src")) return;
-      setRelayState("Disconnected", false);
-      startListening.disabled = false;
-      muteListening.disabled = true;
-      stopListening.disabled = true;
+      if (audio.getAttribute("src")) resetListening("Disconnected");
     });
 
     document.querySelectorAll(".ping-button").forEach((button) => {
@@ -1336,9 +1322,11 @@ def external_audio_stream(channel_id: int):
     if not incoming_audio_is_authorized():
         return external_say_authentication_required()
     try:
-        submit_browser_audio_session(channel_id)
         listener = browser_audio_relay.add_listener()
+        submit_browser_audio_session(channel_id)
     except (RuntimeError, RelayError) as error:
+        if "listener" in locals():
+            listener.close()
         print(f"External audio relay error: {error}")
         return str(error), 503
 
@@ -1346,6 +1334,22 @@ def external_audio_stream(channel_id: int):
     response.headers["X-Accel-Buffering"] = "no"
     response.headers["Content-Disposition"] = "inline"
     return response
+
+
+def submit_transcription_action(action: str, channel_id: int) -> str:
+    actions = {
+        "start_transcription": start_transcription,
+        "stop_transcription": stop_transcription,
+        "clear_transcript": clear_transcript,
+    }
+    try:
+        coroutine = actions[action](channel_id)
+    except KeyError as error:
+        raise ValueError("Unknown transcription action") from error
+    return run_discord_coroutine(
+        coroutine,
+        "Discord took too long to update transcription",
+    )
 
 
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
@@ -1430,11 +1434,7 @@ def external_say():
                         "start_transcription", "stop_transcription", "clear_transcript"
                     }:
                         require_transcription_control_authentication()
-                        status = submit_transcription_action(
-                            action,
-                            channel_id,
-                            consent=request.form.get("transcription_consent") == "yes",
-                        )
+                        status = submit_transcription_action(action, channel_id)
                     elif action == "play_sound":
                         status = submit_external_voice_action(
                             action, channel_id, request.form.get("sound")
@@ -2317,9 +2317,10 @@ def voice_receive_client_class():
 
 
 def create_browser_audio_sink(voice_client):
-    from discord.ext import voice_recv
+    if voice_recv is None:
+        raise RuntimeError("Discord voice receive support is unavailable")
 
-    class BrowserAudioSink(voice_recv.AudioSink):
+    class SharedReceiveSink(voice_recv.AudioSink):
         def __init__(self):
             super().__init__()
 
@@ -2327,28 +2328,35 @@ def create_browser_audio_sink(voice_client):
             return False
 
         def write(self, user, data):
+            pcm = getattr(data, "pcm", None)
+            if user is None or not pcm:
+                return
             bot_user = client.user
-            if user is None or (bot_user is not None and user.id == bot_user.id):
+            if bot_user is not None and user.id == bot_user.id:
                 return
-            if voice_client.is_playing():
-                return
-            browser_audio_relay.submit_pcm(data.pcm, source_id=user.id)
+
+            voice_channel = getattr(voice_client, "channel", None)
+            guild_id = getattr(getattr(voice_channel, "guild", None), "id", None)
+            session = transcription_sessions.get(guild_id)
+            if (
+                session is not None
+                and session.active
+                and session.channel_id == getattr(voice_channel, "id", None)
+            ):
+                session.sink.write(user, data)
+
+            if not voice_client.is_playing():
+                browser_audio_relay.submit_pcm(bytes(pcm), source_id=user.id)
 
         def cleanup(self):
             return None
 
-    return BrowserAudioSink()
+    return SharedReceiveSink()
 
 
-async def start_browser_audio_session(channel_id: int) -> None:
+async def ensure_receive_session(voice_channel) -> None:
     global active_receive_channel_id, active_receive_sink
-    if not EXTERNAL_SAY_CONTROL_TOKEN:
-        raise RuntimeError(
-            "EXTERNAL_SAY_CONTROL_TOKEN must be set before incoming audio can start"
-        )
-    voice_channel = client.get_channel(channel_id)
-    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
-        raise RuntimeError("That Discord voice channel is unavailable")
+    channel_id = voice_channel.id
     voice_client = voice_channel.guild.voice_client
     if not voice_client or not voice_client.is_connected():
         raise RuntimeError("Join the selected voice call before listening")
@@ -2361,13 +2369,30 @@ async def start_browser_audio_session(channel_id: int) -> None:
     if not voice_client.is_listening():
         active_receive_sink = create_browser_audio_sink(voice_client)
         voice_client.listen(active_receive_sink)
+    elif active_receive_channel_id is None:
+        raise RuntimeError("Discord audio is already being received by another feature")
     active_receive_channel_id = channel_id
+
+
+async def start_browser_audio_session(channel_id: int) -> None:
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        raise RuntimeError(
+            "EXTERNAL_SAY_CONTROL_TOKEN must be set before incoming audio can start"
+        )
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    await ensure_receive_session(voice_channel)
 
 
 async def stop_receive_session_if_idle() -> None:
     global active_receive_channel_id, active_receive_sink
     state = browser_audio_relay.state()
-    if state.listener_count or state.transcription_active:
+    transcription_active = any(
+        session.active and session.channel_id == active_receive_channel_id
+        for session in transcription_sessions.values()
+    )
+    if state.listener_count or transcription_active:
         return
     channel_id = active_receive_channel_id
     active_receive_channel_id = None

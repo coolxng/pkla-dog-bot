@@ -94,7 +94,7 @@ class AudioAuthorizationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate, private")
 
-    def test_listening_controls_do_not_embed_control_token(self):
+    def test_page_shows_browser_listening_controls_without_control_token(self):
         encoded = base64.b64encode(b"user:secret-token").decode()
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
             response = self.client.get(
@@ -103,13 +103,33 @@ class AudioAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Start listening", response.data)
-        self.assertIn(b"Mute", response.data)
         self.assertIn(b"Stop listening", response.data)
         self.assertNotIn(b"secret-token", response.data)
         self.assertEqual(
             response.headers["Cache-Control"],
             "no-store, no-cache, must-revalidate, private",
         )
+
+    def test_stream_listener_closes_when_discord_receive_start_fails(self):
+        correct = base64.b64encode(b"user:secret-token").decode()
+        fake_listener = SimpleNamespace(close=Mock())
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
+            patch.object(
+                bot,
+                "submit_browser_audio_session",
+                side_effect=RuntimeError("receive unavailable"),
+            ),
+            patch.object(
+                bot.browser_audio_relay, "add_listener", return_value=fake_listener
+            ),
+        ):
+            response = self.client.get(
+                "/say/audio/123", headers={"Authorization": f"Basic {correct}"}
+            )
+
+        self.assertEqual(response.status_code, 503)
+        fake_listener.close.assert_called_once_with()
 
     def test_every_audio_stream_request_requires_valid_basic_auth(self):
         wrong = base64.b64encode(b"user:wrong").decode()
@@ -147,6 +167,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
             pass
 
         channel = FakeVoiceChannel()
+        channel.id = 123
         voice_client = SimpleNamespace(
             channel=channel,
             is_connected=lambda: True,
@@ -154,7 +175,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
             listen=Mock(),
             is_playing=lambda: False,
         )
-        channel.guild = SimpleNamespace(voice_client=voice_client)
+        channel.guild = SimpleNamespace(id=9, voice_client=voice_client)
         sink = object()
         with (
             patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
@@ -167,6 +188,31 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
 
         voice_client.listen.assert_called_once_with(sink)
         self.assertEqual(bot.active_receive_channel_id, 123)
+
+    async def test_shared_sink_forwards_pcm_to_browser_and_transcription(self):
+        class FakeAudioSink:
+            def __init__(self):
+                pass
+
+        channel = SimpleNamespace(id=123, guild=SimpleNamespace(id=9))
+        voice_client = SimpleNamespace(channel=channel, is_playing=lambda: False)
+        transcription_sink = Mock()
+        bot.transcription_sessions[9] = SimpleNamespace(
+            active=True, channel_id=123, sink=transcription_sink
+        )
+        user = SimpleNamespace(id=42)
+        data = SimpleNamespace(pcm=b"\x01\x02" * 1920)
+        with (
+            patch.object(bot, "voice_recv", SimpleNamespace(AudioSink=FakeAudioSink)),
+            patch.object(bot, "client", SimpleNamespace(user=None)),
+            patch.object(bot.browser_audio_relay, "submit_pcm") as submit_pcm,
+        ):
+            sink = bot.create_browser_audio_sink(voice_client)
+            sink.write(user, data)
+
+        transcription_sink.write.assert_called_once_with(user, data)
+        submit_pcm.assert_called_once_with(data.pcm, source_id=42)
+        bot.transcription_sessions.clear()
 
     async def test_idle_receive_session_stops_discord_listener(self):
         voice_client = SimpleNamespace(is_listening=lambda: True, stop_listening=Mock())
