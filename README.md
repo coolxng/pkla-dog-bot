@@ -32,11 +32,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
 | `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, and audio upload controls. |
-| `TRANSCRIPTION_ENABLED` | `false` | Enables the explicit `/say` call-transcription controls. Joining voice never starts capture automatically. |
-| `OPENAI_TRANSCRIPTION_MODEL` | `gpt-4o-mini-transcribe` | OpenAI speech-to-text model used for received call audio. |
-| `TRANSCRIPT_RETENTION_LIMIT` | `200` | Maximum rolling transcript entries retained in RAM per guild. Oldest entries are discarded first. |
-| `TRANSCRIPTION_CHUNK_SECONDS` | `15` | Maximum duration of each per-user PCM chunk sent to the provider, clamped to 1–30 seconds. |
-| `TRANSCRIPTION_SILENCE_SECONDS` | `1` | Per-user silence gap used to end an utterance, clamped to 0.25–5 seconds. |
+| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming call audio or transcripts can start. Store it as a secret; do not commit it. |
 
 ## Railway deploy steps
 
@@ -70,7 +66,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!search <query>` | Runs a live web search and returns a concise answer. |
 | `!forget` | Owner-only command that clears shared memory. |
 | `!deletedms` | Available only in DMs to Discord user `575057023046123520`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
-| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. It does **not** start recording or transcription. |
+| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is processed only while an authenticated browser listener or transcription consumer is active. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | Queues up to 500 characters to be read with the Onyx voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
@@ -90,8 +86,7 @@ You can make the bot post a message from a web browser:
 6. Enter a message, then select **Send to Discord**. The same page also has **Join call**, **Stop audio**, and **Leave call** controls, plus buttons for the wolf bark, Minecraft bark, bark-fart, Jamal crazy idek, and Evan crash sounds. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls.
 7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, choose one of the allowed voices, and select **Speak in call**. The bot must remain connected to that selected channel, and each server can start TTS at most once every 30 seconds.
 8. To play your own clip, use the right-side **Upload audio** panel. Select the same voice channel the bot already joined, choose an `.mp3` or `.mp4` file, and select **Upload and play**. Uploads are limited to 8 MiB. The server checks both the filename extension and the corresponding MP3 or MP4 header signature instead of trusting the browser MIME type. Video streams in MP4 files are ignored; only their audio is played.
-9. To transcribe a call, first join the exact selected voice channel. Read the prominent capture notice, notify all participants, consider the server's rules and applicable recording-consent law, affirm the checkbox, and select **Start transcription**. The bot posts a visible red capture notice in the voice channel chat. Select **Stop transcription** to stop receiving audio and post a stop notice. **Clear transcript** removes retained entries. Merely joining never starts capture.
-10. The transcript panel polls for new entries every two seconds, shows UTC-derived local browser timestamps, speaker display names and Discord user IDs, and marks non-final provider results as partial. It follows new entries only while the viewer is already near the bottom; otherwise it displays a new-entry button rather than forcing the scroll position.
+9. To hear the call in the browser, set `EXTERNAL_SAY_CONTROL_TOKEN`, join the selected voice channel, and select **Start listening**. This click is the browser user gesture that permits playback. **Mute** affects only that browser, while **Stop listening** closes its stream. The page shows the selected channel, connection state, and a red live-capture indicator.
 
 The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send Messages** permissions in the selected voice channel for all controls. Uploading and transcription do not connect or move the bot: it must already be connected to that exact channel. Only one clip can play at a time. Select **Stop audio** to end the current sound, uploaded audio, or text-to-speech playback without disconnecting the bot.
 
@@ -101,7 +96,7 @@ If Railway already shows a public domain under **Settings** → **Networking**, 
 
 Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, browsers show an HTTP Basic login prompt: the username may be any non-empty value and the password must be the configured token. API clients can send the same HTTP Basic credentials. Railway and similar hosts should store the token in their secret-variable UI.
 
-If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, `/say` remains unauthenticated for backward compatibility. **Anyone who knows or discovers the public Railway URL can post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS.** Keeping the URL private is not equivalent to authentication.
+If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-capture `/say` controls remain unauthenticated for backward compatibility. **Incoming call audio and transcript capabilities refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, and request billable OpenAI TTS. Keeping the URL private is not equivalent to authentication.
 
 The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 
@@ -112,6 +107,16 @@ OpenAI text-to-speech and transcription requests use billable APIs associated wi
 `discord.py==2.7.1` provides outbound voice playback but no supported inbound receive pipeline. This project therefore pins `discord-ext-voice-recv==0.5.2a179`, whose `VoiceRecvClient` and `AudioSink` expose decoded per-user PCM. The package is maintained but still labeled alpha/pre-release and warns that Discord protocol changes may break it. Test voice receive after dependency or Discord voice changes before deploying. If the extension cannot be imported, the connected client was created without receive support, credentials are missing, or required Discord permissions are absent, `/say` returns a clear error and does not begin capture.
 
 Received audio is never persisted by this bot. Only bounded WAV request bodies exist transiently for provider calls, and only the newest `TRANSCRIPT_RETENTION_LIMIT` text entries are retained in memory. Entries include timestamp, Discord user ID, display name, text, and partial/final status. Stopping retains the bounded transcript for review; clearing it, disconnecting voice, losing the Discord connection, or restarting removes state.
+
+### Live browser audio: privacy and hosting assumptions
+
+- **Consent and privacy:** Live listening captures other participants' speech. Tell everyone in the Discord channel before enabling it and follow applicable recording/wiretapping laws and Discord rules. The relay keeps PCM and encoded chunks only in bounded RAM queues; it does not write relay audio to disk. Existing uploaded clips and generated TTS still use the temporary-file behavior described above.
+- **Authentication and caching:** Every stream request uses the same HTTP Basic credentials as `/say`; credentials are never placed in the URL or page HTML. `/say` and audio responses send no-store/no-cache headers. Use HTTPS so Basic credentials and audio are encrypted in transit.
+- **Bandwidth:** FFmpeg encodes one shared 64 kbit/s MP3 stream per active Discord receive session. Multiple listeners reuse that encoder, but each listener adds roughly 64 kbit/s of outbound bandwidth plus HTTP/TLS overhead. Slow listeners are disconnected when their bounded queue fills rather than growing memory without limit.
+- **Lifecycle:** The first browser listener starts the shared receive/encode path. Closing the browser or selecting **Stop listening** releases that listener. Encoding stops after the final listener disconnects unless transcription still owns the receive session. Leaving Discord or losing the Discord voice connection closes every browser stream. Bot-originated playback is excluded, and received frames are suppressed while the bot is playing sounds or TTS to limit feedback loops.
+- **FFmpeg:** The host must provide an `ffmpeg` executable with the `libmp3lame` encoder. `railpack.json` installs FFmpeg for Railway. Encoding, mixing, and HTTP streaming run outside Discord's asyncio event loop. Unit tests use fake frames/processes and do not execute FFmpeg.
+- **Proxies and timeouts:** The endpoint is a long-lived chunked HTTP response and sets `X-Accel-Buffering: no`. Configure any CDN, reverse proxy, load balancer, or hosting platform to disable response buffering and allow a streaming/idle timeout longer than the expected listening session. A proxy timeout appears as a browser disconnect; reconnect with **Start listening**. Keep one application replica because receive and listener reference counts are process-local.
+- **Browser support:** The stream is `audio/mpeg`, and playback intentionally begins only from the **Start listening** click to satisfy autoplay policies. Browser or OS power-saving can still suspend a background tab.
 
 ## Channel setup
 
