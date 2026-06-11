@@ -271,7 +271,7 @@ def create_groq_chat_completion(messages: list[dict], *, max_tokens: int) -> str
                     "messages": request_messages,
                     "max_completion_tokens": max_tokens,
                 },
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": f"Bearer {api_key}", "User-Agent": "pkla-dog/1.0"},
             )
             log_chat_usage("groq", model, response)
             return chat_completion_content(response, "Groq")
@@ -298,7 +298,7 @@ def create_openai_chat_completion(messages: list[dict], *, max_tokens: int) -> s
     response = post_json(
         "https://api.openai.com/v1/chat/completions",
         {"model": model, "messages": messages, "max_completion_tokens": max_tokens},
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers={"Authorization": f"Bearer {api_key}", "User-Agent": "pkla-dog/1.0"},
     )
     log_chat_usage("openai", model, response)
     return chat_completion_content(response, "OpenAI")
@@ -1836,7 +1836,7 @@ def error_reply(error: Exception, *, during_search: bool = False) -> str:
     if "groq" in error_text or "chat/completions" in error_text:
         if "groq_api_key is not set" in error_text:
             return "AI chat isn't configured. Set GROQ_API_KEY in Variables, then redeploy."
-        if status_codes & {401, 403}:
+        if 401 in status_codes:
             return "Groq rejected the API key. Check GROQ_API_KEY in Variables, then redeploy."
         if 429 in status_codes:
             return "Groq is rate-limited right now. Try again in a minute."
