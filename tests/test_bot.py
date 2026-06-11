@@ -64,7 +64,9 @@ class VoiceReceiveDependencyTests(unittest.TestCase):
         requirements = Path("requirements.txt").read_text()
 
         self.assertIn("discord-ext-voice-recv", requirements)
-        self.assertIn("/ddd28601fe556f585b869e215f29c8236b95f88f.zip", requirements)
+        self.assertIn("vocolboy/discord-ext-voice-recv", requirements)
+        self.assertIn("/ee160c0f36516927b6214bc9d6babe524016770f.zip", requirements)
+        self.assertNotIn("/ddd28601fe556f585b869e215f29c8236b95f88f.zip", requirements)
         self.assertNotIn("discord-ext-voice-recv==0.5.2a179", requirements)
 
 
