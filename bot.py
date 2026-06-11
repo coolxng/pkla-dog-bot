@@ -1,18 +1,23 @@
 import asyncio
 import base64
 import hmac
+import importlib
+import importlib.util
+import io
 import json
 import math
 import os
 import re
 import tempfile
 import time
-from collections import OrderedDict
+import wave
+from collections import OrderedDict, deque
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-from threading import Thread
+from threading import RLock, Thread
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -22,6 +27,12 @@ from discord import app_commands
 from ddgs import DDGS
 from flask import Flask, Response, jsonify, redirect, render_template_string, request, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
+
+
+_voice_recv_spec = importlib.util.find_spec("discord.ext.voice_recv")
+voice_recv = (
+    importlib.import_module("discord.ext.voice_recv") if _voice_recv_spec is not None else None
+)
 
 
 app = Flask(__name__)
@@ -148,6 +159,36 @@ def parse_int_env(name: str, default: int) -> int:
     except ValueError:
         print(f"Ignoring invalid integer for {name}: {raw_value!r}")
         return default
+
+def parse_float_env(name: str, default: float) -> float:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        print(f"Ignoring invalid number for {name}: {raw_value!r}")
+        return default
+
+
+TRANSCRIPTION_ENABLED = env_bool("TRANSCRIPTION_ENABLED", False)
+TRANSCRIPTION_MODEL = os.environ.get(
+    "OPENAI_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe"
+).strip()
+TRANSCRIPT_RETENTION_LIMIT = max(1, parse_int_env("TRANSCRIPT_RETENTION_LIMIT", 200))
+TRANSCRIPTION_CHUNK_SECONDS = min(30.0, max(1.0, parse_float_env("TRANSCRIPTION_CHUNK_SECONDS", 15.0)))
+TRANSCRIPTION_SILENCE_SECONDS = min(5.0, max(0.25, parse_float_env("TRANSCRIPTION_SILENCE_SECONDS", 1.0)))
+TRANSCRIPTION_SAMPLE_RATE = 48_000
+TRANSCRIPTION_CHANNELS = 2
+TRANSCRIPTION_SAMPLE_WIDTH = 2
+TRANSCRIPTION_BYTES_PER_SECOND = (
+    TRANSCRIPTION_SAMPLE_RATE * TRANSCRIPTION_CHANNELS * TRANSCRIPTION_SAMPLE_WIDTH
+)
+TRANSCRIPTION_MAX_CHUNK_BYTES = int(
+    TRANSCRIPTION_BYTES_PER_SECOND * TRANSCRIPTION_CHUNK_SECONDS
+)
+TRANSCRIPTION_MAX_PENDING_CHUNKS = 4
+
 
 def current_central_datetime() -> datetime:
     return datetime.now(CENTRAL_TIME)
@@ -279,9 +320,9 @@ Core behavior:
 
 Bot capabilities and boundaries:
 - Accurately describe the bot's implemented features when users ask what you can do. Do not say a supported feature is impossible.
-- `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. The bot does not listen to, record, or process incoming voice audio.
+- `!join` joins the requesting user's current server voice channel, barks immediately, and schedules another bark every five minutes. Joining never starts recording or transcription.
 - `!bark` plays a bark while connected and has a five-second server-wide cooldown. `!tts <message>` queues the message to be read in the connected voice channel without overlapping other `!tts` messages. `!leave` stops scheduled barking and disconnects from voice.
-- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, and speak up to 500 characters with text to speech. Those web controls are separate from normal chat commands.
+- The external `/say` web page can send a Discord message, join or leave a selected voice channel, play these sound clips: {SOUND_CLIP_LABELS}, speak up to 500 characters with text to speech, and explicitly start or stop consent-gated call transcription when the feature is configured. Transcription is off by default, keeps only a bounded in-memory rolling transcript, and visibly announces capture in the voice channel text chat. Those web controls are separate from normal chat commands.
 - `!search <query>` performs live web search. `!remember <fact>`, `!memory`, `!forget`, `!reset`, and `!clear` manage the bot's in-memory context as described by their command results.
 - A normal AI reply does not itself execute a ping, voice action, sound clip, TTS request, search command, or memory command. Only say an action succeeded when a deterministic command result in recent history confirms it. Otherwise, tell the user the exact command or web control to use."""
 
@@ -347,6 +388,411 @@ command_tree = app_commands.CommandTree(client)
 slash_commands_synced = False
 discord_event_loop: asyncio.AbstractEventLoop | None = None
 
+
+@dataclass(frozen=True)
+class TranscriptEntry:
+    sequence: int
+    timestamp: str
+    user_id: int
+    display_name: str
+    text: str
+    final: bool
+
+    def as_dict(self) -> dict:
+        return {
+            "sequence": self.sequence,
+            "timestamp": self.timestamp,
+            "user_id": str(self.user_id),
+            "display_name": self.display_name,
+            "text": self.text,
+            "final": self.final,
+        }
+
+
+@dataclass
+class PendingAudio:
+    user_id: int
+    display_name: str
+    pcm: bytearray
+    last_packet_at: float
+
+
+class OpenAITranscriptionProvider:
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+
+    def transcribe(self, wav_audio: bytes) -> list[dict]:
+        boundary = f"discord-transcription-{time.time_ns()}"
+        parts = [
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="model"\r\n\r\n'
+                f"{self.model}\r\n"
+            ).encode(),
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="file"; filename="discord.wav"\r\n'
+                "Content-Type: audio/wav\r\n\r\n"
+            ).encode()
+            + wav_audio
+            + b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ]
+        request_data = b"".join(
+            part if isinstance(part, bytes) else part.encode() for part in parts
+        )
+        provider_request = Request(
+            "https://api.openai.com/v1/audio/transcriptions",
+            data=request_data,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(provider_request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            detail = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Transcription provider returned HTTP {error.code}: {detail[:300]}"
+            ) from error
+        except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Transcription provider request failed: {error}") from error
+
+        text = str(payload.get("text", "")).strip()
+        return [{"text": text, "final": True}] if text else []
+
+
+def create_transcription_provider():
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for transcription")
+    if not TRANSCRIPTION_MODEL:
+        raise RuntimeError("OPENAI_TRANSCRIPTION_MODEL cannot be empty")
+    return OpenAITranscriptionProvider(api_key, TRANSCRIPTION_MODEL)
+
+
+def pcm_to_wav(pcm: bytes) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(TRANSCRIPTION_CHANNELS)
+        wav_file.setsampwidth(TRANSCRIPTION_SAMPLE_WIDTH)
+        wav_file.setframerate(TRANSCRIPTION_SAMPLE_RATE)
+        wav_file.writeframes(pcm)
+    return output.getvalue()
+
+
+class DiscordTranscriptionSink(
+    voice_recv.AudioSink if voice_recv is not None else object
+):
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+
+    def wants_opus(self) -> bool:
+        return False
+
+    def write(self, user, data) -> None:
+        if user is None or not getattr(data, "pcm", None):
+            return
+        self.session.submit_audio_from_receive_thread(
+            user.id,
+            getattr(user, "display_name", getattr(user, "name", str(user.id))),
+            bytes(data.pcm),
+        )
+
+    def cleanup(self) -> None:
+        return None
+
+
+class TranscriptionSession:
+    def __init__(self, guild_id: int, channel_id: int, voice_client, provider):
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.voice_client = voice_client
+        self.provider = provider
+        self.loop = asyncio.get_running_loop()
+        self.active = True
+        self._buffers: dict[int, PendingAudio] = {}
+        self._entries = deque(maxlen=TRANSCRIPT_RETENTION_LIMIT)
+        self._entries_lock = RLock()
+        self._next_sequence = 1
+        self._pending_tasks: set[asyncio.Task] = set()
+        self._sweep_task = asyncio.create_task(self._flush_silent_speakers())
+        self.sink = DiscordTranscriptionSink(self)
+
+    def submit_audio_from_receive_thread(
+        self, user_id: int, display_name: str, pcm: bytes
+    ) -> None:
+        if self.active:
+            self.loop.call_soon_threadsafe(
+                self.accept_audio, user_id, display_name, pcm, time.monotonic()
+            )
+
+    def accept_audio(
+        self, user_id: int, display_name: str, pcm: bytes, received_at: float | None = None
+    ) -> None:
+        if not self.active or not pcm:
+            return
+        received_at = time.monotonic() if received_at is None else received_at
+        pending = self._buffers.get(user_id)
+        if pending is not None and received_at - pending.last_packet_at >= TRANSCRIPTION_SILENCE_SECONDS:
+            self._queue_chunk(pending, bytes(pending.pcm))
+            pending = None
+        if pending is None:
+            pending = PendingAudio(user_id, display_name, bytearray(), received_at)
+            self._buffers[user_id] = pending
+
+        pending.display_name = display_name
+        pending.last_packet_at = received_at
+        pending.pcm.extend(pcm)
+        while len(pending.pcm) >= TRANSCRIPTION_MAX_CHUNK_BYTES:
+            chunk = bytes(pending.pcm[:TRANSCRIPTION_MAX_CHUNK_BYTES])
+            del pending.pcm[:TRANSCRIPTION_MAX_CHUNK_BYTES]
+            self._queue_chunk(pending, chunk)
+
+    async def _flush_silent_speakers(self) -> None:
+        try:
+            while self.active:
+                await asyncio.sleep(min(0.25, TRANSCRIPTION_SILENCE_SECONDS))
+                now = time.monotonic()
+                for user_id, pending in list(self._buffers.items()):
+                    if pending.pcm and now - pending.last_packet_at >= TRANSCRIPTION_SILENCE_SECONDS:
+                        self._buffers.pop(user_id, None)
+                        self._queue_chunk(pending, bytes(pending.pcm))
+        except asyncio.CancelledError:
+            pass
+
+    def _queue_chunk(self, pending: PendingAudio, pcm: bytes) -> None:
+        if not pcm or not self.active:
+            return
+        if len(self._pending_tasks) >= TRANSCRIPTION_MAX_PENDING_CHUNKS:
+            self.add_entry(
+                pending.user_id,
+                pending.display_name,
+                "[Transcription skipped because the provider queue is full.]",
+                True,
+            )
+            return
+        task = asyncio.create_task(
+            self._transcribe_chunk(pending.user_id, pending.display_name, pcm)
+        )
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+
+    async def _transcribe_chunk(
+        self, user_id: int, display_name: str, pcm: bytes
+    ) -> None:
+        try:
+            results = await asyncio.to_thread(self.provider.transcribe, pcm_to_wav(pcm))
+            if isinstance(results, str):
+                results = [{"text": results, "final": True}]
+            for result in results or []:
+                text = str(result.get("text", "")).strip()
+                if text:
+                    self.add_entry(
+                        user_id,
+                        display_name,
+                        text,
+                        bool(result.get("final", True)),
+                    )
+        except Exception as error:
+            print(f"Transcription provider error for guild {self.guild_id}: {error}")
+            self.add_entry(
+                user_id,
+                display_name,
+                f"[Transcription failed: {error}]",
+                True,
+            )
+
+    def add_entry(
+        self, user_id: int, display_name: str, text: str, final: bool
+    ) -> None:
+        with self._entries_lock:
+            entry = TranscriptEntry(
+                sequence=self._next_sequence,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                user_id=user_id,
+                display_name=display_name,
+                text=text,
+                final=final,
+            )
+            self._next_sequence += 1
+            self._entries.append(entry)
+
+    def snapshot(self, after_sequence: int = 0) -> list[dict]:
+        with self._entries_lock:
+            return [
+                entry.as_dict()
+                for entry in self._entries
+                if entry.sequence > after_sequence
+            ]
+
+    def clear(self) -> None:
+        with self._entries_lock:
+            self._entries.clear()
+
+    async def close(self, *, discard_audio: bool) -> None:
+        if not self.active:
+            return
+        self.active = False
+        if hasattr(self.voice_client, "is_listening") and self.voice_client.is_listening():
+            self.voice_client.stop_listening()
+        self._sweep_task.cancel()
+        await asyncio.gather(self._sweep_task, return_exceptions=True)
+
+        if discard_audio:
+            self._buffers.clear()
+            for task in list(self._pending_tasks):
+                task.cancel()
+        else:
+            for pending in list(self._buffers.values()):
+                if pending.pcm:
+                    self.active = True
+                    self._queue_chunk(pending, bytes(pending.pcm))
+                    self.active = False
+            self._buffers.clear()
+        if self._pending_tasks:
+            await asyncio.gather(*list(self._pending_tasks), return_exceptions=True)
+
+
+transcription_sessions: dict[int, TranscriptionSession] = {}
+
+
+async def start_transcription(channel_id: int, *, consent: bool) -> str:
+    if not consent:
+        raise ValueError(
+            "Confirm that participants were notified and consent and recording rules were considered."
+        )
+    if not TRANSCRIPTION_ENABLED:
+        raise RuntimeError("Transcription is disabled by TRANSCRIPTION_ENABLED")
+    if voice_recv is None:
+        raise RuntimeError("Discord voice receive support is unavailable")
+
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("Join the selected voice call before starting transcription")
+    if getattr(voice_client, "channel", None) != voice_channel:
+        raise RuntimeError("The bot is connected to a different voice channel")
+    if not isinstance(voice_client, voice_recv.VoiceRecvClient):
+        raise RuntimeError("Reconnect the bot so Discord voice receive support can be initialized")
+
+    bot_member = voice_channel.guild.me
+    if bot_member is None:
+        raise RuntimeError("Discord could not resolve the bot's voice-channel permissions")
+    permissions = voice_channel.permissions_for(bot_member)
+    missing_permissions = [
+        name.replace("_", " ").title()
+        for name in ("view_channel", "connect", "send_messages")
+        if not getattr(permissions, name, False)
+    ]
+    if missing_permissions:
+        raise RuntimeError(
+            "Missing Discord permissions: " + ", ".join(missing_permissions)
+        )
+    previous_session = transcription_sessions.get(voice_channel.guild.id)
+    if previous_session is not None and previous_session.active:
+        raise RuntimeError("Transcription is already active for this server")
+    if previous_session is not None and previous_session.channel_id != channel_id:
+        raise RuntimeError("A transcript is retained for a different voice channel")
+
+    provider = create_transcription_provider()
+    session = TranscriptionSession(
+        voice_channel.guild.id, voice_channel.id, voice_client, provider
+    )
+    if previous_session is not None:
+        with previous_session._entries_lock, session._entries_lock:
+            session._entries.extend(previous_session._entries)
+            session._next_sequence = previous_session._next_sequence
+    transcription_sessions[voice_channel.guild.id] = session
+    try:
+        voice_client.listen(session.sink)
+        await voice_channel.send(
+            "🔴 **Transcription started.** Audio in this call is being captured and sent "
+            "to a speech-to-text service. Leave the call or ask the operator to stop if "
+            "you do not consent."
+        )
+    except Exception:
+        if previous_session is None:
+            transcription_sessions.pop(voice_channel.guild.id, None)
+        else:
+            transcription_sessions[voice_channel.guild.id] = previous_session
+        await session.close(discard_audio=True)
+        raise
+    return f"transcription started in {voice_channel.mention}"
+
+
+async def stop_transcription(channel_id: int, *, announce: bool = True) -> str:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("The bot is not connected to the selected voice call")
+    if getattr(voice_client, "channel", None) != voice_channel:
+        raise RuntimeError("The bot is connected to a different voice channel")
+    session = transcription_sessions.get(voice_channel.guild.id)
+    if session is None or session.channel_id != channel_id:
+        raise RuntimeError("Transcription is not active in the selected voice channel")
+    await session.close(discard_audio=False)
+    if announce:
+        await voice_channel.send("⚪ **Transcription stopped.** Call audio is no longer being captured.")
+    return f"transcription stopped in {voice_channel.mention}"
+
+
+async def clear_transcript(channel_id: int) -> str:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("The bot is not connected to the selected voice call")
+    if getattr(voice_client, "channel", None) != voice_channel:
+        raise RuntimeError("The bot is connected to a different voice channel")
+    session = transcription_sessions.get(voice_channel.guild.id)
+    if session is None or session.channel_id != channel_id:
+        raise RuntimeError("No transcript is available for the selected voice channel")
+    session.clear()
+    return "transcript cleared"
+
+
+async def transcript_payload(channel_id: int, after_sequence: int = 0) -> dict:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("The bot is not connected to the selected voice call")
+    if getattr(voice_client, "channel", None) != voice_channel:
+        raise RuntimeError("The bot is connected to a different voice channel")
+    session = transcription_sessions.get(voice_channel.guild.id)
+    return {
+        "active": bool(session and session.channel_id == channel_id and session.active),
+        "entries": session.snapshot(after_sequence) if session and session.channel_id == channel_id else [],
+    }
+
+
+async def cleanup_transcription_for_guild(guild_id: int) -> None:
+    session = transcription_sessions.pop(guild_id, None)
+    if session is not None:
+        await session.close(discard_audio=True)
+
+
+async def cleanup_all_transcriptions() -> None:
+    sessions = list(transcription_sessions.values())
+    transcription_sessions.clear()
+    await asyncio.gather(
+        *(session.close(discard_audio=True) for session in sessions),
+        return_exceptions=True,
+    )
+
+
 EXTERNAL_SAY_PAGE = """<!doctype html>
 <html lang="en">
 <head>
@@ -394,11 +840,25 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .copy-button.copied { background: #047857; }
     .status { padding: .8rem; border-radius: .5rem; background: #374151; }
     .error { background: #7f1d1d; }
+    .consent-notice { margin-top: 1rem; padding: 1rem; border: 2px solid #f59e0b; background: #451a03; border-radius: .75rem; }
+    .consent-check { display: flex; gap: .65rem; align-items: flex-start; font-weight: 600; }
+    .consent-check input { width: auto; margin-top: .25rem; }
+    .transcription-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
+    .record-button { background: #b91c1c; }
+    .clear-button { background: #4b5563; }
+    .transcript-status { font-weight: 700; }
+    .transcript-status.active { color: #fca5a5; }
+    .transcript-list { max-height: 22rem; overflow-y: auto; margin-top: .75rem; padding: .5rem; background: #111827; border: 1px solid #4b5563; border-radius: .5rem; }
+    .transcript-entry { padding: .55rem; border-bottom: 1px solid #374151; }
+    .transcript-entry:last-child { border-bottom: 0; }
+    .transcript-meta { color: #9ca3af; font-size: .8rem; }
+    .partial-label { color: #fbbf24; font-weight: 700; }
+    .new-transcript { display: none; width: 100%; margin-top: .5rem; background: #0369a1; }
     @media (max-width: 52rem) {
       .control-grid { grid-template-columns: 1fr; }
     }
     @media (max-width: 32rem) {
-      .voice-actions, .sound-actions { grid-template-columns: 1fr; }
+      .voice-actions, .sound-actions, .transcription-actions { grid-template-columns: 1fr; }
       .ping-member { grid-template-columns: 1fr 1fr; }
       .ping-member div { grid-column: 1 / -1; }
     }
@@ -444,6 +904,25 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         {% endfor %}
       </select>
       <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
+      <section aria-labelledby="transcription-heading">
+        <h3 class="sound-heading" id="transcription-heading">Call transcription</h3>
+        <div class="consent-notice">
+          <strong>Audio capture notice</strong>
+          <p>Starting transcription captures each participant's call audio and sends bounded audio chunks to the configured speech-to-text service. Notify everyone first and follow Discord/server rules and all applicable recording-consent laws.</p>
+          <label class="consent-check" for="transcription-consent">
+            <input id="transcription-consent" name="transcription_consent" type="checkbox" value="yes">
+            I affirmatively confirm that participants were notified and consent requirements and server rules were considered.
+          </label>
+        </div>
+        <p id="transcript-status" class="transcript-status">Transcription status: checking…</p>
+        <div class="transcription-actions">
+          <button class="record-button" type="submit" name="action" value="start_transcription">Start transcription</button>
+          <button class="stop-button" type="submit" name="action" value="stop_transcription">Stop transcription</button>
+          <button class="clear-button" type="submit" name="action" value="clear_transcript">Clear transcript</button>
+        </div>
+        <div id="transcript-list" class="transcript-list" aria-live="polite"></div>
+        <button id="new-transcript" class="new-transcript" type="button">New transcript entries below</button>
+      </section>
       <input type="hidden" name="action" value="play_sound">
     </form>
     <section class="ping-section" aria-labelledby="ping-heading">
@@ -550,6 +1029,63 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       });
     });
 
+    const transcriptList = document.getElementById("transcript-list");
+    const transcriptStatus = document.getElementById("transcript-status");
+    const newTranscriptButton = document.getElementById("new-transcript");
+    let lastTranscriptSequence = 0;
+
+    function scrollTranscriptToLatest() {
+      transcriptList.scrollTop = transcriptList.scrollHeight;
+      newTranscriptButton.style.display = "none";
+    }
+
+    newTranscriptButton.addEventListener("click", scrollTranscriptToLatest);
+
+    async function refreshTranscript() {
+      const channelId = voiceChannel.value.trim();
+      if (!channelId) return;
+      const wasNearBottom = transcriptList.scrollHeight - transcriptList.scrollTop - transcriptList.clientHeight < 48;
+      try {
+        const response = await fetch(`/say/transcript?voice_channel_id=${encodeURIComponent(channelId)}&after=${lastTranscriptSequence}`, { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Transcript unavailable");
+        transcriptStatus.textContent = payload.active ? "🔴 Transcription active: call audio is being captured" : "⚪ Transcription inactive";
+        transcriptStatus.classList.toggle("active", payload.active);
+        payload.entries.forEach((entry) => {
+          lastTranscriptSequence = Math.max(lastTranscriptSequence, entry.sequence);
+          const item = document.createElement("div");
+          item.className = "transcript-entry";
+          const timestamp = new Date(entry.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+          const meta = document.createElement("div");
+          meta.className = "transcript-meta";
+          meta.textContent = `${timestamp} · ${entry.display_name} (${entry.user_id})`;
+          if (!entry.final) {
+            const partial = document.createElement("span");
+            partial.className = "partial-label";
+            partial.textContent = " · partial";
+            meta.appendChild(partial);
+          }
+          const text = document.createElement("div");
+          text.textContent = entry.text;
+          item.append(meta, text);
+          transcriptList.appendChild(item);
+        });
+        if (payload.entries.length && wasNearBottom) scrollTranscriptToLatest();
+        else if (payload.entries.length) newTranscriptButton.style.display = "block";
+      } catch (error) {
+        transcriptStatus.textContent = `Transcription unavailable: ${error.message}`;
+        transcriptStatus.classList.remove("active");
+      }
+    }
+
+    voiceChannel.addEventListener("change", () => {
+      lastTranscriptSequence = 0;
+      transcriptList.replaceChildren();
+      refreshTranscript();
+    });
+    refreshTranscript();
+    window.setInterval(refreshTranscript, 2000);
+
     document.querySelectorAll(".copy-button").forEach((button) => {
       button.addEventListener("click", async () => {
         try {
@@ -602,6 +1138,13 @@ def external_say_is_authorized() -> bool:
         and authorization.password
         and hmac.compare_digest(authorization.password, EXTERNAL_SAY_CONTROL_TOKEN)
     )
+
+
+def require_transcription_control_authentication() -> None:
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        raise RuntimeError(
+            "EXTERNAL_SAY_CONTROL_TOKEN must be configured before transcription controls can be used"
+        )
 
 
 def external_say_authentication_required():
@@ -704,6 +1247,23 @@ def submit_external_uploaded_audio(channel_id: int, temporary_path: Path) -> str
         raise
 
 
+def submit_transcription_action(action: str, channel_id: int, *, consent: bool = False) -> str:
+    controls = {
+        "start_transcription": start_transcription(channel_id, consent=consent),
+        "stop_transcription": stop_transcription(channel_id),
+        "clear_transcript": clear_transcript(channel_id),
+    }
+    coroutine = controls.get(action)
+    for unused_action in controls.values():
+        if unused_action is not coroutine:
+            unused_action.close()
+    if coroutine is None:
+        raise ValueError("Unknown transcription action")
+    return run_discord_coroutine(
+        coroutine, "Discord took too long to update transcription"
+    )
+
+
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
     if action not in {"join", "stop", "leave", "play_sound"}:
         raise ValueError("Unknown voice action")
@@ -715,63 +1275,39 @@ def submit_external_voice_action(action: str, channel_id: int, sound_id: str | N
     )
 
 
-async def external_voice_status(channel_id: int) -> dict:
-    voice_channel = client.get_channel(channel_id)
-    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
-        return {"state": "unavailable", "voice_channel_id": channel_id}
-
-    guild = voice_channel.guild
-    voice_client = guild.voice_client
-    channel_details = {
-        "voice_channel_id": voice_channel.id,
-        "voice_channel_name": voice_channel.name,
-    }
-    if (
-        not voice_client
-        or not voice_client.is_connected()
-        or getattr(voice_client, "channel", None) != voice_channel
-    ):
-        return {
-            "state": "disconnected",
-            "connection_state": "disconnected",
-            **channel_details,
-        }
-
-    record = voice_activity_by_guild.get(guild.id)
-    if not voice_client.is_playing() or not record or not record.get("activity_type"):
-        return {
-            "state": "idle",
-            "connection_state": "connected",
-            **channel_details,
-        }
-
-    status = {"state": "playing", **record}
-    status.update(channel_details)
-    return status
-
-
-@app.route("/say/status")
-def external_say_status():
+@app.route("/say/transcript", methods=["GET"])
+def external_say_transcript():
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        return Response(
+            json.dumps({
+                "error": "EXTERNAL_SAY_CONTROL_TOKEN must be configured before transcripts can be retrieved"
+            }),
+            503,
+            mimetype="application/json",
+        )
     if not external_say_is_authorized():
         return external_say_authentication_required()
-
-    raw_channel_id = request.args.get("voice_channel_id", "").strip()
     try:
-        channel_id = int(raw_channel_id)
+        channel_id = int(request.args.get("voice_channel_id", ""))
+        after_sequence = max(0, int(request.args.get("after", "0")))
     except ValueError:
-        return jsonify(
-            state="unavailable", error="Enter a valid numeric voice channel ID."
-        ), 400
-
-    try:
-        status = run_discord_coroutine(
-            external_voice_status(channel_id),
-            "Discord took too long to report voice activity",
+        return Response(
+            json.dumps({"error": "Enter a valid numeric voice channel ID."}),
+            400,
+            mimetype="application/json",
         )
+    try:
+        payload = run_discord_coroutine(
+            transcript_payload(channel_id, after_sequence),
+            "Discord took too long to retrieve the transcript",
+        )
+        return Response(json.dumps(payload), mimetype="application/json")
     except Exception as error:
-        print(f"External voice status error: {error}")
-        return jsonify(state="unavailable", error=str(error)), 503
-    return jsonify(status)
+        return Response(
+            json.dumps({"error": str(error)}),
+            503,
+            mimetype="application/json",
+        )
 
 
 @app.route("/say", methods=["GET", "POST"])
@@ -786,7 +1322,17 @@ def external_say():
     response_status = 200
     if request.method == "POST":
         action = request.form.get("action", "send")
-        if action in {"join", "stop", "leave", "play_sound", "speak", "upload_audio"}:
+        if action in {
+            "join",
+            "stop",
+            "leave",
+            "play_sound",
+            "speak",
+            "upload_audio",
+            "start_transcription",
+            "stop_transcription",
+            "clear_transcript",
+        }:
             raw_channel_id = request.form.get("voice_channel_id", "").strip()
             try:
                 channel_id = int(raw_channel_id)
@@ -796,7 +1342,16 @@ def external_say():
                 response_status = 400
             else:
                 try:
-                    if action == "play_sound":
+                    if action in {
+                        "start_transcription", "stop_transcription", "clear_transcript"
+                    }:
+                        require_transcription_control_authentication()
+                        status = submit_transcription_action(
+                            action,
+                            channel_id,
+                            consent=request.form.get("transcription_consent") == "yes",
+                        )
+                    elif action == "play_sound":
                         status = submit_external_voice_action(
                             action, channel_id, request.form.get("sound")
                         )
@@ -1816,7 +2371,10 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
             else:
                 await voice_client.move_to(voice_channel)
         else:
-            voice_client = await voice_channel.connect(self_deaf=False, self_mute=False)
+            connect_options = {"self_deaf": False, "self_mute": False}
+            if voice_recv is not None:
+                connect_options["cls"] = voice_recv.VoiceRecvClient
+            voice_client = await voice_channel.connect(**connect_options)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
         print(f"Voice connection error: {error}")
         set_voice_disconnected(guild, voice_channel)
@@ -1862,7 +2420,7 @@ async def leave_guild_voice(guild) -> str:
 
     stop_bark_task(guild.id)
     last_command_bark_at.pop(guild.id, None)
-    set_voice_disconnected(guild, voice_channel)
+    await cleanup_transcription_for_guild(guild.id)
     return "left the voice channel"
 
 
@@ -2072,8 +2630,8 @@ async def control_external_voice(
         if not voice_client.is_playing():
             set_voice_idle(voice_channel.guild, voice_channel)
             return "nothing is playing"
-        voice_client.stop()
-        set_voice_idle(voice_channel.guild, voice_channel)
+        stop_playing = getattr(voice_client, "stop_playing", voice_client.stop)
+        stop_playing()
         return f"stopped audio in {voice_channel.mention}"
 
     sound = EXTERNAL_BARK_SOUNDS.get(sound_id)
@@ -2422,6 +2980,17 @@ async def sync_slash_commands() -> bool:
         print(f"Could not sync slash commands: {error}")
         return False
     return True
+
+
+@client.event
+async def on_disconnect():
+    await cleanup_all_transcriptions()
+
+
+@client.event
+async def on_voice_state_update(member, before, after):
+    if member == client.user and getattr(before, "channel", None) != getattr(after, "channel", None):
+        await cleanup_transcription_for_guild(member.guild.id)
 
 
 @client.event
