@@ -2515,7 +2515,11 @@ class ExternalTranscriptionRouteTests(unittest.TestCase):
         self.assertIn(b'value="start_transcription"', response.data)
         self.assertIn(b"Clear transcript", response.data)
         self.assertIn(b'id="transcript-list"', response.data)
-        self.assertIn(b"window.setInterval(refreshTranscript, 2000)", response.data)
+        self.assertNotIn(b"window.setInterval(refreshTranscript, 2000)", response.data)
+        self.assertIn(
+            b"if (payload.active) transcriptTimer = window.setTimeout(refreshTranscript, 2000)",
+            response.data,
+        )
 
     def test_transcription_is_enabled_by_default(self):
         self.assertTrue(bot.TRANSCRIPTION_ENABLED)
