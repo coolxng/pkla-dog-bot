@@ -1663,7 +1663,7 @@ class ExternalSayTests(unittest.TestCase):
         response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Make the bot say something", response.data)
+        self.assertIn(b"Say it your way.", response.data)
         self.assertIn(b'/favicon.ico?v=1', response.data)
         self.assertNotIn(b'name="token"', response.data)
 
@@ -2082,7 +2082,7 @@ class ExternalSayUploadFormTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'class="control-grid"', response.data)
-        self.assertIn(b'class="upload-panel"', response.data)
+        self.assertIn(b'class="panel upload-panel"', response.data)
         self.assertIn(b'enctype="multipart/form-data"', response.data)
         self.assertIn(b'name="action" value="upload_audio"', response.data)
         self.assertIn(b'name="audio_file"', response.data)
@@ -2252,7 +2252,20 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertIn(b"Playing: ${status.label", response.data)
         self.assertIn(b"Could not refresh activity", response.data)
         self.assertIn(b"pollActivity();", response.data)
-        self.assertIn(b"window.setInterval(pollActivity, 3000)", response.data)
+        self.assertIn(b"window.setTimeout(pollActivity, 3000)", response.data)
+        self.assertIn(b'document.addEventListener("visibilitychange"', response.data)
+
+    def test_say_page_uses_spacious_panel_layout_and_local_serif_display_font(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'class="page-header"', response.data)
+        self.assertIn(b'class="panel message-panel"', response.data)
+        self.assertIn(b'class="voice-tools"', response.data)
+        self.assertIn(b"color-scheme: dark", response.data)
+        self.assertIn(b"--canvas: #11100f", response.data)
+        self.assertIn(b'--display-font: "Iowan Old Style"', response.data)
+        self.assertNotIn(b"fonts.googleapis.com", response.data)
 
     def test_status_route_requires_numeric_channel_and_uses_discord_loop(self):
         invalid = self.client.get("/say/status?voice_channel_id=nope")

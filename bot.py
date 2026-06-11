@@ -469,60 +469,143 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
   <title>Discord Bot — Say</title>
   <link rel="icon" type="image/png" href="/favicon.ico?v=1">
   <style>
-    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; background: #111827; color: #f9fafb; }
-    main { width: min(92%, 72rem); margin: 6vh auto; padding: 2rem; background: #1f2937; border-radius: 1rem; }
-    .control-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr); gap: 2rem; align-items: start; }
-    h1 { margin-top: 0; }
-    label { display: block; margin: 1rem 0 .4rem; font-weight: 600; }
-    input, textarea, select, button { box-sizing: border-box; padding: .8rem; border-radius: .5rem; font: inherit; }
-    input, textarea, select { width: 100%; border: 1px solid #4b5563; background: #111827; color: inherit; }
-    textarea { min-height: 9rem; resize: vertical; }
-    button { border: 0; color: white; font-weight: 700; cursor: pointer; }
-    .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
-    .side-panels { display: grid; gap: 1rem; }
-    .upload-panel, .activity-panel { padding: 1.25rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
-    .upload-panel h2, .activity-panel h2 { margin: 0 0 .25rem; }
-    .activity-message { margin: .75rem 0 0; font-weight: 700; }
-    .activity-error { min-height: 1.2rem; margin: .45rem 0 0; color: #fca5a5; font-size: .85rem; }
-    .upload-button { width: 100%; margin-top: 1rem; background: #7c3aed; }
-    .voice-section, .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
-    .voice-section h2, .voice-section h3, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
-    .voice-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
-    .voice-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
-    .voice-section .sound-heading { margin-top: 1.25rem; }
-    .sound-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-top: .75rem; }
-    .sound-button { background: #7c3aed; }
-    .speak-button { width: 100%; margin-top: .75rem; background: #0369a1; }
-    .speech-text { min-height: 6rem; }
-    .join-button { background: #047857; }
-    .stop-button { background: #b45309; }
-    .leave-button { background: #b91c1c; }
-    button:disabled { cursor: not-allowed; opacity: .55; }
-    .ping-help { margin: 0 0 .8rem; color: #d1d5db; font-size: .9rem; }
-    .ping-list { display: grid; gap: .6rem; }
-    .ping-member { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; padding: .65rem; background: #111827; border-radius: .5rem; }
-    .member-name { display: block; font-weight: 700; }
-    .member-id { display: block; color: #9ca3af; font-size: .8rem; overflow-wrap: anywhere; }
-    .ping-button { background: #5865f2; }
-    .copy-button { background: #4b5563; }
-    .copy-button.copied { background: #047857; }
-    .status { padding: .8rem; border-radius: .5rem; background: #374151; }
-    .error { background: #7f1d1d; }
-    .auth-dialog { width: min(90vw, 28rem); padding: 1.5rem; border: 1px solid #4b5563; border-radius: .85rem; background: #1f2937; color: inherit; }
-    .auth-dialog::backdrop { background: rgb(0 0 0 / 70%); }
-    .auth-dialog h2 { margin-top: 0; }
-    .auth-dialog p { color: #d1d5db; }
-    .auth-dialog button { width: 100%; margin-top: 1rem; background: #5865f2; }
-    .auth-error { min-height: 1.2rem; margin-bottom: 0; color: #fca5a5; font-weight: 700; }
-    .partial-label { color: #fbbf24; font-weight: 700; }
-    @media (max-width: 52rem) {
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --display-font: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
+      --ink: #f4f0e8;
+      --muted: #aaa49a;
+      --canvas: #11100f;
+      --surface: #1b1917;
+      --surface-strong: #211f1c;
+      --line: #3c3832;
+      --accent: #b95534;
+      --accent-dark: #f09a76;
+      --violet: #786bb8;
+      --green: #3d8362;
+      --amber: #98601e;
+      --red: #ad4e43;
+      --blue: #47788f;
+      --shadow: 0 1.5rem 4rem rgb(0 0 0 / 32%);
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, rgb(220 116 77 / 13%), transparent 30rem),
+        var(--canvas);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    button, input, select, textarea { font: inherit; }
+    button, input, select, textarea { border-radius: .7rem; }
+    button {
+      min-height: 2.8rem;
+      padding: .7rem 1rem;
+      border: 1px solid transparent;
+      color: #fff;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 140ms ease, filter 140ms ease, box-shadow 140ms ease;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 3px solid rgb(240 154 118 / 35%);
+      outline-offset: 2px;
+    }
+    button:disabled { cursor: not-allowed; opacity: .5; }
+    input, select, textarea {
+      width: 100%;
+      padding: .78rem .9rem;
+      border: 1px solid var(--line);
+      background: var(--surface-strong);
+      color: var(--ink);
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+    input:hover, select:hover, textarea:hover { border-color: #625c53; }
+    textarea { min-height: 10rem; resize: vertical; }
+    main { width: min(calc(100% - 2rem), 78rem); margin: 0 auto; padding: clamp(2.5rem, 6vw, 5rem) 0; }
+    .page-header { max-width: 47rem; margin-bottom: clamp(2rem, 5vw, 3.5rem); }
+    .eyebrow {
+      margin: 0 0 .7rem;
+      color: var(--accent-dark);
+      font-size: .75rem;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { font-family: var(--display-font); letter-spacing: -.025em; line-height: 1.08; }
+    h1 { max-width: 12ch; margin: 0; font-size: clamp(2.7rem, 7vw, 5rem); font-weight: 500; }
+    h2 { margin: 0; font-size: clamp(1.45rem, 3vw, 1.9rem); font-weight: 500; }
+    h3 { margin: 0; font-size: 1.2rem; font-weight: 600; }
+    .page-intro { max-width: 38rem; margin: 1rem 0 0; color: var(--muted); font-size: 1.05rem; }
+    .control-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem); gap: 1.5rem; align-items: start; }
+    .primary-column, .side-panels { display: grid; gap: 1.5rem; }
+    .side-panels { position: sticky; top: 1.5rem; }
+    .panel {
+      padding: clamp(1.25rem, 3vw, 2rem);
+      border: 1px solid rgb(255 255 255 / 9%);
+      border-radius: 1.25rem;
+      background: rgb(27 25 23 / 94%);
+      box-shadow: 0 .6rem 2rem rgb(0 0 0 / 14%);
+    }
+    .message-panel { background: var(--surface-strong); box-shadow: var(--shadow); }
+    .panel-heading { margin-bottom: 1.4rem; }
+    .section-kicker { margin: 0 0 .35rem; color: var(--accent-dark); font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    label { display: block; margin: 1rem 0 .4rem; font-size: .88rem; font-weight: 750; }
+    .send-button, .upload-button, .speak-button { width: 100%; margin-top: 1rem; }
+    .send-button { background: var(--accent); box-shadow: 0 .65rem 1.4rem rgb(220 116 77 / 18%); }
+    .voice-help, .ping-help { margin: .45rem 0 1rem; color: var(--muted); font-size: .9rem; }
+    .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .65rem; margin-top: .8rem; }
+    .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; margin-top: .8rem; }
+    .join-button, .listen-button { background: var(--green); }
+    .stop-button, .mute-button { background: var(--amber); }
+    .leave-button, .listen-stop-button { background: var(--red); }
+    .sound-button, .upload-button { background: var(--violet); }
+    .speak-button { background: var(--blue); }
+    .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+    .subpanel { padding: 1.15rem; border: 1px solid var(--line); border-radius: 1rem; background: rgb(255 255 255 / 3%); }
+    .listen-panel { margin-top: 1rem; }
+    .listen-panel h3, .subpanel h3 { margin-bottom: .25rem; }
+    .relay-details { display: grid; gap: .25rem; margin-top: .85rem; color: var(--muted); font-size: .82rem; }
+    .live-indicator { width: fit-content; margin-top: .25rem; padding: .2rem .55rem; border-radius: 999px; background: #302d29; color: var(--muted); font-weight: 750; }
+    .live-indicator.live { background: #21392c; color: #91d1ac; }
+    .speech-text { min-height: 7rem; }
+    .ping-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+    .ping-member { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .55rem; align-items: center; padding: .8rem; border: 1px solid var(--line); border-radius: .8rem; background: rgb(255 255 255 / 3%); }
+    .ping-member div { grid-column: 1 / -1; }
+    .member-name { display: block; font-weight: 750; }
+    .member-id { display: block; color: var(--muted); font-size: .75rem; overflow-wrap: anywhere; }
+    .ping-button { background: var(--accent); }
+    .copy-button { border-color: var(--line); background: transparent; color: var(--ink); }
+    .copy-button.copied { border-color: var(--green); background: var(--green); color: #fff; }
+    .activity-panel { border-color: rgb(220 116 77 / 32%); background: #241b17; }
+    .activity-message { margin: .8rem 0 0; font-weight: 750; }
+    .activity-error { min-height: 1.2rem; margin: .45rem 0 0; color: var(--red); font-size: .82rem; }
+    .status { margin: 0 0 1.5rem; padding: .85rem 1rem; border: 1px solid #65562f; border-radius: .75rem; background: #2d2819; color: #e6d699; }
+    .error { border-color: #71413b; background: #321e1c; color: #efaaa2; }
+    .auth-dialog { width: min(90vw, 29rem); padding: 1.75rem; border: 1px solid var(--line); border-radius: 1.1rem; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+    .auth-dialog::backdrop { background: rgb(0 0 0 / 78%); backdrop-filter: blur(3px); }
+    .auth-dialog h2 { margin: 0; }
+    .auth-dialog p { color: var(--muted); }
+    .auth-dialog button { width: 100%; margin-top: 1rem; background: var(--accent); }
+    .auth-error { min-height: 1.2rem; margin-bottom: 0; color: var(--red); font-weight: 700; }
+    .partial-label { color: var(--amber); font-weight: 700; }
+    @media (max-width: 62rem) {
       .control-grid { grid-template-columns: 1fr; }
+      .side-panels { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 42rem) {
+      main { width: min(calc(100% - 1rem), 78rem); padding: 2rem 0; }
+      .voice-tools, .side-panels, .ping-list { grid-template-columns: 1fr; }
     }
     @media (max-width: 32rem) {
-      .voice-actions, .sound-actions { grid-template-columns: 1fr; }
-      .ping-member { grid-template-columns: 1fr 1fr; }
-      .ping-member div { grid-column: 1 / -1; }
+      .panel { padding: 1.1rem; border-radius: 1rem; }
+      .voice-actions, .sound-actions, .listen-actions { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
     }
   </style>
 </head>
@@ -545,19 +628,30 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
   </dialog>
   {% endif %}
   <main>
-    <h1>Make the bot say something</h1>
+    <header class="page-header">
+      <p class="eyebrow">Discord control room</p>
+      <h1>Say it your way.</h1>
+      <p class="page-intro">Send a message, join the call, or play something for everyone—without the controls getting in your way.</p>
+    </header>
     {% if status %}<p class="status{% if error %} error{% endif %}">{{ status }}</p>{% endif %}
     <div class="control-grid">
-      <div>
-    <form method="post">
+      <div class="primary-column">
+    <form method="post" class="panel message-panel">
       <input type="hidden" name="action" value="send">
+      <div class="panel-heading">
+        <p class="section-kicker">Text channel</p>
+        <h2>Send a message</h2>
+      </div>
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
       <button class="send-button" type="submit">Send to Discord</button>
     </form>
-    <form method="post" class="voice-section" aria-labelledby="voice-heading">
+    <form method="post" class="panel voice-section" aria-labelledby="voice-heading">
+      <div class="panel-heading">
+        <p class="section-kicker">Voice channel</p>
       <h2 id="voice-heading">Voice call</h2>
       <p class="voice-help">Join or leave a Discord voice channel. Joining also plays the bark and starts scheduled barking.</p>
+      </div>
       <label for="voice-channel-id">Voice channel ID</label>
       <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
       <div class="voice-actions">
@@ -581,15 +675,19 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         </div>
         <audio id="discord-audio" preload="none"></audio>
       </section>
-      <h3 class="sound-heading">Sound clips</h3>
-      <p class="voice-help">Play a sound after the bot has joined the voice call.</p>
-      <div class="sound-actions">
-        {% for sound_id, sound in bark_sounds.items() %}
-        <button class="sound-button" type="submit" name="sound" value="{{ sound_id }}">{{ sound.label }}</button>
-        {% endfor %}
-      </div>
-      <h3 class="sound-heading">Text to speech</h3>
-      <p class="voice-help">Speak up to {{ tts_text_limit }} characters. The bot must already be in the selected voice channel.</p>
+      <div class="voice-tools">
+        <section class="subpanel" aria-labelledby="sound-heading">
+          <h3 id="sound-heading">Sound clips</h3>
+          <p class="voice-help">Play a sound after the bot has joined.</p>
+          <div class="sound-actions">
+            {% for sound_id, sound in bark_sounds.items() %}
+            <button class="sound-button" type="submit" name="sound" value="{{ sound_id }}">{{ sound.label }}</button>
+            {% endfor %}
+          </div>
+        </section>
+        <section class="subpanel" aria-labelledby="speech-heading">
+      <h3 id="speech-heading">Text to speech</h3>
+      <p class="voice-help">Speak up to {{ tts_text_limit }} characters in the selected call.</p>
       <label for="speech-text">Speech text</label>
       <textarea class="speech-text" id="speech-text" name="speech_text" maxlength="{{ tts_text_limit }}"></textarea>
       <label for="tts-voice">Voice</label>
@@ -599,11 +697,16 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         {% endfor %}
       </select>
       <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
+        </section>
+      </div>
       <input type="hidden" name="action" value="play_sound">
     </form>
-    <section class="ping-section" aria-labelledby="ping-heading">
+    <section class="panel ping-section" aria-labelledby="ping-heading">
+        <div class="panel-heading">
+        <p class="section-kicker">Quick mentions</p>
         <h2 id="ping-heading">Ping a member</h2>
         <p class="ping-help">Select Ping to add a mention to the message, or Copy to copy the ready-to-paste mention.</p>
+        </div>
         <div class="ping-list">
           {% for member in ping_members %}
           <div class="ping-member">
@@ -619,13 +722,13 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     </section>
       </div>
       <aside class="side-panels">
-        <section class="activity-panel" aria-labelledby="activity-heading">
+        <section class="panel activity-panel" aria-labelledby="activity-heading">
           <h2 id="activity-heading">Activity</h2>
           <p class="voice-help">Live status for the selected voice channel.</p>
           <p class="activity-message" id="activity-message" aria-live="polite">Checking activity…</p>
           <p class="activity-error" id="activity-error" aria-live="polite"></p>
         </section>
-        <section class="upload-panel" aria-labelledby="upload-heading">
+        <section class="panel upload-panel" aria-labelledby="upload-heading">
         <h2 id="upload-heading">Upload audio</h2>
         <p class="voice-help">Upload an MP3 or MP4 up to {{ max_upload_audio_mib }} MiB. For MP4 files, only the audio is played. The bot must already be connected to the selected voice channel.</p>
         <form method="post" enctype="multipart/form-data">
@@ -705,12 +808,19 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         activityError.textContent = "";
       } catch (error) {
         activityError.textContent = `Could not refresh activity: ${error.message}`;
+      } finally {
+        scheduleNextActivityPoll();
       }
     }
 
     function scheduleActivityPoll() {
       window.clearTimeout(activityTimer);
       activityTimer = window.setTimeout(pollActivity, 250);
+    }
+
+    function scheduleNextActivityPoll() {
+      window.clearTimeout(activityTimer);
+      if (!document.hidden) activityTimer = window.setTimeout(pollActivity, 3000);
     }
 
     voiceChannel.addEventListener("input", () => {
@@ -724,7 +834,13 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       scheduleActivityPoll();
     });
     pollActivity();
-    window.setInterval(pollActivity, 3000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        window.clearTimeout(activityTimer);
+      } else {
+        pollActivity();
+      }
+    });
 
     function setRelayState(state, live) {
       relayState.textContent = state;
