@@ -610,7 +610,13 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
             voice_client = SimpleNamespace(is_playing=lambda: False, play=Mock())
 
             with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
-                played = bot.play_audio(voice_client, audio_path, delete_after=True)
+                played = bot.play_audio(
+                    voice_client,
+                    audio_path,
+                    activity_type="tts",
+                    label="test speech",
+                    delete_after=True,
+                )
                 after_playback = voice_client.play.call_args.kwargs["after"]
                 after_playback(None)
 
@@ -1070,7 +1076,10 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response, "playing Minecraft bark")
         play_audio.assert_called_once_with(
-            voice_client, bot.EXTERNAL_BARK_SOUNDS["minecraft"]["path"]
+            voice_client,
+            bot.EXTERNAL_BARK_SOUNDS["minecraft"]["path"],
+            activity_type="sound",
+            label="Minecraft bark",
         )
 
     async def test_external_sound_requires_joined_voice_client(self):
@@ -1129,7 +1138,13 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response, "speaking in #General")
         to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "nova")
-        play_audio.assert_called_once_with(voice_client, speech_path, delete_after=True)
+        play_audio.assert_called_once_with(
+            voice_client,
+            speech_path,
+            activity_type="tts",
+            label='TTS: “hello”',
+            delete_after=True,
+        )
         self.assertEqual(bot.last_tts_at[456], 100.0)
 
     async def test_external_speech_failure_does_not_start_cooldown(self):
@@ -1813,7 +1828,13 @@ class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):
                 response = await bot.control_external_uploaded_audio(123, audio_path)
 
             self.assertEqual(response, "playing uploaded audio in #General")
-            play_audio.assert_called_once_with(voice_client, audio_path, delete_after=True)
+            play_audio.assert_called_once_with(
+                voice_client,
+                audio_path,
+                activity_type="uploaded_audio",
+                label="uploaded audio",
+                delete_after=True,
+            )
             audio_path.unlink()
 
     async def test_upload_removes_file_when_playback_start_raises(self):
@@ -1999,6 +2020,247 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertEqual(unauthorized.status_code, 401)
         self.assertIn("Basic", unauthorized.headers["WWW-Authenticate"])
         self.assertEqual(authorized.status_code, 200)
+
+
+class ExternalVoiceStatusRouteTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_say_page_contains_activity_panel_and_polling_ui(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b">Activity<", response.data)
+        self.assertIn(b"/say/status?voice_channel_id=", response.data)
+        self.assertIn(b"Connected \xe2\x80\x94 nothing is playing", response.data)
+        self.assertIn(b"Playing: ${status.label", response.data)
+        self.assertIn(b"Could not refresh activity", response.data)
+
+    def test_status_route_requires_numeric_channel_and_uses_discord_loop(self):
+        invalid = self.client.get("/say/status?voice_channel_id=nope")
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(invalid.get_json()["state"], "unavailable")
+
+        with patch.object(
+            bot,
+            "run_discord_coroutine",
+            return_value={
+                "state": "playing",
+                "voice_channel_id": 123,
+                "voice_channel_name": "General",
+                "connection_state": "connected",
+                "activity_type": "sound",
+                "label": "Minecraft bark",
+                "started_at": "2026-06-11T00:00:00+00:00",
+            },
+        ) as run_coroutine:
+            response = self.client.get("/say/status?voice_channel_id=123")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["label"], "Minecraft bark")
+        coroutine = run_coroutine.call_args.args[0]
+        self.assertEqual(coroutine.cr_frame.f_locals["channel_id"], 123)
+        coroutine.close()
+
+    def test_status_route_uses_same_authentication_as_say_page(self):
+        def status_result(coroutine, _timeout_message):
+            coroutine.close()
+            return {"state": "unavailable", "voice_channel_id": 123}
+
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
+            patch.object(bot, "run_discord_coroutine", side_effect=status_result),
+        ):
+            unauthorized = self.client.get("/say/status?voice_channel_id=123")
+            authorized = self.client.get(
+                "/say/status?voice_channel_id=123",
+                headers={"Authorization": "Basic dXNlcjpzZWNyZXQtdG9rZW4="},
+            )
+
+        self.assertEqual(unauthorized.status_code, 401)
+        self.assertEqual(authorized.status_code, 200)
+
+
+class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
+    class FakeVoiceChannel:
+        pass
+
+    def setUp(self):
+        bot.voice_activity_by_guild.clear()
+        bot.last_tts_at.clear()
+
+    def voice_context(self, *, playing=False):
+        channel = self.FakeVoiceChannel()
+        channel.id = 123
+        channel.name = "General"
+        channel.mention = "#General"
+        callbacks = []
+        guild = SimpleNamespace(id=456)
+        voice_client = SimpleNamespace(
+            guild=guild,
+            channel=channel,
+            is_connected=lambda: True,
+            is_playing=lambda: playing,
+            play=Mock(side_effect=lambda _source, after: callbacks.append(after)),
+            stop=Mock(),
+            disconnect=AsyncMock(),
+        )
+        guild.voice_client = voice_client
+        channel.guild = guild
+        return guild, channel, voice_client, callbacks
+
+    async def test_join_idle_and_leave_disconnected_transitions(self):
+        guild, channel, voice_client, _callbacks = self.voice_context()
+        guild.voice_client = None
+        channel.connect = AsyncMock(return_value=voice_client)
+
+        with (
+            patch.object(bot, "start_bark_task"),
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
+            patch.object(bot, "play_bark", return_value=False),
+        ):
+            await bot.join_voice_channel(channel, guild)
+
+        self.assertEqual(bot.voice_activity_by_guild[guild.id]["connection_state"], "connected")
+        self.assertIsNone(bot.voice_activity_by_guild[guild.id]["activity_type"])
+
+        guild.voice_client = voice_client
+        with patch.object(bot, "stop_bark_task"):
+            await bot.leave_guild_voice(guild)
+
+        activity = bot.voice_activity_by_guild[guild.id]
+        self.assertEqual(activity["connection_state"], "disconnected")
+        self.assertEqual(activity["voice_channel_id"], channel.id)
+
+    async def test_sound_playback_and_completion_transition(self):
+        guild, channel, voice_client, callbacks = self.voice_context()
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+            patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()),
+        ):
+            response = await bot.control_external_voice("play_sound", channel.id, "minecraft")
+
+        self.assertEqual(response, "playing Minecraft bark")
+        activity = bot.voice_activity_by_guild[guild.id]
+        self.assertEqual(activity["activity_type"], "sound")
+        self.assertEqual(activity["label"], "Minecraft bark")
+        self.assertIsNotNone(activity["started_at"])
+
+        callbacks[0](None)
+        self.assertIsNone(bot.voice_activity_by_guild[guild.id]["activity_type"])
+
+    async def test_tts_and_uploaded_audio_use_visible_labels(self):
+        guild, channel, voice_client, callbacks = self.voice_context()
+        speech_path = Path("speech.mp3")
+        with (
+            patch.object(bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)),
+            patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()),
+        ):
+            await bot.speak_in_guild(
+                guild,
+                "This is a concise TTS preview",
+                "alloy",
+                not_connected_message="not connected",
+            )
+
+        self.assertEqual(bot.voice_activity_by_guild[guild.id]["activity_type"], "tts")
+        self.assertEqual(
+            bot.voice_activity_by_guild[guild.id]["label"],
+            "TTS: \u201cThis is a concise TTS preview\u201d",
+        )
+        callbacks.pop(0)(None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            audio_path = Path(directory) / "clip.mp3"
+            audio_path.write_bytes(b"ID3audio")
+            with (
+                patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+                patch.object(bot.client, "get_channel", return_value=channel),
+                patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()),
+            ):
+                await bot.control_external_uploaded_audio(channel.id, audio_path)
+
+            self.assertEqual(
+                bot.voice_activity_by_guild[guild.id]["activity_type"],
+                "uploaded_audio",
+            )
+            self.assertEqual(bot.voice_activity_by_guild[guild.id]["label"], "uploaded audio")
+            callbacks.pop(0)(None)
+
+    async def test_stop_restores_idle_without_stale_completion(self):
+        guild, channel, voice_client, callbacks = self.voice_context()
+        with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
+            bot.play_audio(
+                voice_client,
+                bot.BARK_AUDIO_PATH,
+                activity_type="sound",
+                label="Wolf bark",
+            )
+
+        voice_client.is_playing = lambda: True
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+        ):
+            await bot.control_external_voice("stop", channel.id)
+
+        idle_record = bot.voice_activity_by_guild[guild.id]
+        self.assertIsNone(idle_record["activity_type"])
+        callbacks[0](None)
+        self.assertIs(bot.voice_activity_by_guild[guild.id], idle_record)
+
+    def test_playback_failure_restores_idle(self):
+        guild, _channel, voice_client, _callbacks = self.voice_context()
+        voice_client.play.side_effect = RuntimeError("ffmpeg failed")
+
+        with patch.object(bot.discord, "FFmpegPCMAudio", return_value=Mock()):
+            with self.assertRaisesRegex(RuntimeError, "ffmpeg failed"):
+                bot.play_audio(
+                    voice_client,
+                    bot.BARK_AUDIO_PATH,
+                    activity_type="sound",
+                    label="Dog bark",
+                )
+
+        activity = bot.voice_activity_by_guild[guild.id]
+        self.assertEqual(activity["connection_state"], "connected")
+        self.assertIsNone(activity["activity_type"])
+
+    async def test_status_reports_unavailable_disconnected_idle_and_playing(self):
+        guild, channel, voice_client, _callbacks = self.voice_context()
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=None),
+        ):
+            self.assertEqual((await bot.external_voice_status(channel.id))["state"], "unavailable")
+
+        guild.voice_client = None
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+        ):
+            self.assertEqual((await bot.external_voice_status(channel.id))["state"], "disconnected")
+
+        guild.voice_client = voice_client
+        with (
+            patch.object(bot.discord, "VoiceChannel", self.FakeVoiceChannel),
+            patch.object(bot.client, "get_channel", return_value=channel),
+        ):
+            self.assertEqual((await bot.external_voice_status(channel.id))["state"], "idle")
+            voice_client.is_playing = lambda: True
+            bot.set_voice_activity(
+                guild,
+                channel,
+                connection_state="connected",
+                activity_type="tts",
+                label="TTS: \u201chello\u201d",
+                queued_tts_count=2,
+            )
+            playing = await bot.external_voice_status(channel.id)
+
+        self.assertEqual(playing["state"], "playing")
+        self.assertEqual(playing["queued_tts_count"], 2)
 
 
 if __name__ == "__main__":

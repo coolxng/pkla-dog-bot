@@ -25,7 +25,7 @@ from urllib.request import Request, urlopen
 import discord
 from discord import app_commands
 from ddgs import DDGS
-from flask import Flask, Response, redirect, render_template_string, request, url_for
+from flask import Flask, Response, jsonify, redirect, render_template_string, request, url_for
 from werkzeug.exceptions import RequestEntityTooLarge
 
 
@@ -812,8 +812,11 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     textarea { min-height: 9rem; resize: vertical; }
     button { border: 0; color: white; font-weight: 700; cursor: pointer; }
     .send-button { width: 100%; margin-top: 1rem; background: #5865f2; }
-    .upload-panel { padding: 1.25rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
-    .upload-panel h2 { margin: 0 0 .25rem; }
+    .side-panels { display: grid; gap: 1rem; }
+    .upload-panel, .activity-panel { padding: 1.25rem; background: #111827; border: 1px solid #4b5563; border-radius: .75rem; }
+    .upload-panel h2, .activity-panel h2 { margin: 0 0 .25rem; }
+    .activity-message { margin: .75rem 0 0; font-weight: 700; }
+    .activity-error { min-height: 1.2rem; margin: .45rem 0 0; color: #fca5a5; font-size: .85rem; }
     .upload-button { width: 100%; margin-top: 1rem; background: #7c3aed; }
     .voice-section, .ping-section { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #4b5563; }
     .voice-section h2, .voice-section h3, .ping-section h2 { margin: 0 0 .25rem; font-size: 1.1rem; }
@@ -939,7 +942,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         </div>
     </section>
       </div>
-      <aside class="upload-panel" aria-labelledby="upload-heading">
+      <aside class="side-panels">
+        <section class="activity-panel" aria-labelledby="activity-heading">
+          <h2 id="activity-heading">Activity</h2>
+          <p class="voice-help">Live status for the selected voice channel.</p>
+          <p class="activity-message" id="activity-message" aria-live="polite">Checking activity…</p>
+          <p class="activity-error" id="activity-error" aria-live="polite"></p>
+        </section>
+        <section class="upload-panel" aria-labelledby="upload-heading">
         <h2 id="upload-heading">Upload audio</h2>
         <p class="voice-help">Upload an MP3 or MP4 up to {{ max_upload_audio_mib }} MiB. For MP4 files, only the audio is played. The bot must already be connected to the selected voice channel.</p>
         <form method="post" enctype="multipart/form-data">
@@ -950,6 +960,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           <input id="audio-file" name="audio_file" type="file" accept=".mp3,.mp4,audio/mpeg,video/mp4" required>
           <button class="upload-button" type="submit">Upload and play</button>
         </form>
+        </section>
       </aside>
     </div>
   </main>
@@ -957,8 +968,50 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const message = document.getElementById("message");
     const voiceChannel = document.getElementById("voice-channel-id");
     const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
-    voiceChannel.addEventListener("input", () => { uploadVoiceChannel.value = voiceChannel.value; });
-    uploadVoiceChannel.addEventListener("input", () => { voiceChannel.value = uploadVoiceChannel.value; });
+    const activityMessage = document.getElementById("activity-message");
+    const activityError = document.getElementById("activity-error");
+    let activityTimer;
+
+    function describeActivity(status) {
+      if (status.state === "unavailable") return "Voice channel unavailable";
+      if (status.state === "disconnected") return "Not connected";
+      if (status.state === "idle") return "Connected — nothing is playing";
+      if (status.state === "playing") {
+        const queued = status.queued_tts_count ? ` (${status.queued_tts_count} TTS queued)` : "";
+        return `Playing: ${status.label || "audio"}${queued}`;
+      }
+      return "Voice status unavailable";
+    }
+
+    async function pollActivity() {
+      const channelId = voiceChannel.value.trim();
+      if (!channelId) return;
+      try {
+        const response = await fetch(`/say/status?voice_channel_id=${encodeURIComponent(channelId)}`);
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `Status request failed (${response.status})`);
+        activityMessage.textContent = describeActivity(status);
+        activityError.textContent = "";
+      } catch (error) {
+        activityError.textContent = `Could not refresh activity: ${error.message}`;
+      }
+    }
+
+    function scheduleActivityPoll() {
+      window.clearTimeout(activityTimer);
+      activityTimer = window.setTimeout(pollActivity, 250);
+    }
+
+    voiceChannel.addEventListener("input", () => {
+      uploadVoiceChannel.value = voiceChannel.value;
+      scheduleActivityPoll();
+    });
+    uploadVoiceChannel.addEventListener("input", () => {
+      voiceChannel.value = uploadVoiceChannel.value;
+      scheduleActivityPoll();
+    });
+    pollActivity();
+    window.setInterval(pollActivity, 3000);
 
     document.querySelectorAll(".ping-button").forEach((button) => {
       button.addEventListener("click", () => {
@@ -2099,10 +2152,88 @@ last_command_bark_at: dict[int, float] = {}
 last_tts_at: dict[int, float] = {}
 chat_tts_queues: dict[int, asyncio.Queue] = {}
 chat_tts_tasks: dict[int, asyncio.Task] = {}
+# Current voice state is kept in memory per guild and reset when the process restarts.
+voice_activity_by_guild: dict[int, dict] = {}
+
+
+def voice_channel_fields(voice_channel) -> tuple[int | None, str | None]:
+    return getattr(voice_channel, "id", None), getattr(voice_channel, "name", None)
+
+
+def set_voice_activity(
+    guild,
+    voice_channel,
+    *,
+    connection_state: str,
+    activity_type: str | None = None,
+    label: str | None = None,
+    queued_tts_count: int | None = None,
+) -> dict:
+    channel_id, channel_name = voice_channel_fields(voice_channel)
+    record = {
+        "voice_channel_id": channel_id,
+        "voice_channel_name": channel_name,
+        "connection_state": connection_state,
+        "activity_type": activity_type,
+        "label": label,
+        "started_at": (
+            datetime.now(timezone.utc).isoformat() if activity_type else None
+        ),
+    }
+    if queued_tts_count is not None:
+        record["queued_tts_count"] = queued_tts_count
+    guild_id = getattr(guild, "id", None)
+    if guild_id is not None:
+        voice_activity_by_guild[guild_id] = record
+    return record
+
+
+def set_voice_idle(guild, voice_channel, *, queued_tts_count: int | None = None) -> dict:
+    return set_voice_activity(
+        guild,
+        voice_channel,
+        connection_state="connected",
+        queued_tts_count=queued_tts_count,
+    )
+
+
+def set_voice_disconnected(guild, voice_channel=None) -> dict:
+    if voice_channel is not None:
+        return set_voice_activity(
+            guild, voice_channel, connection_state="disconnected"
+        )
+
+    guild_id = getattr(guild, "id", None)
+    previous = voice_activity_by_guild.get(guild_id, {})
+    record = {
+        "voice_channel_id": previous.get("voice_channel_id"),
+        "voice_channel_name": previous.get("voice_channel_name"),
+        "connection_state": "disconnected",
+        "activity_type": None,
+        "label": None,
+        "started_at": None,
+    }
+    if guild_id is not None:
+        voice_activity_by_guild[guild_id] = record
+    return record
+
+
+def shortened_tts_label(text: str, limit: int = 60) -> str:
+    preview = re.sub(r"\s+", " ", text).strip()
+    if len(preview) > limit:
+        preview = f"{preview[: limit - 1].rstrip()}…"
+    return f'TTS: “{preview}”'
 
 
 def play_audio(
-    voice_client, audio_path: Path, *, delete_after: bool = False, after=None
+    voice_client,
+    audio_path: Path,
+    *,
+    activity_type: str,
+    label: str,
+    delete_after: bool = False,
+    after=None,
+    queued_tts_count: int | None = None,
 ) -> bool:
     def cleanup() -> None:
         if delete_after:
@@ -2112,6 +2243,19 @@ def play_audio(
         cleanup()
         return False
 
+    guild = getattr(voice_client, "guild", None)
+    voice_channel = getattr(voice_client, "channel", None)
+    playback_record = None
+    if guild is not None:
+        playback_record = set_voice_activity(
+            guild,
+            voice_channel,
+            connection_state="connected",
+            activity_type=activity_type,
+            label=label,
+            queued_tts_count=queued_tts_count,
+        )
+
     def after_playback(error):
         try:
             if error:
@@ -2119,18 +2263,42 @@ def play_audio(
             if after:
                 after(error)
         finally:
+            if (
+                guild is not None
+                and voice_activity_by_guild.get(guild.id) is playback_record
+            ):
+                if voice_client.is_connected():
+                    set_voice_idle(guild, voice_channel)
+                else:
+                    set_voice_disconnected(guild, voice_channel)
             cleanup()
 
     try:
-        voice_client.play(discord.FFmpegPCMAudio(str(audio_path), options="-vn"), after=after_playback)
+        voice_client.play(
+            discord.FFmpegPCMAudio(str(audio_path), options="-vn"),
+            after=after_playback,
+        )
     except Exception:
+        if (
+            guild is not None
+            and voice_activity_by_guild.get(guild.id) is playback_record
+        ):
+            if voice_client.is_connected():
+                set_voice_idle(guild, voice_channel)
+            else:
+                set_voice_disconnected(guild, voice_channel)
         cleanup()
         raise
     return True
 
 
 def play_bark(voice_client) -> bool:
-    return play_audio(voice_client, BARK_AUDIO_PATH)
+    return play_audio(
+        voice_client,
+        BARK_AUDIO_PATH,
+        activity_type="sound",
+        label="Dog bark",
+    )
 
 
 def bark_on_command(message) -> str:
@@ -2209,14 +2377,17 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
             voice_client = await voice_channel.connect(**connect_options)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
         print(f"Voice connection error: {error}")
+        set_voice_disconnected(guild, voice_channel)
         return "couldn't join that voice channel; check my Connect permission and try again"
 
+    set_voice_idle(guild, voice_channel)
     start_bark_task(guild)
     await asyncio.sleep(BARK_JOIN_DELAY_SECONDS)
     try:
         play_bark(voice_client)
     except discord.DiscordException as error:
         print(f"Join bark playback error: {error}")
+        set_voice_idle(guild, voice_channel)
         return f"joined {voice_channel.mention}, but couldn't bark; check my Speak permission"
 
     return f"already in {voice_channel.mention}" if already_in_channel else f"joined {voice_channel.mention}"
@@ -2237,8 +2408,10 @@ async def join_author_voice(message) -> str:
 async def leave_guild_voice(guild) -> str:
     voice_client = guild.voice_client
     if not voice_client or not voice_client.is_connected():
+        set_voice_disconnected(guild)
         return "i'm not in a voice channel"
 
+    voice_channel = getattr(voice_client, "channel", None)
     try:
         await voice_client.disconnect()
     except (asyncio.TimeoutError, discord.DiscordException) as error:
@@ -2273,7 +2446,13 @@ async def control_external_uploaded_audio(
             raise RuntimeError("The bot is connected to a different voice channel")
         if voice_client.is_playing():
             raise RuntimeError("Another sound is already playing")
-        if not play_audio(voice_client, temporary_path, delete_after=True):
+        if not play_audio(
+            voice_client,
+            temporary_path,
+            activity_type="uploaded_audio",
+            label="uploaded audio",
+            delete_after=True,
+        ):
             raise RuntimeError("Another sound is already playing")
 
         playback_started = True
@@ -2312,7 +2491,13 @@ async def speak_in_guild(
 
     try:
         speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
-        if not play_audio(voice_client, speech_path, delete_after=True):
+        if not play_audio(
+            voice_client,
+            speech_path,
+            activity_type="tts",
+            label=shortened_tts_label(text),
+            delete_after=True,
+        ):
             raise RuntimeError("Another sound is already playing")
     except asyncio.CancelledError:
         restore_previous_cooldown()
@@ -2344,7 +2529,15 @@ async def play_chat_tts(guild, text: str) -> None:
         loop.call_soon_threadsafe(set_result)
 
     if not play_audio(
-        voice_client, speech_path, delete_after=True, after=finish_playback
+        voice_client,
+        speech_path,
+        activity_type="tts",
+        label=shortened_tts_label(text),
+        delete_after=True,
+        after=finish_playback,
+        queued_tts_count=max(chat_tts_queues[guild.id].qsize() - 1, 0)
+        if guild.id in chat_tts_queues
+        else 0,
     ):
         raise RuntimeError("Another sound started before TTS playback")
 
@@ -2377,6 +2570,9 @@ async def process_chat_tts_queue(guild_id: int) -> None:
 def enqueue_chat_tts(guild, text: str) -> None:
     queue = chat_tts_queues.setdefault(guild.id, asyncio.Queue())
     queue.put_nowait((guild, text))
+    record = voice_activity_by_guild.get(guild.id)
+    if record is not None:
+        record["queued_tts_count"] = queue.qsize()
 
     task = chat_tts_tasks.get(guild.id)
     if task is None or task.done():
@@ -2432,6 +2628,7 @@ async def control_external_voice(
         if getattr(voice_client, "channel", None) != voice_channel:
             raise RuntimeError("The bot is connected to a different voice channel")
         if not voice_client.is_playing():
+            set_voice_idle(voice_channel.guild, voice_channel)
             return "nothing is playing"
         stop_playing = getattr(voice_client, "stop_playing", voice_client.stop)
         stop_playing()
@@ -2443,7 +2640,12 @@ async def control_external_voice(
     voice_client = voice_channel.guild.voice_client
     if not voice_client or not voice_client.is_connected():
         raise RuntimeError("Join the voice call before playing a sound")
-    if not play_audio(voice_client, sound["path"]):
+    if not play_audio(
+        voice_client,
+        sound["path"],
+        activity_type="sound",
+        label=sound["label"],
+    ):
         raise RuntimeError("Another sound is already playing")
     return f'playing {sound["label"]}'
 
