@@ -1395,6 +1395,16 @@ class ConversationHistoryTests(unittest.TestCase):
 
 
 class TextToSpeechTests(unittest.TestCase):
+    def test_disabled_api_calls_block_tts_before_openai_request(self):
+        with (
+            patch.object(bot, "ai_api_calls_enabled", False),
+            patch.object(bot, "urlopen") as urlopen,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "API calls are disabled"):
+                bot.synthesize_speech("hello", "nova")
+
+        urlopen.assert_not_called()
+
     def test_openai_request_contains_configured_speech_values(self):
         class FakeResponse:
             def __enter__(self):
@@ -1550,6 +1560,18 @@ class GroqConfigTests(unittest.TestCase):
         self.assertEqual(trimmed[0], messages[0])
         self.assertEqual(trimmed[-2:], messages[-2:])
         self.assertNotIn(messages[1], trimmed)
+
+    def test_disabled_api_calls_block_chat_before_provider_requests(self):
+        with (
+            patch.object(bot, "ai_api_calls_enabled", False),
+            patch.object(bot, "create_groq_chat_completion") as groq_chat,
+            patch.object(bot, "create_openai_chat_completion") as openai_chat,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "API calls are disabled"):
+                bot.create_chat_completion([], max_tokens=25)
+
+        groq_chat.assert_not_called()
+        openai_chat.assert_not_called()
 
     def test_chat_completion_does_not_fallback_to_openai_by_default(self):
         with (
@@ -2283,7 +2305,8 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'id="tts-command-toggle"', response.data)
         self.assertIn(b'value="toggle_tts_command"', response.data)
-        self.assertIn(b'Disable !tts', response.data)
+        self.assertIn(b'class="toggle-track"', response.data)
+        self.assertIn(b'<span class="toggle-state">On</span>', response.data)
         self.assertIn(b'aria-pressed="true"', response.data)
 
     def test_chat_tts_command_toggle_updates_server_state(self):
@@ -2301,6 +2324,34 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
             {"status": "!tts command disabled.", "tts_command_enabled": False},
         )
         self.assertFalse(bot.chat_tts_command_enabled)
+
+    def test_say_page_contains_api_calls_toggle_below_tts_toggle(self):
+        with patch.object(bot, "ai_api_calls_enabled", True):
+            response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="api-calls-toggle"', response.data)
+        self.assertIn(b'value="toggle_api_calls"', response.data)
+        self.assertLess(
+            response.data.index(b'id="tts-command-toggle"'),
+            response.data.index(b'id="api-calls-toggle"'),
+        )
+        self.assertIn(b"avoid using provider credits", response.data)
+
+    def test_api_calls_toggle_updates_server_state(self):
+        with patch.object(bot, "ai_api_calls_enabled", True):
+            response = self.client.post(
+                "/say",
+                data={"action": "toggle_api_calls"},
+                headers={"X-Requested-With": "fetch"},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.get_json(),
+                {"status": "AI API calls disabled.", "api_calls_enabled": False},
+            )
+            self.assertFalse(bot.ai_api_calls_enabled)
 
     def test_say_page_submits_controls_without_reloading(self):
         response = self.client.get("/say")

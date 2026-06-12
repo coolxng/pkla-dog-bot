@@ -94,6 +94,7 @@ EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").st
 EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
 TTS_COOLDOWN_SECONDS = 30
 chat_tts_command_enabled = True
+ai_api_calls_enabled = True
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
@@ -306,6 +307,9 @@ def create_openai_chat_completion(messages: list[dict], *, max_tokens: int) -> s
 
 
 def create_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
+    if not ai_api_calls_enabled:
+        raise RuntimeError("AI API calls are disabled from /say")
+
     try:
         return create_groq_chat_completion(messages, max_tokens=max_tokens)
     except Exception as groq_error:
@@ -565,8 +569,48 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .leave-button, .listen-stop-button { background: var(--red); }
     .sound-button, .upload-button { background: var(--violet); }
     .speak-button { background: var(--blue); }
-    .tts-toggle-button { width: 100%; background: var(--green); }
-    .tts-toggle-button.disabled { background: var(--red); }
+    .toggle-panel { display: grid; gap: 1rem; }
+    .toggle-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 1rem;
+      align-items: center;
+      width: 100%;
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+    }
+    .toggle-copy { display: grid; gap: .15rem; }
+    .toggle-label { font-weight: 800; }
+    .toggle-state { color: #91d1ac; font-size: .82rem; font-weight: 750; }
+    .toggle-control[aria-pressed="false"] .toggle-state { color: #efaaa2; }
+    .toggle-track {
+      position: relative;
+      width: 3.4rem;
+      height: 1.9rem;
+      border: 1px solid rgb(255 255 255 / 15%);
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: inset 0 2px 5px rgb(0 0 0 / 22%);
+      transition: background 140ms ease;
+    }
+    .toggle-control[aria-pressed="false"] .toggle-track { background: var(--red); }
+    .toggle-thumb {
+      position: absolute;
+      top: .2rem;
+      left: 1.7rem;
+      width: 1.4rem;
+      height: 1.4rem;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 2px 7px rgb(0 0 0 / 38%);
+      transition: left 140ms ease;
+    }
+    .toggle-control[aria-pressed="false"] .toggle-thumb { left: .2rem; }
+    .toggle-divider { height: 1px; border: 0; background: var(--line); }
     .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1.5rem; }
     .subpanel { padding: 1.15rem; border: 1px solid var(--line); border-radius: 1rem; background: rgb(255 255 255 / 3%); }
     .listen-panel { margin-top: 1rem; }
@@ -731,14 +775,32 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           <p class="activity-message" id="activity-message" aria-live="polite">Checking activity…</p>
           <p class="activity-error" id="activity-error" aria-live="polite"></p>
         </section>
-        <form method="post" class="panel tts-command-panel" aria-labelledby="tts-command-heading">
-          <input type="hidden" name="action" value="toggle_tts_command">
-          <h2 id="tts-command-heading">Chat TTS command</h2>
-          <p class="voice-help">Control whether Discord messages can use <code>!tts &lt;message&gt;</code>. Direct speech from this page stays available.</p>
-          <button id="tts-command-toggle" class="tts-toggle-button{% if not chat_tts_command_enabled %} disabled{% endif %}" type="submit" aria-pressed="{{ 'true' if chat_tts_command_enabled else 'false' }}">
-            {{ 'Disable !tts' if chat_tts_command_enabled else 'Enable !tts' }}
-          </button>
-        </form>
+        <section class="panel toggle-panel" aria-labelledby="toggles-heading">
+          <h2 id="toggles-heading">Bot controls</h2>
+          <form method="post">
+            <input type="hidden" name="action" value="toggle_tts_command">
+            <button id="tts-command-toggle" class="toggle-control" type="submit" aria-pressed="{{ 'true' if chat_tts_command_enabled else 'false' }}">
+              <span class="toggle-copy">
+                <span class="toggle-label">Chat TTS command</span>
+                <span class="toggle-state">{{ 'On' if chat_tts_command_enabled else 'Off' }}</span>
+              </span>
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </button>
+            <p class="voice-help">Allow Discord messages to use <code>!tts &lt;message&gt;</code>. Direct speech is controlled by API calls.</p>
+          </form>
+          <hr class="toggle-divider">
+          <form method="post">
+            <input type="hidden" name="action" value="toggle_api_calls">
+            <button id="api-calls-toggle" class="toggle-control" type="submit" aria-pressed="{{ 'true' if ai_api_calls_enabled else 'false' }}">
+              <span class="toggle-copy">
+                <span class="toggle-label">API calls</span>
+                <span class="toggle-state">{{ 'On' if ai_api_calls_enabled else 'Off' }}</span>
+              </span>
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </button>
+            <p class="voice-help">Turn off AI chat, web search, and text-to-speech requests to avoid using provider credits.</p>
+          </form>
+        </section>
         <section class="panel upload-panel" aria-labelledby="upload-heading">
         <h2 id="upload-heading">Upload audio</h2>
         <p class="voice-help">Upload an MP3 or MP4 up to {{ max_upload_audio_mib }} MiB. For MP4 files, only the audio is played. The bot must already be connected to the selected voice channel.</p>
@@ -797,6 +859,12 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const activityError = document.getElementById("activity-error");
     const controlStatus = document.getElementById("control-status");
     const ttsCommandToggle = document.getElementById("tts-command-toggle");
+    const apiCallsToggle = document.getElementById("api-calls-toggle");
+
+    function updateToggle(toggle, enabled) {
+      toggle.setAttribute("aria-pressed", String(enabled));
+      toggle.querySelector(".toggle-state").textContent = enabled ? "On" : "Off";
+    }
     let activityTimer;
 
     function showControlStatus(message, isError = false) {
@@ -828,9 +896,10 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
 
           showControlStatus(payload.status || "Action completed.");
           if (action === "toggle_tts_command" && typeof payload.tts_command_enabled === "boolean") {
-            ttsCommandToggle.textContent = payload.tts_command_enabled ? "Disable !tts" : "Enable !tts";
-            ttsCommandToggle.classList.toggle("disabled", !payload.tts_command_enabled);
-            ttsCommandToggle.setAttribute("aria-pressed", String(payload.tts_command_enabled));
+            updateToggle(ttsCommandToggle, payload.tts_command_enabled);
+          }
+          if (action === "toggle_api_calls" && typeof payload.api_calls_enabled === "boolean") {
+            updateToggle(apiCallsToggle, payload.api_calls_enabled);
           }
           if (action === "send") message.value = "";
           if (action === "speak") document.getElementById("speech-text").value = "";
@@ -1273,7 +1342,7 @@ def external_say_login():
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
-    global chat_tts_command_enabled
+    global ai_api_calls_enabled, chat_tts_command_enabled
 
     fetch_request = request.headers.get("X-Requested-With") == "fetch"
     if request.method == "POST" and not external_say_is_authorized():
@@ -1293,6 +1362,15 @@ def external_say():
                 return jsonify(
                     status=status,
                     tts_command_enabled=chat_tts_command_enabled,
+                )
+            return redirect(url_for("external_say", status=status), code=303)
+        if action == "toggle_api_calls":
+            ai_api_calls_enabled = not ai_api_calls_enabled
+            status = f"AI API calls {'enabled' if ai_api_calls_enabled else 'disabled'}."
+            if fetch_request:
+                return jsonify(
+                    status=status,
+                    api_calls_enabled=ai_api_calls_enabled,
                 )
             return redirect(url_for("external_say", status=status), code=303)
         if action in {
@@ -1385,6 +1463,7 @@ def external_say():
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
         chat_tts_command_enabled=chat_tts_command_enabled,
+        ai_api_calls_enabled=ai_api_calls_enabled,
         control_token_configured=bool(EXTERNAL_SAY_CONTROL_TOKEN),
         control_authenticated=external_say_is_authorized(),
         incoming_audio_enabled=(
@@ -1606,6 +1685,9 @@ def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> d
 
 
 def synthesize_speech(text: str, voice: str) -> Path:
+    if not ai_api_calls_enabled:
+        raise RuntimeError("AI API calls are disabled from /say")
+
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -2016,6 +2098,8 @@ def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:
 
 
 def error_reply(error: Exception, *, during_search: bool = False) -> str:
+    if "api calls are disabled" in str(error).lower():
+        return "AI API calls are turned off from the /say control page."
     if during_search:
         return "my bad, search failed while checking that."
 
@@ -2041,6 +2125,9 @@ def error_reply(error: Exception, *, during_search: bool = False) -> str:
 
 
 async def web_search(query: str, *, recent: bool = False) -> str:
+    if not ai_api_calls_enabled:
+        return ""
+
     loop = asyncio.get_running_loop()
 
     def do_search():
