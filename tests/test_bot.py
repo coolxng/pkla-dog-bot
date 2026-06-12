@@ -838,6 +838,7 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
         bot.last_tts_at.clear()
         bot.chat_tts_queues.clear()
         bot.chat_tts_tasks.clear()
+        bot.chat_tts_command_enabled = True
 
     async def test_tts_command_queues_following_message(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
@@ -922,6 +923,26 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
 
             callbacks[0](None)
             await playback
+
+    async def test_disabled_tts_command_does_not_queue_speech(self):
+        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
+        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
+        guild = SimpleNamespace(id=456, voice_client=SimpleNamespace(is_connected=lambda: True))
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=123, display_name="Tester"),
+            channel=text_channel,
+            content="!tts This should not play",
+            guild=guild,
+        )
+        bot.chat_tts_command_enabled = False
+
+        with patch.object(bot, "enqueue_chat_tts") as enqueue_chat_tts:
+            await bot.on_message(message)
+
+        enqueue_chat_tts.assert_not_called()
+        text_channel.send.assert_awaited_once_with(
+            "!tts is currently disabled from the /say control page"
+        )
 
     async def test_tts_command_requires_message_text(self):
         channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
@@ -2254,6 +2275,32 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertIn(b"pollActivity();", response.data)
         self.assertIn(b"window.setTimeout(pollActivity, 3000)", response.data)
         self.assertIn(b'document.addEventListener("visibilitychange"', response.data)
+
+    def test_say_page_contains_chat_tts_command_toggle(self):
+        bot.chat_tts_command_enabled = True
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'id="tts-command-toggle"', response.data)
+        self.assertIn(b'value="toggle_tts_command"', response.data)
+        self.assertIn(b'Disable !tts', response.data)
+        self.assertIn(b'aria-pressed="true"', response.data)
+
+    def test_chat_tts_command_toggle_updates_server_state(self):
+        bot.chat_tts_command_enabled = True
+
+        response = self.client.post(
+            "/say",
+            data={"action": "toggle_tts_command"},
+            headers={"X-Requested-With": "fetch"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {"status": "!tts command disabled.", "tts_command_enabled": False},
+        )
+        self.assertFalse(bot.chat_tts_command_enabled)
 
     def test_say_page_submits_controls_without_reloading(self):
         response = self.client.get("/say")
