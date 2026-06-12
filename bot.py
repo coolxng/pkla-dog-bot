@@ -93,6 +93,7 @@ MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_AUDIO_BYTES + (1024 * 1024)
 EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
 EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
 TTS_COOLDOWN_SECONDS = 30
+chat_tts_command_enabled = True
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
@@ -564,6 +565,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .leave-button, .listen-stop-button { background: var(--red); }
     .sound-button, .upload-button { background: var(--violet); }
     .speak-button { background: var(--blue); }
+    .tts-toggle-button { width: 100%; background: var(--green); }
+    .tts-toggle-button.disabled { background: var(--red); }
     .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1.5rem; }
     .subpanel { padding: 1.15rem; border: 1px solid var(--line); border-radius: 1rem; background: rgb(255 255 255 / 3%); }
     .listen-panel { margin-top: 1rem; }
@@ -728,6 +731,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           <p class="activity-message" id="activity-message" aria-live="polite">Checking activity…</p>
           <p class="activity-error" id="activity-error" aria-live="polite"></p>
         </section>
+        <form method="post" class="panel tts-command-panel" aria-labelledby="tts-command-heading">
+          <input type="hidden" name="action" value="toggle_tts_command">
+          <h2 id="tts-command-heading">Chat TTS command</h2>
+          <p class="voice-help">Control whether Discord messages can use <code>!tts &lt;message&gt;</code>. Direct speech from this page stays available.</p>
+          <button id="tts-command-toggle" class="tts-toggle-button{% if not chat_tts_command_enabled %} disabled{% endif %}" type="submit" aria-pressed="{{ 'true' if chat_tts_command_enabled else 'false' }}">
+            {{ 'Disable !tts' if chat_tts_command_enabled else 'Enable !tts' }}
+          </button>
+        </form>
         <section class="panel upload-panel" aria-labelledby="upload-heading">
         <h2 id="upload-heading">Upload audio</h2>
         <p class="voice-help">Upload an MP3 or MP4 up to {{ max_upload_audio_mib }} MiB. For MP4 files, only the audio is played. The bot must already be connected to the selected voice channel.</p>
@@ -785,6 +796,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const activityMessage = document.getElementById("activity-message");
     const activityError = document.getElementById("activity-error");
     const controlStatus = document.getElementById("control-status");
+    const ttsCommandToggle = document.getElementById("tts-command-toggle");
     let activityTimer;
 
     function showControlStatus(message, isError = false) {
@@ -815,6 +827,11 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           if (!response.ok) throw new Error(payload.status || "Action failed");
 
           showControlStatus(payload.status || "Action completed.");
+          if (action === "toggle_tts_command" && typeof payload.tts_command_enabled === "boolean") {
+            ttsCommandToggle.textContent = payload.tts_command_enabled ? "Disable !tts" : "Enable !tts";
+            ttsCommandToggle.classList.toggle("disabled", !payload.tts_command_enabled);
+            ttsCommandToggle.setAttribute("aria-pressed", String(payload.tts_command_enabled));
+          }
           if (action === "send") message.value = "";
           if (action === "speak") document.getElementById("speech-text").value = "";
           if (action === "upload_audio") document.getElementById("audio-file").value = "";
@@ -1256,6 +1273,8 @@ def external_say_login():
 
 @app.route("/say", methods=["GET", "POST"])
 def external_say():
+    global chat_tts_command_enabled
+
     fetch_request = request.headers.get("X-Requested-With") == "fetch"
     if request.method == "POST" and not external_say_is_authorized():
         return external_say_authentication_required()
@@ -1267,6 +1286,15 @@ def external_say():
     response_status = 200
     if request.method == "POST":
         action = request.form.get("action", "send")
+        if action == "toggle_tts_command":
+            chat_tts_command_enabled = not chat_tts_command_enabled
+            status = f"!tts command {'enabled' if chat_tts_command_enabled else 'disabled'}."
+            if fetch_request:
+                return jsonify(
+                    status=status,
+                    tts_command_enabled=chat_tts_command_enabled,
+                )
+            return redirect(url_for("external_say", status=status), code=303)
         if action in {
             "join",
             "stop",
@@ -1356,6 +1384,7 @@ def external_say():
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
         tts_default_voice=OPENAI_TTS_VOICE,
+        chat_tts_command_enabled=chat_tts_command_enabled,
         control_token_configured=bool(EXTERNAL_SAY_CONTROL_TOKEN),
         control_authenticated=external_say_is_authorized(),
         incoming_audio_enabled=(
@@ -2650,6 +2679,8 @@ def enqueue_chat_tts(guild, text: str) -> None:
 
 
 async def speak_message(message, text: str) -> str | None:
+    if not chat_tts_command_enabled:
+        return "!tts is currently disabled from the /say control page"
     if message.guild is None:
         return "use !tts in the server"
     if not text:
