@@ -119,6 +119,10 @@ EXTERNAL_BARK_SOUNDS = {
         "label": "Jamal crazy idek",
         "path": Path(__file__).with_name("jamalcrazyidek.mp3"),
     },
+    "jamal-grape": {
+        "label": "Jamal 🍇",
+        "path": Path(__file__).with_name("jamalg.mp3"),
+    },
     "evan": {
         "label": "Evan crash",
         "path": Path(__file__).with_name("evan-crash.mp4"),
