@@ -108,6 +108,9 @@ PINGDEAF_RECEIVER_VIEW_TIMEOUT_SECONDS = 60
 PINGDEAF_DELETE_DELAY_SECONDS = 2 * 60
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
+RYAN_BIRTHDAY_IMAGE_BASE64_PATH = (
+    Path(__file__).with_name("assets") / "ryan-birthday.png.b64"
+)
 EXTERNAL_BARK_SOUNDS = {
     "wolf": {"label": "Wolf bark", "path": Path(__file__).with_name("wolf-bark.mp3")},
     "minecraft": {
@@ -3094,6 +3097,43 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
 @app_commands.guild_only()
 async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
     await handle_pingdeaf(interaction, user)
+
+
+async def handle_birthdayryan(interaction: discord.Interaction) -> None:
+    encoded_birthday_image = b"".join(
+        RYAN_BIRTHDAY_IMAGE_BASE64_PATH.read_bytes().split()
+    )
+    birthday_image_data = base64.b64decode(encoded_birthday_image, validate=True)
+    birthday_image = discord.File(
+        io.BytesIO(birthday_image_data), filename="ryan-birthday.png"
+    )
+    embed = discord.Embed(
+        title="🎉 HAPPY BIRTHDAY RYAN 🎉",
+        description=(
+            "**Roblox grinder.**\n"
+            "**Valorant demon.**\n"
+            "**Playboi Carti listener.**\n"
+            "**Surron enjoyer.**\n\n"
+            "Hope your day is full of wins, Robux, clean one taps, "
+            "and zero speed wobbles."
+        ),
+        color=0xFF2BD6,
+    )
+    embed.set_image(url="attachment://ryan-birthday.png")
+    embed.set_footer(text="PKLA Dog birthday delivery 🐶")
+
+    await interaction.response.send_message(
+        "Yo Ryan, PKLA Dog pulled up for your birthday 🎂",
+        embed=embed,
+        file=birthday_image,
+    )
+
+
+@command_tree.command(
+    name="birthdayryan", description="Send Ryan's birthday embed."
+)
+async def birthdayryan(interaction: discord.Interaction) -> None:
+    await handle_birthdayryan(interaction)
 
 
 async def delete_bot_dm_messages(

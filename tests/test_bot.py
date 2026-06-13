@@ -77,6 +77,57 @@ class DiscordIntentTests(unittest.TestCase):
         self.assertTrue(bot.intents.message_content)
 
 
+class BirthdayRyanCommandTests(unittest.IsolatedAsyncioTestCase):
+    def test_command_is_registered(self):
+        command = bot.command_tree.get_command("birthdayryan")
+
+        self.assertIsNotNone(command)
+        self.assertEqual(command.description, "Send Ryan's birthday embed.")
+        self.assertEqual(command.parameters, [])
+
+    async def test_sends_public_embed_with_local_image_attachment(self):
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(send_message=AsyncMock())
+        )
+
+        await bot.handle_birthdayryan(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        args = interaction.response.send_message.await_args.args
+        kwargs = interaction.response.send_message.await_args.kwargs
+        self.assertEqual(
+            args, ("Yo Ryan, PKLA Dog pulled up for your birthday 🎂",)
+        )
+        self.assertNotIn("ephemeral", kwargs)
+
+        embed = kwargs["embed"]
+        self.assertEqual(embed.title, "🎉 HAPPY BIRTHDAY RYAN 🎉")
+        self.assertIn("Roblox", embed.description)
+        self.assertIn("Valorant", embed.description)
+        self.assertIn("Playboi Carti", embed.description)
+        self.assertIn("Surron", embed.description)
+        self.assertEqual(embed.image.url, "attachment://ryan-birthday.png")
+        self.assertEqual(embed.footer.text, "PKLA Dog birthday delivery 🐶")
+
+        birthday_image = kwargs["file"]
+        try:
+            self.assertEqual(birthday_image.filename, "ryan-birthday.png")
+            self.assertEqual(birthday_image.fp.read(8), b"\x89PNG\r\n\x1a\n")
+        finally:
+            birthday_image.close()
+
+    def test_birthday_image_is_stored_as_text_base64(self):
+        encoded_image = bot.RYAN_BIRTHDAY_IMAGE_BASE64_PATH.read_text()
+
+        self.assertTrue(encoded_image.isascii())
+        self.assertFalse(Path("assets/ryan-birthday.png").exists())
+        self.assertTrue(
+            bot.base64.b64decode(encoded_image, validate=False).startswith(
+                b"\x89PNG\r\n\x1a\n"
+            )
+        )
+
+
 class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_pingdeaf_at.clear()
