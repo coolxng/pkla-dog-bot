@@ -74,6 +74,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | When enabled from `/say`, queues up to 500 characters to be read with the Onyx voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
+| `/birthdayryan` | Posts a public birthday message for Ryan with a rich embed and the bundled Base64-encoded birthday-card image. |
 | `/pingdeaf user:@member` | DMs a deafened voice member every two seconds until they undeafen. The sender sees a live count of reminder DMs sent, both people get a stop button, the sender is notified if the receiver stops the reminders, and the bot deletes its reminder DMs two minutes after the reminders stop. |
 
 The bot synchronizes `/pingdeaf` globally at startup and removes obsolete server-specific commands registered to the same Discord application. Discord controls the member picker's initial suggestions, so it may show only a few members before you type; enter part of a member's display name or username to search the rest of the server. **Server Members Intent** must be enabled in the Developer Portal and in the bot configuration above.
