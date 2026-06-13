@@ -128,6 +128,81 @@ class BirthdayRyanCommandTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class DiscordStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rate_limited_login_retries_with_bounded_backoff(self):
+        rate_limit_error = bot.discord.HTTPException(
+            Mock(status=429, reason="Too Many Requests"),
+            "temporarily rate limited",
+        )
+
+        with (
+            patch.object(
+                bot.client,
+                "start",
+                new=AsyncMock(side_effect=[rate_limit_error, rate_limit_error, None]),
+            ) as start,
+            patch.object(bot.client, "is_closed", return_value=False),
+            patch.object(bot.client, "close", new=AsyncMock()) as close,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            await bot.run_discord_client("test-token")
+
+        self.assertEqual(
+            start.await_args_list,
+            [call("test-token"), call("test-token"), call("test-token")],
+        )
+        self.assertEqual(
+            sleep.await_args_list,
+            [
+                call(bot.DISCORD_LOGIN_RETRY_INITIAL_SECONDS),
+                call(bot.DISCORD_LOGIN_RETRY_INITIAL_SECONDS * 2),
+            ],
+        )
+        close.assert_awaited_once_with()
+
+    async def test_non_rate_limit_login_failure_is_not_retried(self):
+        login_error = bot.discord.HTTPException(
+            Mock(status=401, reason="Unauthorized"),
+            "invalid token",
+        )
+
+        with (
+            patch.object(
+                bot.client, "start", new=AsyncMock(side_effect=login_error)
+            ) as start,
+            patch.object(bot.client, "is_closed", return_value=False),
+            patch.object(bot.client, "close", new=AsyncMock()) as close,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            with self.assertRaises(bot.discord.HTTPException):
+                await bot.run_discord_client("test-token")
+
+        start.assert_awaited_once_with("test-token")
+        sleep.assert_not_awaited()
+        close.assert_awaited_once_with()
+
+    async def test_login_retry_delay_stops_growing_at_cap(self):
+        rate_limit_error = bot.discord.HTTPException(
+            Mock(status=429, reason="Too Many Requests"),
+            "temporarily rate limited",
+        )
+        attempts = [rate_limit_error] * 6 + [None]
+
+        with (
+            patch.object(bot.client, "start", new=AsyncMock(side_effect=attempts)),
+            patch.object(bot.client, "is_closed", return_value=True),
+            patch.object(bot.client, "close", new=AsyncMock()) as close,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            await bot.run_discord_client("test-token")
+
+        self.assertEqual(
+            [args.args[0] for args in sleep.await_args_list],
+            [60, 120, 240, 480, 900, 900],
+        )
+        close.assert_not_awaited()
+
+
 class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_pingdeaf_at.clear()

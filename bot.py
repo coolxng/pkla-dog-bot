@@ -106,6 +106,8 @@ PINGDEAF_COOLDOWN_SECONDS = 60
 PINGDEAF_INTERVAL_SECONDS = 2
 PINGDEAF_RECEIVER_VIEW_TIMEOUT_SECONDS = 60
 PINGDEAF_DELETE_DELAY_SECONDS = 2 * 60
+DISCORD_LOGIN_RETRY_INITIAL_SECONDS = 60
+DISCORD_LOGIN_RETRY_MAX_SECONDS = 15 * 60
 BARK_JOIN_DELAY_SECONDS = 0.25
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 RYAN_BIRTHDAY_IMAGE_BASE64_PATH = (
@@ -3431,11 +3433,34 @@ async def on_message(message):
             await message.channel.send(error_reply(e))
 
 
+async def run_discord_client(token: str) -> None:
+    retry_delay = DISCORD_LOGIN_RETRY_INITIAL_SECONDS
+    try:
+        while True:
+            try:
+                await client.start(token)
+                return
+            except discord.HTTPException as error:
+                if error.status != 429:
+                    raise
+                print(
+                    "Discord login is temporarily rate limited. "
+                    f"Retrying in {retry_delay} seconds."
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(
+                    retry_delay * 2, DISCORD_LOGIN_RETRY_MAX_SECONDS
+                )
+    finally:
+        if not client.is_closed():
+            await client.close()
+
+
 def main():
     if env_bool("ENABLE_TRANSCRIPTION", False):
         print("ENABLE_TRANSCRIPTION is ignored because transcription support is removed")
     start_web_server()
-    client.run(os.environ["DISCORD_TOKEN"])
+    asyncio.run(run_discord_client(os.environ["DISCORD_TOKEN"]))
 
 
 if __name__ == "__main__":
