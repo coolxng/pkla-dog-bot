@@ -2663,7 +2663,7 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
             {"status": "Enter a valid numeric voice channel ID."},
         )
 
-    def test_say_page_uses_spacious_panel_layout_and_local_serif_display_font(self):
+    def test_say_page_uses_dark_discord_dashboard_styles(self):
         response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
@@ -2671,8 +2671,12 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertIn(b'class="panel message-panel"', response.data)
         self.assertIn(b'class="voice-tools"', response.data)
         self.assertIn(b"color-scheme: dark", response.data)
-        self.assertIn(b"--canvas: #11100f", response.data)
-        self.assertIn(b'--display-font: "Iowan Old Style"', response.data)
+        self.assertIn(b"--canvas: #0f0f0f", response.data)
+        self.assertIn(b"--surface: #1a1a1a", response.data)
+        self.assertIn(b"--accent: #5865f2", response.data)
+        self.assertIn(b"font-family: Inter, ui-sans-serif, system-ui", response.data)
+        self.assertNotIn(b"linear-gradient", response.data)
+        self.assertNotIn(b"box-shadow", response.data)
         self.assertNotIn(b"fonts.googleapis.com", response.data)
 
     def test_status_route_requires_numeric_channel_and_uses_discord_loop(self):
