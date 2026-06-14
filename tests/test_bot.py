@@ -1901,6 +1901,10 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'name="action" value="birthday_ryan"', response.data)
         self.assertIn(b"Send Ryan's birthday card", response.data)
         self.assertIn(str(bot.RYAN_BIRTHDAY_CHANNEL_ID).encode(), response.data)
+        self.assertGreater(
+            response.data.index(b"Ryan's birthday card"),
+            response.data.index(b"Upload audio"),
+        )
 
     def test_birthday_button_sends_to_configured_ryan_channel(self):
         with patch.object(bot, "submit_external_ryan_birthday") as submit_birthday:

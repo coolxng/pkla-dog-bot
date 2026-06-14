@@ -704,15 +704,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
       <button class="send-button" type="submit">Send to Discord</button>
     </form>
-    <form method="post" class="panel birthday-panel">
-      <input type="hidden" name="action" value="birthday_ryan">
-      <div class="panel-heading">
-        <p class="section-kicker">Birthday delivery</p>
-        <h2>Ryan's birthday card</h2>
-        <p class="voice-help">Send the birthday embed and poster to channel {{ birthday_channel_id }}.</p>
-      </div>
-      <button class="birthday-button" type="submit">Send Ryan's birthday card</button>
-    </form>
     <form method="post" class="panel voice-section" aria-labelledby="voice-heading">
       <div class="panel-heading">
         <p class="section-kicker">Voice channel</p>
@@ -835,6 +826,15 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         </section>
       </aside>
     </div>
+    <form method="post" class="panel birthday-panel">
+      <input type="hidden" name="action" value="birthday_ryan">
+      <div class="panel-heading">
+        <p class="section-kicker">Birthday delivery</p>
+        <h2>Ryan's birthday card</h2>
+        <p class="voice-help">Send the birthday embed and poster to channel {{ birthday_channel_id }}.</p>
+      </div>
+      <button class="birthday-button" type="submit">Send Ryan's birthday card</button>
+    </form>
   </main>
   <script>
     const controlTokenDialog = document.getElementById("control-token-dialog");
