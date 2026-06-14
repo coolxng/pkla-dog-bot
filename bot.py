@@ -575,9 +575,11 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .birthday-button { background: linear-gradient(135deg, #b72a98, #6b4bc3); box-shadow: 0 .65rem 1.4rem rgb(183 42 152 / 18%); }
     .voice-help, .ping-help { margin: .45rem 0 1rem; color: var(--muted); font-size: .9rem; }
     .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .65rem; margin-top: .8rem; }
+    .server-voice-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; margin-top: .65rem; }
     .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; margin-top: .8rem; }
     .join-button, .listen-button { background: var(--green); }
     .stop-button, .mute-button { background: var(--amber); }
+    .server-voice-button { background: var(--blue); }
     .leave-button, .listen-stop-button { background: var(--red); }
     .sound-button, .upload-button { background: var(--violet); }
     .speak-button { background: var(--blue); }
@@ -661,7 +663,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     }
     @media (max-width: 32rem) {
       .panel { padding: 1.1rem; border-radius: 1rem; }
-      .voice-actions, .sound-actions, .listen-actions { grid-template-columns: 1fr; }
+      .voice-actions, .server-voice-actions, .sound-actions, .listen-actions { grid-template-columns: 1fr; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
@@ -717,6 +719,10 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="join-button" type="submit" name="action" value="join">Join call</button>
         <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
+      </div>
+      <div class="server-voice-actions">
+        <button class="server-voice-button" type="submit" name="action" value="server_mute">Server Mute</button>
+        <button class="server-voice-button" type="submit" name="action" value="server_deafen">Server Deafen</button>
       </div>
       <section class="listen-panel" aria-labelledby="listen-heading">
         <h3 id="listen-heading">Listen in browser</h3>
@@ -1283,7 +1289,14 @@ def external_audio_stream(channel_id: int):
 
 
 def submit_external_voice_action(action: str, channel_id: int, sound_id: str | None = None) -> str:
-    if action not in {"join", "stop", "leave", "play_sound"}:
+    if action not in {
+        "join",
+        "stop",
+        "leave",
+        "play_sound",
+        "server_mute",
+        "server_deafen",
+    }:
         raise ValueError("Unknown voice action")
     if action == "play_sound" and sound_id not in EXTERNAL_BARK_SOUNDS:
         raise ValueError("Unknown bark sound")
@@ -1426,6 +1439,8 @@ def external_say():
             "stop",
             "leave",
             "play_sound",
+            "server_mute",
+            "server_deafen",
             "speak",
             "upload_audio",
         }:
@@ -2869,6 +2884,24 @@ async def control_external_voice(
         stop_playing()
         set_voice_idle(voice_channel.guild, voice_channel)
         return f"stopped audio in {voice_channel.mention}"
+    if action in {"server_mute", "server_deafen"}:
+        voice_client = voice_channel.guild.voice_client
+        if not voice_client or not voice_client.is_connected():
+            raise RuntimeError("Join the selected voice call before changing voice state")
+        if getattr(voice_client, "channel", None) != voice_channel:
+            raise RuntimeError("The bot is connected to a different voice channel")
+
+        bot_member = voice_channel.guild.me
+        voice_state = getattr(bot_member, "voice", None)
+        if voice_state is None:
+            raise RuntimeError("The bot's Discord voice state is unavailable")
+
+        state_attribute = "mute" if action == "server_mute" else "deaf"
+        edit_attribute = "mute" if action == "server_mute" else "deafen"
+        enabled = not getattr(voice_state, state_attribute)
+        await bot_member.edit(**{edit_attribute: enabled})
+        label = "mute" if action == "server_mute" else "deafen"
+        return f"server {label} {'enabled' if enabled else 'disabled'}"
 
     sound = EXTERNAL_BARK_SOUNDS.get(sound_id)
     if sound is None:
