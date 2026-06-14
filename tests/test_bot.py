@@ -127,6 +127,25 @@ class BirthdayRyanCommandTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    async def test_external_birthday_send_uses_requested_channel_payload(self):
+        channel = SimpleNamespace(send=AsyncMock())
+
+        with patch.object(bot.client, "get_channel", return_value=channel) as get_channel:
+            await bot.send_external_ryan_birthday(bot.RYAN_BIRTHDAY_CHANNEL_ID)
+
+        get_channel.assert_called_once_with(1491165529837277355)
+        channel.send.assert_awaited_once()
+        args = channel.send.await_args.args
+        kwargs = channel.send.await_args.kwargs
+        self.assertEqual(
+            args, ("Yo Ryan, PKLA Dog pulled up for your birthday 🎂",)
+        )
+        self.assertEqual(kwargs["embed"].image.url, "attachment://ryan-birthday.png")
+        try:
+            self.assertEqual(kwargs["file"].filename, "ryan-birthday.png")
+        finally:
+            kwargs["file"].close()
+
 
 class DiscordStartupTests(unittest.IsolatedAsyncioTestCase):
     async def test_rate_limited_login_retries_with_bounded_backoff(self):
@@ -1873,6 +1892,41 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'value="alloy"', response.data)
         self.assertIn(b'name="action" value="speak"', response.data)
         self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
+
+    def test_page_has_ryan_birthday_button_with_target_channel(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Ryan's birthday card", response.data)
+        self.assertIn(b'name="action" value="birthday_ryan"', response.data)
+        self.assertIn(b"Send Ryan's birthday card", response.data)
+        self.assertIn(str(bot.RYAN_BIRTHDAY_CHANNEL_ID).encode(), response.data)
+
+    def test_birthday_button_sends_to_configured_ryan_channel(self):
+        with patch.object(bot, "submit_external_ryan_birthday") as submit_birthday:
+            response = self.client.post(
+                "/say",
+                data={"action": "birthday_ryan"},
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn(
+            "status=Ryan's+birthday+card+sent",
+            response.headers["Location"],
+        )
+        submit_birthday.assert_called_once_with()
+
+    def test_birthday_button_fetch_returns_success_status(self):
+        with patch.object(bot, "submit_external_ryan_birthday") as submit_birthday:
+            response = self.client.post(
+                "/say",
+                data={"action": "birthday_ryan"},
+                headers={"X-Requested-With": "fetch"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "Ryan's birthday card sent."})
+        submit_birthday.assert_called_once_with()
 
     def test_voice_channel_default_can_be_overridden(self):
         with patch.dict(bot.os.environ, {"EXTERNAL_VOICE_CHANNEL_ID": "123456789"}):

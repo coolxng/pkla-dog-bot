@@ -99,6 +99,7 @@ CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
 DEFAULT_OWNER_ID = 575057023046123520
+RYAN_BIRTHDAY_CHANNEL_ID = 1491165529837277355
 COOLDOWN_SECONDS = 2
 BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
@@ -568,8 +569,9 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .panel-heading { margin-bottom: 1.4rem; }
     .section-kicker { margin: 0 0 .35rem; color: var(--accent-dark); font-size: .75rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
     label { display: block; margin: 1rem 0 .4rem; font-size: .88rem; font-weight: 750; }
-    .send-button, .upload-button, .speak-button { width: 100%; margin-top: 1rem; }
+    .send-button, .birthday-button, .upload-button, .speak-button { width: 100%; margin-top: 1rem; }
     .send-button { background: var(--accent); box-shadow: 0 .65rem 1.4rem rgb(220 116 77 / 18%); }
+    .birthday-button { background: linear-gradient(135deg, #b72a98, #6b4bc3); box-shadow: 0 .65rem 1.4rem rgb(183 42 152 / 18%); }
     .voice-help, .ping-help { margin: .45rem 0 1rem; color: var(--muted); font-size: .9rem; }
     .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .65rem; margin-top: .8rem; }
     .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; margin-top: .8rem; }
@@ -701,6 +703,15 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
       <button class="send-button" type="submit">Send to Discord</button>
+    </form>
+    <form method="post" class="panel birthday-panel">
+      <input type="hidden" name="action" value="birthday_ryan">
+      <div class="panel-heading">
+        <p class="section-kicker">Birthday delivery</p>
+        <h2>Ryan's birthday card</h2>
+        <p class="voice-help">Send the birthday embed and poster to channel {{ birthday_channel_id }}.</p>
+      </div>
+      <button class="birthday-button" type="submit">Send Ryan's birthday card</button>
     </form>
     <form method="post" class="panel voice-section" aria-labelledby="voice-heading">
       <div class="panel-heading">
@@ -1199,6 +1210,14 @@ async def send_external_message(channel_id: int, message: str) -> None:
     await channel.send(message)
 
 
+async def send_external_ryan_birthday(channel_id: int) -> None:
+    channel = client.get_channel(channel_id)
+    if channel is None:
+        raise RuntimeError("Ryan's birthday Discord channel is unavailable")
+    content, embed, birthday_image = create_ryan_birthday_message()
+    await channel.send(content, embed=embed, file=birthday_image)
+
+
 def submit_external_message(message: str) -> None:
     channel_id = external_channel_id()
     if channel_id is None or channel_id not in TARGET_CHANNEL_IDS:
@@ -1206,6 +1225,13 @@ def submit_external_message(message: str) -> None:
     run_discord_coroutine(
         send_external_message(channel_id, message),
         "Discord took too long to accept the message",
+    )
+
+
+def submit_external_ryan_birthday() -> None:
+    run_discord_coroutine(
+        send_external_ryan_birthday(RYAN_BIRTHDAY_CHANNEL_ID),
+        "Discord took too long to accept Ryan's birthday card",
     )
 
 
@@ -1382,7 +1408,19 @@ def external_say():
                     api_calls_enabled=ai_api_calls_enabled,
                 )
             return redirect(url_for("external_say", status=status), code=303)
-        if action in {
+        if action == "birthday_ryan":
+            try:
+                submit_external_ryan_birthday()
+                status = "Ryan's birthday card sent."
+                if fetch_request:
+                    return jsonify(status=status)
+                return redirect(url_for("external_say", status=status), code=303)
+            except Exception as send_error:
+                print(f"External birthday send error: {send_error}")
+                status = str(send_error)
+                error = True
+                response_status = 503
+        elif action in {
             "join",
             "stop",
             "leave",
@@ -1467,6 +1505,7 @@ def external_say():
         ping_members=external_ping_members(),
         bark_sounds=EXTERNAL_BARK_SOUNDS,
         voice_channel_id=external_voice_channel_id(),
+        birthday_channel_id=RYAN_BIRTHDAY_CHANNEL_ID,
         tts_text_limit=TTS_TEXT_LIMIT,
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
         tts_voices=OPENAI_TTS_VOICES,
@@ -3101,7 +3140,7 @@ async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> No
     await handle_pingdeaf(interaction, user)
 
 
-async def handle_birthdayryan(interaction: discord.Interaction) -> None:
+def create_ryan_birthday_message() -> tuple[str, discord.Embed, discord.File]:
     encoded_birthday_image = b"".join(
         RYAN_BIRTHDAY_IMAGE_BASE64_PATH.read_bytes().split()
     )
@@ -3124,8 +3163,17 @@ async def handle_birthdayryan(interaction: discord.Interaction) -> None:
     embed.set_image(url="attachment://ryan-birthday.png")
     embed.set_footer(text="PKLA Dog birthday delivery 🐶")
 
-    await interaction.response.send_message(
+    return (
         "Yo Ryan, PKLA Dog pulled up for your birthday 🎂",
+        embed,
+        birthday_image,
+    )
+
+
+async def handle_birthdayryan(interaction: discord.Interaction) -> None:
+    content, embed, birthday_image = create_ryan_birthday_message()
+    await interaction.response.send_message(
+        content,
         embed=embed,
         file=birthday_image,
     )
