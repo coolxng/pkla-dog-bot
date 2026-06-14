@@ -1827,6 +1827,10 @@ class GroqConfigTests(unittest.TestCase):
         self.assertIn("usually reply with one short sentence", bot.SYSTEM_PROMPT)
         self.assertIn("not as a template for your wording", bot.SYSTEM_PROMPT)
 
+    def test_system_prompt_requests_rude_profane_style_with_safety_limits(self):
+        self.assertIn("rude, sarcastic, and casually profane", bot.SYSTEM_PROMPT)
+        self.assertIn("never use slurs, threats, or insults based on protected traits", bot.SYSTEM_PROMPT)
+
     def test_system_prompt_avoids_repetitive_meme_post_style(self):
         self.assertIn("Do not write like a meme account or a viral post", bot.SYSTEM_PROMPT)
         self.assertIn("Do not merely echo the user's words and add a scripted punchline", bot.SYSTEM_PROMPT)
