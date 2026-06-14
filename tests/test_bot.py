@@ -77,6 +77,151 @@ class DiscordIntentTests(unittest.TestCase):
         self.assertTrue(bot.intents.message_content)
 
 
+class BirthdayRyanCommandTests(unittest.IsolatedAsyncioTestCase):
+    def test_command_is_registered(self):
+        command = bot.command_tree.get_command("birthdayryan")
+
+        self.assertIsNotNone(command)
+        self.assertEqual(command.description, "Send Ryan's birthday embed.")
+        self.assertEqual(command.parameters, [])
+
+    async def test_sends_public_embed_with_local_image_attachment(self):
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(send_message=AsyncMock())
+        )
+
+        await bot.handle_birthdayryan(interaction)
+
+        interaction.response.send_message.assert_awaited_once()
+        args = interaction.response.send_message.await_args.args
+        kwargs = interaction.response.send_message.await_args.kwargs
+        self.assertEqual(
+            args, ("Yo Ryan, PKLA Dog pulled up for your birthday 🎂",)
+        )
+        self.assertNotIn("ephemeral", kwargs)
+
+        embed = kwargs["embed"]
+        self.assertEqual(embed.title, "🎉 HAPPY BIRTHDAY RYAN 🎉")
+        self.assertIn("Roblox", embed.description)
+        self.assertIn("Valorant", embed.description)
+        self.assertIn("Playboi Carti", embed.description)
+        self.assertIn("Surron", embed.description)
+        self.assertEqual(embed.image.url, "attachment://ryan-birthday.png")
+        self.assertEqual(embed.footer.text, "PKLA Dog birthday delivery 🐶")
+
+        birthday_image = kwargs["file"]
+        try:
+            self.assertEqual(birthday_image.filename, "ryan-birthday.png")
+            self.assertEqual(birthday_image.fp.read(8), b"\x89PNG\r\n\x1a\n")
+        finally:
+            birthday_image.close()
+
+    def test_birthday_image_is_stored_as_text_base64(self):
+        encoded_image = bot.RYAN_BIRTHDAY_IMAGE_BASE64_PATH.read_text()
+
+        self.assertTrue(encoded_image.isascii())
+        self.assertFalse(Path("assets/ryan-birthday.png").exists())
+        self.assertTrue(
+            bot.base64.b64decode(encoded_image, validate=False).startswith(
+                b"\x89PNG\r\n\x1a\n"
+            )
+        )
+
+    async def test_external_birthday_send_uses_requested_channel_payload(self):
+        channel = SimpleNamespace(send=AsyncMock())
+
+        with patch.object(bot.client, "get_channel", return_value=channel) as get_channel:
+            await bot.send_external_ryan_birthday(bot.RYAN_BIRTHDAY_CHANNEL_ID)
+
+        get_channel.assert_called_once_with(1491165529837277355)
+        channel.send.assert_awaited_once()
+        args = channel.send.await_args.args
+        kwargs = channel.send.await_args.kwargs
+        self.assertEqual(
+            args, ("Yo Ryan, PKLA Dog pulled up for your birthday 🎂",)
+        )
+        self.assertEqual(kwargs["embed"].image.url, "attachment://ryan-birthday.png")
+        try:
+            self.assertEqual(kwargs["file"].filename, "ryan-birthday.png")
+        finally:
+            kwargs["file"].close()
+
+
+class DiscordStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rate_limited_login_retries_with_bounded_backoff(self):
+        rate_limit_error = bot.discord.HTTPException(
+            Mock(status=429, reason="Too Many Requests"),
+            "temporarily rate limited",
+        )
+
+        with (
+            patch.object(
+                bot.client,
+                "start",
+                new=AsyncMock(side_effect=[rate_limit_error, rate_limit_error, None]),
+            ) as start,
+            patch.object(bot.client, "is_closed", return_value=False),
+            patch.object(bot.client, "close", new=AsyncMock()) as close,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            await bot.run_discord_client("test-token")
+
+        self.assertEqual(
+            start.await_args_list,
+            [call("test-token"), call("test-token"), call("test-token")],
+        )
+        self.assertEqual(
+            sleep.await_args_list,
+            [
+                call(bot.DISCORD_LOGIN_RETRY_INITIAL_SECONDS),
+                call(bot.DISCORD_LOGIN_RETRY_INITIAL_SECONDS * 2),
+            ],
+        )
+        close.assert_awaited_once_with()
+
+    async def test_non_rate_limit_login_failure_is_not_retried(self):
+        login_error = bot.discord.HTTPException(
+            Mock(status=401, reason="Unauthorized"),
+            "invalid token",
+        )
+
+        with (
+            patch.object(
+                bot.client, "start", new=AsyncMock(side_effect=login_error)
+            ) as start,
+            patch.object(bot.client, "is_closed", return_value=False),
+            patch.object(bot.client, "close", new=AsyncMock()) as close,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            with self.assertRaises(bot.discord.HTTPException):
+                await bot.run_discord_client("test-token")
+
+        start.assert_awaited_once_with("test-token")
+        sleep.assert_not_awaited()
+        close.assert_awaited_once_with()
+
+    async def test_login_retry_delay_stops_growing_at_cap(self):
+        rate_limit_error = bot.discord.HTTPException(
+            Mock(status=429, reason="Too Many Requests"),
+            "temporarily rate limited",
+        )
+        attempts = [rate_limit_error] * 6 + [None]
+
+        with (
+            patch.object(bot.client, "start", new=AsyncMock(side_effect=attempts)),
+            patch.object(bot.client, "is_closed", return_value=True),
+            patch.object(bot.client, "close", new=AsyncMock()) as close,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+        ):
+            await bot.run_discord_client("test-token")
+
+        self.assertEqual(
+            [args.args[0] for args in sleep.await_args_list],
+            [60, 120, 240, 480, 900, 900],
+        )
+        close.assert_not_awaited()
+
+
 class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_pingdeaf_at.clear()
@@ -1747,6 +1892,41 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'value="alloy"', response.data)
         self.assertIn(b'name="action" value="speak"', response.data)
         self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
+
+    def test_page_has_ryan_birthday_button_with_target_channel(self):
+        response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Ryan's birthday card", response.data)
+        self.assertIn(b'name="action" value="birthday_ryan"', response.data)
+        self.assertIn(b"Send Ryan's birthday card", response.data)
+        self.assertIn(str(bot.RYAN_BIRTHDAY_CHANNEL_ID).encode(), response.data)
+
+    def test_birthday_button_sends_to_configured_ryan_channel(self):
+        with patch.object(bot, "submit_external_ryan_birthday") as submit_birthday:
+            response = self.client.post(
+                "/say",
+                data={"action": "birthday_ryan"},
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertIn(
+            "status=Ryan's+birthday+card+sent",
+            response.headers["Location"],
+        )
+        submit_birthday.assert_called_once_with()
+
+    def test_birthday_button_fetch_returns_success_status(self):
+        with patch.object(bot, "submit_external_ryan_birthday") as submit_birthday:
+            response = self.client.post(
+                "/say",
+                data={"action": "birthday_ryan"},
+                headers={"X-Requested-With": "fetch"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "Ryan's birthday card sent."})
+        submit_birthday.assert_called_once_with()
 
     def test_voice_channel_default_can_be_overridden(self):
         with patch.dict(bot.os.environ, {"EXTERNAL_VOICE_CHANNEL_ID": "123456789"}):
