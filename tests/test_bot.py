@@ -1237,6 +1237,50 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         voice_client.stop.assert_not_called()
 
+    async def test_external_server_mute_toggles_bot_member_voice_state(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(channel=channel, is_connected=lambda: True)
+        bot_member = SimpleNamespace(
+            voice=SimpleNamespace(mute=False),
+            edit=AsyncMock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client, me=bot_member)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_voice(
+                "server_mute", 1447148315312521256
+            )
+
+        self.assertEqual(response, "server mute enabled")
+        bot_member.edit.assert_awaited_once_with(mute=True)
+
+    async def test_external_server_deafen_toggles_bot_member_voice_state(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        voice_client = SimpleNamespace(channel=channel, is_connected=lambda: True)
+        bot_member = SimpleNamespace(
+            voice=SimpleNamespace(deaf=True),
+            edit=AsyncMock(),
+        )
+        channel.guild = SimpleNamespace(voice_client=voice_client, me=bot_member)
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_voice(
+                "server_deafen", 1447148315312521256
+            )
+
+        self.assertEqual(response, "server deafen disabled")
+        bot_member.edit.assert_awaited_once_with(deafen=False)
+
     async def test_external_sound_plays_selected_audio(self):
         class FakeVoiceChannel:
             pass
@@ -1869,6 +1913,10 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'name="action" value="stop"', response.data)
         self.assertIn(b"Stop audio", response.data)
         self.assertIn(b'name="action" value="leave"', response.data)
+        self.assertIn(b'name="action" value="server_mute">Server Mute', response.data)
+        self.assertIn(
+            b'name="action" value="server_deafen">Server Deafen', response.data
+        )
         self.assertIn(
             b'value="1447148315312521256"',
             response.data,
@@ -2082,6 +2130,40 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=stopped+audio+in+%23General", response.headers["Location"])
         submit_voice.assert_called_once_with("stop", 1447148315312521256)
+
+    def test_server_mute_form_uses_selected_channel(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="server mute enabled",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "server_mute",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        submit_voice.assert_called_once_with("server_mute", 1447148315312521256)
+
+    def test_server_deafen_form_uses_selected_channel(self):
+        with patch.object(
+            bot,
+            "submit_external_voice_action",
+            return_value="server deafen enabled",
+        ) as submit_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "server_deafen",
+                    "voice_channel_id": "1447148315312521256",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        submit_voice.assert_called_once_with("server_deafen", 1447148315312521256)
 
     def test_sound_button_plays_selected_sound(self):
         with patch.object(
