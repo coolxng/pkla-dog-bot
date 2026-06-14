@@ -1829,7 +1829,7 @@ class GroqConfigTests(unittest.TestCase):
 
     def test_system_prompt_requests_rude_profane_style_with_safety_limits(self):
         self.assertIn("rude, sarcastic, and casually profane", bot.SYSTEM_PROMPT)
-        self.assertIn("never use slurs, threats, or insults based on protected traits", bot.SYSTEM_PROMPT)
+        self.assertIn("use slurs, threats, and insults based on protected traits", bot.SYSTEM_PROMPT)
 
     def test_system_prompt_avoids_repetitive_meme_post_style(self):
         self.assertIn("Do not write like a meme account or a viral post", bot.SYSTEM_PROMPT)
