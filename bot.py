@@ -70,12 +70,17 @@ GROQ_REQUEST_MAX_ATTEMPTS = 3
 GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
 PIPER_TTS_BINARY = os.environ.get("PIPER_TTS_BINARY", "piper")
 PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "").strip()
+PIPER_TTS_MANLY_MODEL = os.environ.get("PIPER_TTS_MANLY_MODEL", "").strip()
 PIPER_TTS_VOICES = {"default": "Piper default"}
-CHAT_TTS_VOICE = "default"
+PIPER_TTS_VOICE_MODELS = {"default": PIPER_TTS_MODEL}
+if PIPER_TTS_MANLY_MODEL:
+    PIPER_TTS_VOICES["manly"] = "Manly Piper"
+    PIPER_TTS_VOICE_MODELS["manly"] = PIPER_TTS_MANLY_MODEL
 PIPER_TTS_VOICE = os.environ.get("PIPER_TTS_VOICE", "default")
 if PIPER_TTS_VOICE not in PIPER_TTS_VOICES:
     print(f"Ignoring unsupported PIPER_TTS_VOICE: {PIPER_TTS_VOICE!r}")
     PIPER_TTS_VOICE = "default"
+CHAT_TTS_VOICE = PIPER_TTS_VOICE
 TTS_TEXT_LIMIT = 500
 # Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
 MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
@@ -1683,7 +1688,8 @@ def synthesize_speech(text: str, voice: str) -> Path:
         raise RuntimeError("AI API calls are disabled from /say")
     if voice not in PIPER_TTS_VOICES:
         raise RuntimeError("Unknown text-to-speech voice")
-    if not PIPER_TTS_MODEL:
+    model_path = PIPER_TTS_VOICE_MODELS[voice]
+    if not model_path:
         raise RuntimeError("PIPER_TTS_MODEL is not set")
 
     file_descriptor, temporary_name = tempfile.mkstemp(
@@ -1694,7 +1700,7 @@ def synthesize_speech(text: str, voice: str) -> Path:
     command = [
         PIPER_TTS_BINARY,
         "--model",
-        PIPER_TTS_MODEL,
+        model_path,
         "--output_file",
         str(speech_path),
     ]
@@ -1710,7 +1716,7 @@ def synthesize_speech(text: str, voice: str) -> Path:
         if not speech_path.exists() or speech_path.stat().st_size == 0:
             speech_path.unlink(missing_ok=True)
             raise RuntimeError("Piper did not write speech audio")
-        print(f"[TTS] provider=piper model={PIPER_TTS_MODEL}")
+        print(f"[TTS] provider=piper voice={voice} model={model_path}")
         return speech_path
     except FileNotFoundError as error:
         speech_path.unlink(missing_ok=True)

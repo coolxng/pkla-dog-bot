@@ -1619,6 +1619,38 @@ class TextToSpeechTests(unittest.TestCase):
             self.assertEqual(speech_path.read_bytes(), b"wav-data")
             speech_path.unlink()
 
+    def test_piper_manly_voice_uses_configured_voice_model(self):
+        def write_audio(command, **_kwargs):
+            Path(command[-1]).write_bytes(b"wav-data")
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(bot.tempfile, "tempdir", directory),
+            patch.object(bot, "PIPER_TTS_BINARY", "piper-bin"),
+            patch.object(
+                bot,
+                "PIPER_TTS_VOICE_MODELS",
+                {"default": "/models/default.onnx", "manly": "/models/low.onnx"},
+            ),
+            patch.object(
+                bot,
+                "PIPER_TTS_VOICES",
+                {"default": "Piper default", "manly": "Manly Piper"},
+            ),
+            patch.object(bot.subprocess, "run", side_effect=write_audio) as run,
+        ):
+            speech_path = bot.synthesize_speech("hello", "manly")
+
+            run.assert_called_once_with(
+                ["piper-bin", "--model", "/models/low.onnx", "--output_file", str(speech_path)],
+                input="hello",
+                text=True,
+                capture_output=True,
+                check=True,
+                timeout=30,
+            )
+            speech_path.unlink()
+
     def test_piper_errors_do_not_leave_temporary_files(self):
         error = bot.subprocess.CalledProcessError(
             1, ["piper"], stderr="failed"
@@ -1935,6 +1967,21 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'value="default"', response.data)
         self.assertIn(b'name="action" value="speak"', response.data)
         self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
+
+    def test_page_can_show_manly_piper_voice(self):
+        with (
+            patch.object(
+                bot,
+                "PIPER_TTS_VOICES",
+                {"default": "Piper default", "manly": "Manly Piper"},
+            ),
+            patch.object(bot, "PIPER_TTS_VOICE", "manly"),
+        ):
+            response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'value="manly" selected', response.data)
+        self.assertIn(b"Manly Piper", response.data)
 
     def test_page_has_ryan_birthday_button_with_target_channel(self):
         response = self.client.get("/say")
