@@ -1349,7 +1349,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
             patch.object(
                 bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
             ) as to_thread,
@@ -1368,7 +1367,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             label='TTS: “hello”',
             delete_after=True,
         )
-        self.assertEqual(bot.last_tts_at[456], 100.0)
+        self.assertNotIn(456, bot.last_tts_at)
 
     async def test_external_speech_failure_does_not_start_cooldown(self):
         class FakeVoiceChannel:
@@ -1382,7 +1381,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
             patch.object(
                 bot.asyncio,
                 "to_thread",
@@ -1408,7 +1406,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
             patch.object(
                 bot.asyncio,
                 "to_thread",
@@ -1422,7 +1419,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(456, bot.last_tts_at)
 
-    async def test_external_speech_failure_preserves_newer_cooldown(self):
+    async def test_external_speech_allows_repeat_requests_without_cooldown(self):
         class FakeVoiceChannel:
             pass
 
@@ -1430,47 +1427,24 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             is_connected=lambda: True, is_playing=lambda: False
         )
         channel = FakeVoiceChannel()
+        channel.mention = "#General"
         channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
-
-        async def fail_after_newer_request(*args):
-            bot.last_tts_at[456] = 200.0
-            raise RuntimeError("speech failed")
-
-        with (
-            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
-            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
-            patch.object(bot.asyncio, "to_thread", side_effect=fail_after_newer_request),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "speech failed"):
-                await bot.control_external_speech(
-                    1447148315312521256, "hello", "en_GB-alan-medium"
-                )
-
-        self.assertEqual(bot.last_tts_at[456], 200.0)
-
-    async def test_external_speech_enforces_server_cooldown_before_synthesis(self):
-        class FakeVoiceChannel:
-            pass
-
-        voice_client = SimpleNamespace(
-            is_connected=lambda: True, is_playing=lambda: False
-        )
-        channel = FakeVoiceChannel()
-        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        speech_path = Path("generated-speech.mp3")
         bot.last_tts_at[456] = 100.0
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=110.0),
-            patch.object(bot.asyncio, "to_thread", new=AsyncMock()) as to_thread,
+            patch.object(
+                bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
+            ) as to_thread,
+            patch.object(bot, "play_audio", return_value=True),
         ):
-            with self.assertRaisesRegex(RuntimeError, "cooldown"):
-                await bot.control_external_speech(
-                    1447148315312521256, "hello", "en_GB-alan-medium"
-                )
+            await bot.control_external_speech(
+                1447148315312521256, "hello", "en_GB-alan-medium"
+            )
 
-        to_thread.assert_not_awaited()
+        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "en_GB-alan-medium")
+        self.assertEqual(bot.last_tts_at[456], 100.0)
 
     async def test_external_speech_rejects_busy_playback_before_synthesis(self):
         class FakeVoiceChannel:

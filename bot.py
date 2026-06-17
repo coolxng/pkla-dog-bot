@@ -96,7 +96,6 @@ MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_AUDIO_BYTES + (1024 * 1024)
 EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
 EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
-TTS_COOLDOWN_SECONDS = 30
 chat_tts_command_enabled = True
 ai_api_calls_enabled = True
 CENTRAL_TIME = ZoneInfo("America/Chicago")
@@ -2740,40 +2739,15 @@ async def speak_in_guild(
     if voice_client.is_playing():
         raise RuntimeError("Another sound is already playing")
 
-    now = time.monotonic()
-    last_speech = last_tts_at.get(guild.id)
-    if last_speech is not None:
-        remaining = TTS_COOLDOWN_SECONDS - (now - last_speech)
-        if remaining > 0:
-            raise RuntimeError(
-                f"Text-to-speech cooldown — wait {math.ceil(remaining)} seconds"
-            )
-    last_tts_at[guild.id] = now
-
-    def restore_previous_cooldown() -> None:
-        if last_tts_at.get(guild.id) != now:
-            return
-        if last_speech is None:
-            last_tts_at.pop(guild.id, None)
-        else:
-            last_tts_at[guild.id] = last_speech
-
-    try:
-        speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
-        if not play_audio(
-            voice_client,
-            speech_path,
-            activity_type="tts",
-            label=shortened_tts_label(text),
-            delete_after=True,
-        ):
-            raise RuntimeError("Another sound is already playing")
-    except asyncio.CancelledError:
-        restore_previous_cooldown()
-        raise
-    except Exception:
-        restore_previous_cooldown()
-        raise
+    speech_path = await asyncio.to_thread(synthesize_speech, text, voice)
+    if not play_audio(
+        voice_client,
+        speech_path,
+        activity_type="tts",
+        label=shortened_tts_label(text),
+        delete_after=True,
+    ):
+        raise RuntimeError("Another sound is already playing")
 
 
 async def play_chat_tts(guild, text: str) -> None:
