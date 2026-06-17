@@ -1941,6 +1941,21 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'name="action" value="speak"', response.data)
         self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
 
+    def test_page_can_show_manly_piper_voice(self):
+        with (
+            patch.object(
+                bot,
+                "PIPER_TTS_VOICES",
+                {"default": "Piper default", "manly": "Manly Piper"},
+            ),
+            patch.object(bot, "PIPER_TTS_VOICE", "manly"),
+        ):
+            response = self.client.get("/say")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'value="manly" selected', response.data)
+        self.assertIn(b"Manly Piper", response.data)
+
     def test_page_has_ryan_birthday_button_with_target_channel(self):
         response = self.client.get("/say")
 
