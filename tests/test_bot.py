@@ -1064,7 +1064,7 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             self.assertFalse(playback.done())
             to_thread.assert_awaited_once_with(
-                bot.synthesize_speech, "hello", "fish-s2"
+                bot.synthesize_speech, "hello", "onyx"
             )
 
             callbacks[0](None)
@@ -1332,7 +1332,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "fish-s2"
+                    1447148315312521256, "hello", "onyx"
                 )
 
     async def test_external_speech_synthesizes_off_loop_and_plays_temporary_audio(self):
@@ -1355,11 +1355,11 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "play_audio", return_value=True) as play_audio,
         ):
             response = await bot.control_external_speech(
-                1447148315312521256, "hello", "fish-s2"
+                1447148315312521256, "hello", "onyx"
             )
 
         self.assertEqual(response, "speaking in #General")
-        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "fish-s2")
+        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "onyx")
         play_audio.assert_called_once_with(
             voice_client,
             speech_path,
@@ -1389,7 +1389,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "speech failed"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "fish-s2"
+                    1447148315312521256, "hello", "onyx"
                 )
 
         self.assertNotIn(456, bot.last_tts_at)
@@ -1414,7 +1414,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "fish-s2"
+                    1447148315312521256, "hello", "onyx"
                 )
 
         self.assertNotIn(456, bot.last_tts_at)
@@ -1440,10 +1440,10 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "play_audio", return_value=True),
         ):
             await bot.control_external_speech(
-                1447148315312521256, "hello", "fish-s2"
+                1447148315312521256, "hello", "onyx"
             )
 
-        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "fish-s2")
+        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "onyx")
         self.assertEqual(bot.last_tts_at[456], 100.0)
 
     async def test_external_speech_rejects_busy_playback_before_synthesis(self):
@@ -1462,7 +1462,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "already playing"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "fish-s2"
+                    1447148315312521256, "hello", "onyx"
                 )
 
         to_thread.assert_not_awaited()
@@ -1559,17 +1559,17 @@ class ConversationHistoryTests(unittest.TestCase):
 
 
 class TextToSpeechTests(unittest.TestCase):
-    def test_disabled_api_calls_block_tts_before_fish_request(self):
+    def test_disabled_api_calls_block_tts_before_openai_request(self):
         with (
             patch.object(bot, "ai_api_calls_enabled", False),
             patch.object(bot, "urlopen") as urlopen,
         ):
             with self.assertRaisesRegex(RuntimeError, "API calls are disabled"):
-                bot.synthesize_speech("hello", "fish-s2")
+                bot.synthesize_speech("hello", "onyx")
 
         urlopen.assert_not_called()
 
-    def test_fish_request_contains_configured_speech_values(self):
+    def test_openai_request_contains_configured_speech_values(self):
         class FakeResponse:
             def __enter__(self):
                 return io.BytesIO(b"mp3-data")
@@ -1580,97 +1580,40 @@ class TextToSpeechTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.object(bot.tempfile, "tempdir", directory),
-            patch.dict(bot.os.environ, {"FISH_API_KEY": "fish-secret"}),
-            patch.object(bot, "FISH_TTS_API_URL", "https://fish.test/v1/tts"),
-            patch.object(bot, "FISH_TTS_MODEL", "s2-pro"),
-            patch.object(bot, "FISH_TTS_REFERENCE_ID", "voice-123"),
+            patch.dict(bot.os.environ, {"OPENAI_API_KEY": "openai-secret"}),
+            patch.object(bot, "OPENAI_TTS_API_URL", "https://openai.test/v1/audio/speech"),
+            patch.object(bot, "OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
             patch.object(bot, "urlopen", return_value=FakeResponse()) as urlopen,
         ):
-            speech_path = bot.synthesize_speech("hello", "fish-s2")
+            speech_path = bot.synthesize_speech("hello", "onyx")
 
             request = urlopen.call_args.args[0]
-            self.assertEqual(request.full_url, "https://fish.test/v1/tts")
-            self.assertEqual(request.headers["Authorization"], "Bearer fish-secret")
-            self.assertEqual(request.headers["Model"], "s2-pro")
+            self.assertEqual(request.full_url, "https://openai.test/v1/audio/speech")
+            self.assertEqual(request.headers["Authorization"], "Bearer openai-secret")
+            self.assertEqual(request.headers["Accept"], "audio/mpeg")
             self.assertEqual(
                 json.loads(request.data.decode("utf-8")),
-                {"text": "hello", "reference_id": "voice-123", "format": "mp3"},
+                {"model": "gpt-4o-mini-tts", "voice": "onyx", "input": "hello", "response_format": "mp3"},
             )
             self.assertEqual(speech_path.read_bytes(), b"mp3-data")
             speech_path.unlink()
 
-    def test_default_piper_voice_downloads_missing_model_files(self):
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(bot, "download_file") as download_file,
-        ):
-            model_path = Path(directory) / bot.PIPER_DEFAULT_MODEL_NAME
+    def test_openai_tts_voices_are_supported(self):
+        self.assertEqual(bot.OPENAI_TTS_VOICE, "alloy")
+        self.assertEqual(bot.CHAT_TTS_VOICE, "onyx")
+        self.assertIn("onyx", bot.OPENAI_TTS_VOICES)
+        self.assertIn("alloy", bot.OPENAI_TTS_VOICES)
 
-            bot.ensure_piper_voice_model(str(model_path))
-
-            self.assertEqual(download_file.call_count, 2)
-            self.assertEqual(
-                [call.args[1].name for call in download_file.call_args_list],
-                [bot.PIPER_DEFAULT_MODEL_NAME, f"{bot.PIPER_DEFAULT_MODEL_NAME}.json"],
-            )
-
-    def test_download_file_tries_fallback_urls_for_json_config(self):
-        class FakeResponse:
-            def __init__(self, payload):
-                self.payload = payload
-
-            def __enter__(self):
-                return io.BytesIO(self.payload)
-
-            def __exit__(self, *_args):
-                return False
-
-        valid_config = json.dumps({
-            "phoneme_type": "espeak",
-            "phoneme_id_map": {"_": [0]},
-        }).encode("utf-8")
-
-        def fake_urlopen(url, **_kwargs):
-            if url == "bad-url":
-                raise OSError("blocked")
-            return FakeResponse(valid_config)
-
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(bot, "urlopen", side_effect=fake_urlopen) as urlopen,
-        ):
-            destination = Path(directory) / "voice.onnx.json"
-
-            bot.download_file(["bad-url", "good-url"], destination, validate_json=True)
-
-            self.assertEqual(destination.read_bytes(), valid_config)
-            self.assertEqual(
-                [call.args[0] for call in urlopen.call_args_list],
-                ["bad-url", "good-url"],
-            )
-
-    def test_custom_piper_voice_reports_missing_file_before_process(self):
-        with tempfile.TemporaryDirectory() as directory:
-            model_path = Path(directory) / "custom.onnx"
-
-            with self.assertRaisesRegex(RuntimeError, "Piper voice model file is missing"):
-                bot.ensure_piper_voice_model(str(model_path))
-
-    def test_only_fish_s2_voice_is_supported(self):
-        self.assertEqual(bot.PIPER_TTS_VOICE, "fish-s2")
-        self.assertEqual(bot.PIPER_TTS_VOICES, {"fish-s2": "Fish Audio S2 voice"})
-
-    def test_fish_errors_do_not_leave_temporary_files(self):
+    def test_openai_errors_do_not_leave_temporary_files(self):
         error = bot.URLError("failed")
         with (
             tempfile.TemporaryDirectory() as directory,
             patch.object(bot.tempfile, "tempdir", directory),
-            patch.dict(bot.os.environ, {"FISH_API_KEY": "fish-secret"}),
-            patch.object(bot, "FISH_TTS_REFERENCE_ID", "voice-123"),
+            patch.dict(bot.os.environ, {"OPENAI_API_KEY": "openai-secret"}),
             patch.object(bot, "urlopen", side_effect=error),
         ):
             with self.assertRaisesRegex(RuntimeError, "request failed"):
-                bot.synthesize_speech("hello", "fish-s2")
+                bot.synthesize_speech("hello", "onyx")
 
             self.assertEqual(list(Path(directory).iterdir()), [])
 
@@ -1972,25 +1915,25 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b"Text to speech", response.data)
         self.assertIn(b'name="speech_text"', response.data)
         self.assertIn(b'name="voice"', response.data)
-        self.assertIn(b'value="fish-s2"', response.data)
+        self.assertIn(b'value="onyx"', response.data)
         self.assertNotIn(b'value="default"', response.data)
         self.assertIn(b'name="action" value="speak"', response.data)
         self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
 
-    def test_page_can_show_manly_piper_voice(self):
+    def test_page_can_show_custom_openai_voice(self):
         with (
             patch.object(
                 bot,
-                "PIPER_TTS_VOICES",
-                {"default": "Piper default", "manly": "Manly Piper"},
+                "OPENAI_TTS_VOICES",
+                {"default": "OpenAI default", "manly": "Manly OpenAI"},
             ),
-            patch.object(bot, "PIPER_TTS_VOICE", "manly"),
+            patch.object(bot, "OPENAI_TTS_VOICE", "manly"),
         ):
             response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'value="manly" selected', response.data)
-        self.assertIn(b"Manly Piper", response.data)
+        self.assertIn(b"Manly OpenAI", response.data)
 
     def test_page_has_ryan_birthday_button_with_target_channel(self):
         response = self.client.get("/say")
@@ -2087,7 +2030,7 @@ class ExternalSayTests(unittest.TestCase):
                 "action": "speak",
                 "voice_channel_id": "1447148315312521256",
                 "speech_text": "   ",
-                "voice": "fish-s2",
+                "voice": "onyx",
             },
         )
 
@@ -2101,7 +2044,7 @@ class ExternalSayTests(unittest.TestCase):
                 "action": "speak",
                 "voice_channel_id": "1447148315312521256",
                 "speech_text": "x" * (bot.TTS_TEXT_LIMIT + 1),
-                "voice": "fish-s2",
+                "voice": "onyx",
             },
         )
 
@@ -2146,14 +2089,14 @@ class ExternalSayTests(unittest.TestCase):
                     "action": "speak",
                     "voice_channel_id": "1447148315312521256",
                     "speech_text": "  hello there  ",
-                    "voice": "fish-s2",
+                    "voice": "onyx",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=speaking+in+%23General", response.headers["Location"])
         submit_speech.assert_called_once_with(
-            1447148315312521256, "hello there", "fish-s2"
+            1447148315312521256, "hello there", "onyx"
         )
 
     def test_join_voice_form_uses_selected_channel(self):
@@ -2864,7 +2807,7 @@ class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
             await bot.speak_in_guild(
                 guild,
                 "This is a concise TTS preview",
-                "fish-s2",
+                "onyx",
                 not_connected_message="not connected",
             )
 
