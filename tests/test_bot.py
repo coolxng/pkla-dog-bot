@@ -1604,10 +1604,12 @@ class TextToSpeechTests(unittest.TestCase):
             patch.object(bot.tempfile, "tempdir", directory),
             patch.object(bot, "PIPER_TTS_BINARY", "piper-bin"),
             patch.object(bot, "PIPER_TTS_MODEL", "/models/en.onnx"),
+            patch.object(bot, "ensure_piper_voice_model") as ensure_model,
             patch.object(bot.subprocess, "run", side_effect=write_audio) as run,
         ):
             speech_path = bot.synthesize_speech("hello", "en_GB-alan-medium")
 
+            ensure_model.assert_called_once_with("/models/en.onnx")
             run.assert_called_once_with(
                 ["piper-bin", "--model", "/models/en.onnx", "--output_file", str(speech_path)],
                 input="hello",
@@ -1618,6 +1620,28 @@ class TextToSpeechTests(unittest.TestCase):
             )
             self.assertEqual(speech_path.read_bytes(), b"wav-data")
             speech_path.unlink()
+
+    def test_default_piper_voice_downloads_missing_model_files(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(bot, "download_file") as download_file,
+        ):
+            model_path = Path(directory) / bot.PIPER_DEFAULT_MODEL_NAME
+
+            bot.ensure_piper_voice_model(str(model_path))
+
+            self.assertEqual(download_file.call_count, 2)
+            self.assertEqual(
+                [call.args[1].name for call in download_file.call_args_list],
+                [bot.PIPER_DEFAULT_MODEL_NAME, f"{bot.PIPER_DEFAULT_MODEL_NAME}.json"],
+            )
+
+    def test_custom_piper_voice_reports_missing_file_before_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "custom.onnx"
+
+            with self.assertRaisesRegex(RuntimeError, "Piper voice model file is missing"):
+                bot.ensure_piper_voice_model(str(model_path))
 
     def test_only_alan_medium_voice_is_supported(self):
         self.assertEqual(bot.PIPER_TTS_VOICE, "en_GB-alan-medium")
@@ -1631,6 +1655,7 @@ class TextToSpeechTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             patch.object(bot.tempfile, "tempdir", directory),
             patch.object(bot, "PIPER_TTS_MODEL", "/models/en.onnx"),
+            patch.object(bot, "ensure_piper_voice_model"),
             patch.object(bot.subprocess, "run", side_effect=error),
         ):
             with self.assertRaisesRegex(RuntimeError, "could not generate speech"):

@@ -26,7 +26,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `ENABLE_TRANSCRIPTION` | `false` | Compatibility flag only. Transcription support has been removed, so audio is never converted to text even if this is set to true. |
 | `ENABLE_LISTEN_IN` | `true` | Enables authenticated browser listen-in without transcription. Set false to disable inbound voice receiving. |
 | `OPENAI_SEARCH_MODEL` | `chat-latest` | Model used for OpenAI web search requests. |
-| `PIPER_TTS_MODEL` | `en_GB-alan-medium.onnx` | Path to the local Piper `.onnx` voice model used for the only TTS voice, **Alan (English GB, medium)** (`en_GB-alan-medium`). Put the matching `.onnx.json` file next to the model. |
+| `PIPER_TTS_MODEL` | `en_GB-alan-medium.onnx` | Path to the local Piper `.onnx` voice model used for the only TTS voice, **Alan (English GB, medium)** (`en_GB-alan-medium`). If the default filename is missing, the bot downloads the matching `.onnx` and `.onnx.json` files on first use; custom paths must already have the matching `.onnx.json` file next to the model. |
 | `PIPER_TTS_BINARY` | `piper` | Piper executable to run for local text-to-speech. |
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
@@ -106,7 +106,7 @@ If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-listening `
 
 The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing, or the 30-second server-wide TTS cooldown is active. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 
-Normal chat and optional automatic memory extraction use the Groq API associated with `GROQ_API_KEY`. Text-to-speech runs through the local Piper executable configured by `PIPER_TTS_BINARY` and `PIPER_TTS_MODEL`; the expected voice is `en_GB-alan-medium` from the Piper samples page, so deploy the matching `.onnx` and `.onnx.json` files together; the existing OpenAI web-search provider runs only when `ENABLE_OPENAI_WEB_SEARCH=true`. Browser listening does not call either AI provider.
+Normal chat and optional automatic memory extraction use the Groq API associated with `GROQ_API_KEY`. Text-to-speech runs through the local Piper executable configured by `PIPER_TTS_BINARY` and `PIPER_TTS_MODEL`; the expected voice is `en_GB-alan-medium` from the Piper samples page. With the default model filename, the bot downloads the matching `.onnx` and `.onnx.json` files on first use and verifies their checksums. If you set a custom `PIPER_TTS_MODEL`, deploy the matching `.onnx` and `.onnx.json` files together. The existing OpenAI web-search provider runs only when `ENABLE_OPENAI_WEB_SEARCH=true`. Browser listening does not call either AI provider.
 
 ## Voice receive dependency
 
