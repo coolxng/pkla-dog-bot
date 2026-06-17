@@ -5,5 +5,3 @@ discord.py[voice]==2.7.1
 discord-ext-voice-recv @ https://github.com/vocolboy/discord-ext-voice-recv/archive/ee160c0f36516927b6214bc9d6babe524016770f.zip
 ddgs==9.14.2
 Flask==3.1.3
-# Provides the `piper` CLI used by local text-to-speech playback.
-piper-tts==1.4.2
