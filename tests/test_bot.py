@@ -1349,7 +1349,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
             patch.object(
                 bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
             ) as to_thread,
@@ -1368,7 +1367,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             label='TTS: “hello”',
             delete_after=True,
         )
-        self.assertEqual(bot.last_tts_at[456], 100.0)
+        self.assertNotIn(456, bot.last_tts_at)
 
     async def test_external_speech_failure_does_not_start_cooldown(self):
         class FakeVoiceChannel:
@@ -1382,7 +1381,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
             patch.object(
                 bot.asyncio,
                 "to_thread",
@@ -1408,7 +1406,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
             patch.object(
                 bot.asyncio,
                 "to_thread",
@@ -1422,7 +1419,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn(456, bot.last_tts_at)
 
-    async def test_external_speech_failure_preserves_newer_cooldown(self):
+    async def test_external_speech_allows_repeat_requests_without_cooldown(self):
         class FakeVoiceChannel:
             pass
 
@@ -1430,47 +1427,24 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             is_connected=lambda: True, is_playing=lambda: False
         )
         channel = FakeVoiceChannel()
+        channel.mention = "#General"
         channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
-
-        async def fail_after_newer_request(*args):
-            bot.last_tts_at[456] = 200.0
-            raise RuntimeError("speech failed")
-
-        with (
-            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
-            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=100.0),
-            patch.object(bot.asyncio, "to_thread", side_effect=fail_after_newer_request),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "speech failed"):
-                await bot.control_external_speech(
-                    1447148315312521256, "hello", "en_GB-alan-medium"
-                )
-
-        self.assertEqual(bot.last_tts_at[456], 200.0)
-
-    async def test_external_speech_enforces_server_cooldown_before_synthesis(self):
-        class FakeVoiceChannel:
-            pass
-
-        voice_client = SimpleNamespace(
-            is_connected=lambda: True, is_playing=lambda: False
-        )
-        channel = FakeVoiceChannel()
-        channel.guild = SimpleNamespace(id=456, voice_client=voice_client)
+        speech_path = Path("generated-speech.mp3")
         bot.last_tts_at[456] = 100.0
         with (
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
-            patch.object(bot.time, "monotonic", return_value=110.0),
-            patch.object(bot.asyncio, "to_thread", new=AsyncMock()) as to_thread,
+            patch.object(
+                bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
+            ) as to_thread,
+            patch.object(bot, "play_audio", return_value=True),
         ):
-            with self.assertRaisesRegex(RuntimeError, "cooldown"):
-                await bot.control_external_speech(
-                    1447148315312521256, "hello", "en_GB-alan-medium"
-                )
+            await bot.control_external_speech(
+                1447148315312521256, "hello", "en_GB-alan-medium"
+            )
 
-        to_thread.assert_not_awaited()
+        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "en_GB-alan-medium")
+        self.assertEqual(bot.last_tts_at[456], 100.0)
 
     async def test_external_speech_rejects_busy_playback_before_synthesis(self):
         class FakeVoiceChannel:
@@ -1604,10 +1578,12 @@ class TextToSpeechTests(unittest.TestCase):
             patch.object(bot.tempfile, "tempdir", directory),
             patch.object(bot, "PIPER_TTS_BINARY", "piper-bin"),
             patch.object(bot, "PIPER_TTS_MODEL", "/models/en.onnx"),
+            patch.object(bot, "ensure_piper_voice_model") as ensure_model,
             patch.object(bot.subprocess, "run", side_effect=write_audio) as run,
         ):
             speech_path = bot.synthesize_speech("hello", "en_GB-alan-medium")
 
+            ensure_model.assert_called_once_with("/models/en.onnx")
             run.assert_called_once_with(
                 ["piper-bin", "--model", "/models/en.onnx", "--output_file", str(speech_path)],
                 input="hello",
@@ -1618,6 +1594,63 @@ class TextToSpeechTests(unittest.TestCase):
             )
             self.assertEqual(speech_path.read_bytes(), b"wav-data")
             speech_path.unlink()
+
+    def test_default_piper_voice_downloads_missing_model_files(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(bot, "download_file") as download_file,
+        ):
+            model_path = Path(directory) / bot.PIPER_DEFAULT_MODEL_NAME
+
+            bot.ensure_piper_voice_model(str(model_path))
+
+            self.assertEqual(download_file.call_count, 2)
+            self.assertEqual(
+                [call.args[1].name for call in download_file.call_args_list],
+                [bot.PIPER_DEFAULT_MODEL_NAME, f"{bot.PIPER_DEFAULT_MODEL_NAME}.json"],
+            )
+
+    def test_download_file_tries_fallback_urls_for_json_config(self):
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return io.BytesIO(self.payload)
+
+            def __exit__(self, *_args):
+                return False
+
+        valid_config = json.dumps({
+            "phoneme_type": "espeak",
+            "phoneme_id_map": {"_": [0]},
+        }).encode("utf-8")
+
+        def fake_urlopen(url, **_kwargs):
+            if url == "bad-url":
+                raise OSError("blocked")
+            return FakeResponse(valid_config)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(bot, "urlopen", side_effect=fake_urlopen) as urlopen,
+        ):
+            destination = Path(directory) / "voice.onnx.json"
+
+            bot.download_file(["bad-url", "good-url"], destination, validate_json=True)
+
+            self.assertEqual(destination.read_bytes(), valid_config)
+            self.assertEqual(
+                [call.args[0] for call in urlopen.call_args_list],
+                ["bad-url", "good-url"],
+            )
+
+    def test_custom_piper_voice_reports_missing_file_before_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "custom.onnx"
+
+            with self.assertRaisesRegex(RuntimeError, "Piper voice model file is missing"):
+                bot.ensure_piper_voice_model(str(model_path))
 
     def test_only_alan_medium_voice_is_supported(self):
         self.assertEqual(bot.PIPER_TTS_VOICE, "en_GB-alan-medium")
@@ -1631,6 +1664,7 @@ class TextToSpeechTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             patch.object(bot.tempfile, "tempdir", directory),
             patch.object(bot, "PIPER_TTS_MODEL", "/models/en.onnx"),
+            patch.object(bot, "ensure_piper_voice_model"),
             patch.object(bot.subprocess, "run", side_effect=error),
         ):
             with self.assertRaisesRegex(RuntimeError, "could not generate speech"):
