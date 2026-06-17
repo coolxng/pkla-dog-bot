@@ -76,12 +76,16 @@ PIPER_TTS_VOICES = {PIPER_TTS_VOICE: "Alan (English GB, medium)"}
 PIPER_DEFAULT_MODEL_NAME = "en_GB-alan-medium.onnx"
 PIPER_DEFAULT_MODEL_FILES = {
     PIPER_DEFAULT_MODEL_NAME: {
-        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx?download=true",
+        "urls": [
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx?download=true",
+        ],
         "md5": "8f6b35eeb8ef6269021c6cb6d2414c9b",
     },
     f"{PIPER_DEFAULT_MODEL_NAME}.json": {
-        "url": "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json?download=true",
-        "md5": "8927af81e8b16650fb7c9593464daa6e",
+        "urls": [
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json?download=true",
+            "https://huggingface.co/rhasspy/piper-voices/raw/5512791644e2148e4be301d4c7fc2a4bf51a5057/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json",
+        ],
     },
 }
 CHAT_TTS_VOICE = PIPER_TTS_VOICE
@@ -1695,25 +1699,47 @@ def file_md5(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_file(url: str, destination: Path, expected_md5: str) -> None:
+def validate_piper_config(path: Path) -> None:
+    with path.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+    if config.get("phoneme_type") != "espeak" or not config.get("phoneme_id_map"):
+        raise RuntimeError(f"downloaded {path.name} is not a Piper voice config")
+
+
+def download_file(
+    urls: list[str],
+    destination: Path,
+    *,
+    expected_md5: str | None = None,
+    validate_json: bool = False,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}-", suffix=".download", dir=destination.parent
-    )
-    os.close(file_descriptor)
-    temporary_path = Path(temporary_name)
-    try:
-        with urlopen(url, timeout=60) as response, temporary_path.open("wb") as output:
-            shutil.copyfileobj(response, output)
-        actual_md5 = file_md5(temporary_path)
-        if actual_md5 != expected_md5:
-            raise RuntimeError(
-                f"downloaded {destination.name} checksum {actual_md5} did not match {expected_md5}"
-            )
-        temporary_path.replace(destination)
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
+    last_error: Exception | None = None
+    for url in urls:
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}-", suffix=".download", dir=destination.parent
+        )
+        os.close(file_descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            with urlopen(url, timeout=60) as response, temporary_path.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            if expected_md5 is not None:
+                actual_md5 = file_md5(temporary_path)
+                if actual_md5 != expected_md5:
+                    raise RuntimeError(
+                        f"downloaded {destination.name} checksum {actual_md5} did not match {expected_md5}"
+                    )
+            if validate_json:
+                validate_piper_config(temporary_path)
+            temporary_path.replace(destination)
+            return
+        except Exception as error:
+            last_error = error
+            temporary_path.unlink(missing_ok=True)
+            print(f"Piper voice file download failed for {destination.name}: {error}")
+
+    raise RuntimeError(f"all downloads failed for {destination.name}") from last_error
 
 
 def ensure_piper_voice_model(model_path: str) -> None:
@@ -1733,10 +1759,15 @@ def ensure_piper_voice_model(model_path: str) -> None:
         metadata = PIPER_DEFAULT_MODEL_FILES[path.name]
         print(f"Downloading Piper voice file: {path.name}")
         try:
-            download_file(metadata["url"], path, metadata["md5"])
+            download_file(
+                metadata["urls"],
+                path,
+                expected_md5=metadata.get("md5"),
+                validate_json=path.suffix == ".json",
+            )
         except Exception as error:
             raise RuntimeError(
-                f"Piper voice model file could not be downloaded: {path.name}"
+                f"Piper voice model file could not be downloaded: {path.name}: {error}"
             ) from error
 
 

@@ -1636,6 +1636,41 @@ class TextToSpeechTests(unittest.TestCase):
                 [bot.PIPER_DEFAULT_MODEL_NAME, f"{bot.PIPER_DEFAULT_MODEL_NAME}.json"],
             )
 
+    def test_download_file_tries_fallback_urls_for_json_config(self):
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return io.BytesIO(self.payload)
+
+            def __exit__(self, *_args):
+                return False
+
+        valid_config = json.dumps({
+            "phoneme_type": "espeak",
+            "phoneme_id_map": {"_": [0]},
+        }).encode("utf-8")
+
+        def fake_urlopen(url, **_kwargs):
+            if url == "bad-url":
+                raise OSError("blocked")
+            return FakeResponse(valid_config)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(bot, "urlopen", side_effect=fake_urlopen) as urlopen,
+        ):
+            destination = Path(directory) / "voice.onnx.json"
+
+            bot.download_file(["bad-url", "good-url"], destination, validate_json=True)
+
+            self.assertEqual(destination.read_bytes(), valid_config)
+            self.assertEqual(
+                [call.args[0] for call in urlopen.call_args_list],
+                ["bad-url", "good-url"],
+            )
+
     def test_custom_piper_voice_reports_missing_file_before_process(self):
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory) / "custom.onnx"
