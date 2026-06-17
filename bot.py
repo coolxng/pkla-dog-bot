@@ -69,17 +69,9 @@ GROQ_CHAT_INPUT_CHAR_BUDGET = 12_000
 GROQ_REQUEST_MAX_ATTEMPTS = 3
 GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
 PIPER_TTS_BINARY = os.environ.get("PIPER_TTS_BINARY", "piper")
-PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "").strip()
-PIPER_TTS_MANLY_MODEL = os.environ.get("PIPER_TTS_MANLY_MODEL", "").strip()
-PIPER_TTS_VOICES = {"default": "Piper default"}
-PIPER_TTS_VOICE_MODELS = {"default": PIPER_TTS_MODEL}
-if PIPER_TTS_MANLY_MODEL:
-    PIPER_TTS_VOICES["manly"] = "Manly Piper"
-    PIPER_TTS_VOICE_MODELS["manly"] = PIPER_TTS_MANLY_MODEL
-PIPER_TTS_VOICE = os.environ.get("PIPER_TTS_VOICE", "default")
-if PIPER_TTS_VOICE not in PIPER_TTS_VOICES:
-    print(f"Ignoring unsupported PIPER_TTS_VOICE: {PIPER_TTS_VOICE!r}")
-    PIPER_TTS_VOICE = "default"
+PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "en_GB-alan-medium.onnx").strip()
+PIPER_TTS_VOICE = "en_GB-alan-medium"
+PIPER_TTS_VOICES = {PIPER_TTS_VOICE: "Alan (English GB, medium)"}
 CHAT_TTS_VOICE = PIPER_TTS_VOICE
 TTS_TEXT_LIMIT = 500
 # Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
@@ -1688,7 +1680,7 @@ def synthesize_speech(text: str, voice: str) -> Path:
         raise RuntimeError("AI API calls are disabled from /say")
     if voice not in PIPER_TTS_VOICES:
         raise RuntimeError("Unknown text-to-speech voice")
-    model_path = PIPER_TTS_VOICE_MODELS[voice]
+    model_path = PIPER_TTS_MODEL
     if not model_path:
         raise RuntimeError("PIPER_TTS_MODEL is not set")
 

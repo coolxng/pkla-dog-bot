@@ -1064,7 +1064,7 @@ class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             self.assertFalse(playback.done())
             to_thread.assert_awaited_once_with(
-                bot.synthesize_speech, "hello", "default"
+                bot.synthesize_speech, "hello", "en_GB-alan-medium"
             )
 
             callbacks[0](None)
@@ -1332,7 +1332,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "default"
+                    1447148315312521256, "hello", "en_GB-alan-medium"
                 )
 
     async def test_external_speech_synthesizes_off_loop_and_plays_temporary_audio(self):
@@ -1356,11 +1356,11 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "play_audio", return_value=True) as play_audio,
         ):
             response = await bot.control_external_speech(
-                1447148315312521256, "hello", "default"
+                1447148315312521256, "hello", "en_GB-alan-medium"
             )
 
         self.assertEqual(response, "speaking in #General")
-        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "default")
+        to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "en_GB-alan-medium")
         play_audio.assert_called_once_with(
             voice_client,
             speech_path,
@@ -1391,7 +1391,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "speech failed"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "default"
+                    1447148315312521256, "hello", "en_GB-alan-medium"
                 )
 
         self.assertNotIn(456, bot.last_tts_at)
@@ -1417,7 +1417,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "default"
+                    1447148315312521256, "hello", "en_GB-alan-medium"
                 )
 
         self.assertNotIn(456, bot.last_tts_at)
@@ -1444,7 +1444,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "speech failed"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "default"
+                    1447148315312521256, "hello", "en_GB-alan-medium"
                 )
 
         self.assertEqual(bot.last_tts_at[456], 200.0)
@@ -1467,7 +1467,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "cooldown"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "default"
+                    1447148315312521256, "hello", "en_GB-alan-medium"
                 )
 
         to_thread.assert_not_awaited()
@@ -1488,7 +1488,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "already playing"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "default"
+                    1447148315312521256, "hello", "en_GB-alan-medium"
                 )
 
         to_thread.assert_not_awaited()
@@ -1591,7 +1591,7 @@ class TextToSpeechTests(unittest.TestCase):
             patch.object(bot.subprocess, "run") as run,
         ):
             with self.assertRaisesRegex(RuntimeError, "API calls are disabled"):
-                bot.synthesize_speech("hello", "default")
+                bot.synthesize_speech("hello", "en_GB-alan-medium")
 
         run.assert_not_called()
 
@@ -1606,7 +1606,7 @@ class TextToSpeechTests(unittest.TestCase):
             patch.object(bot, "PIPER_TTS_MODEL", "/models/en.onnx"),
             patch.object(bot.subprocess, "run", side_effect=write_audio) as run,
         ):
-            speech_path = bot.synthesize_speech("hello", "default")
+            speech_path = bot.synthesize_speech("hello", "en_GB-alan-medium")
 
             run.assert_called_once_with(
                 ["piper-bin", "--model", "/models/en.onnx", "--output_file", str(speech_path)],
@@ -1619,37 +1619,9 @@ class TextToSpeechTests(unittest.TestCase):
             self.assertEqual(speech_path.read_bytes(), b"wav-data")
             speech_path.unlink()
 
-    def test_piper_manly_voice_uses_configured_voice_model(self):
-        def write_audio(command, **_kwargs):
-            Path(command[-1]).write_bytes(b"wav-data")
-
-        with (
-            tempfile.TemporaryDirectory() as directory,
-            patch.object(bot.tempfile, "tempdir", directory),
-            patch.object(bot, "PIPER_TTS_BINARY", "piper-bin"),
-            patch.object(
-                bot,
-                "PIPER_TTS_VOICE_MODELS",
-                {"default": "/models/default.onnx", "manly": "/models/low.onnx"},
-            ),
-            patch.object(
-                bot,
-                "PIPER_TTS_VOICES",
-                {"default": "Piper default", "manly": "Manly Piper"},
-            ),
-            patch.object(bot.subprocess, "run", side_effect=write_audio) as run,
-        ):
-            speech_path = bot.synthesize_speech("hello", "manly")
-
-            run.assert_called_once_with(
-                ["piper-bin", "--model", "/models/low.onnx", "--output_file", str(speech_path)],
-                input="hello",
-                text=True,
-                capture_output=True,
-                check=True,
-                timeout=30,
-            )
-            speech_path.unlink()
+    def test_only_alan_medium_voice_is_supported(self):
+        self.assertEqual(bot.PIPER_TTS_VOICE, "en_GB-alan-medium")
+        self.assertEqual(bot.PIPER_TTS_VOICES, {"en_GB-alan-medium": "Alan (English GB, medium)"})
 
     def test_piper_errors_do_not_leave_temporary_files(self):
         error = bot.subprocess.CalledProcessError(
@@ -1662,7 +1634,7 @@ class TextToSpeechTests(unittest.TestCase):
             patch.object(bot.subprocess, "run", side_effect=error),
         ):
             with self.assertRaisesRegex(RuntimeError, "could not generate speech"):
-                bot.synthesize_speech("hello", "default")
+                bot.synthesize_speech("hello", "en_GB-alan-medium")
 
             self.assertEqual(list(Path(directory).iterdir()), [])
 
@@ -1964,7 +1936,8 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b"Text to speech", response.data)
         self.assertIn(b'name="speech_text"', response.data)
         self.assertIn(b'name="voice"', response.data)
-        self.assertIn(b'value="default"', response.data)
+        self.assertIn(b'value="en_GB-alan-medium"', response.data)
+        self.assertNotIn(b'value="default"', response.data)
         self.assertIn(b'name="action" value="speak"', response.data)
         self.assertIn(f"up to {bot.TTS_TEXT_LIMIT} characters".encode(), response.data)
 
@@ -2078,7 +2051,7 @@ class ExternalSayTests(unittest.TestCase):
                 "action": "speak",
                 "voice_channel_id": "1447148315312521256",
                 "speech_text": "   ",
-                "voice": "default",
+                "voice": "en_GB-alan-medium",
             },
         )
 
@@ -2092,7 +2065,7 @@ class ExternalSayTests(unittest.TestCase):
                 "action": "speak",
                 "voice_channel_id": "1447148315312521256",
                 "speech_text": "x" * (bot.TTS_TEXT_LIMIT + 1),
-                "voice": "default",
+                "voice": "en_GB-alan-medium",
             },
         )
 
@@ -2113,6 +2086,20 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn(b"Unknown text-to-speech voice", response.data)
 
+    def test_previous_default_speech_voice_is_rejected(self):
+        response = self.client.post(
+            "/say",
+            data={
+                "action": "speak",
+                "voice_channel_id": "1447148315312521256",
+                "speech_text": "hello",
+                "voice": "default",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Unknown text-to-speech voice", response.data)
+
     def test_valid_speech_form_submits_selected_values(self):
         with patch.object(
             bot, "submit_external_speech", return_value="speaking in #General"
@@ -2123,14 +2110,14 @@ class ExternalSayTests(unittest.TestCase):
                     "action": "speak",
                     "voice_channel_id": "1447148315312521256",
                     "speech_text": "  hello there  ",
-                    "voice": "default",
+                    "voice": "en_GB-alan-medium",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=speaking+in+%23General", response.headers["Location"])
         submit_speech.assert_called_once_with(
-            1447148315312521256, "hello there", "default"
+            1447148315312521256, "hello there", "en_GB-alan-medium"
         )
 
     def test_join_voice_form_uses_selected_channel(self):
@@ -2841,7 +2828,7 @@ class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
             await bot.speak_in_guild(
                 guild,
                 "This is a concise TTS preview",
-                "default",
+                "en_GB-alan-medium",
                 not_connected_message="not connected",
             )
 
