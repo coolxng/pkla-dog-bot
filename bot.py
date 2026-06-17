@@ -9,7 +9,6 @@ import json
 import math
 import os
 import re
-import shutil
 import tempfile
 import time
 from collections import OrderedDict
@@ -68,30 +67,26 @@ DEFAULT_CHAT_MAX_COMPLETION_TOKENS = 150
 GROQ_CHAT_INPUT_CHAR_BUDGET = 12_000
 GROQ_REQUEST_MAX_ATTEMPTS = 3
 GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
-PIPER_TTS_BINARY = os.environ.get("PIPER_TTS_BINARY", "piper")
-PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "en_GB-alan-medium.onnx").strip()
-FISH_TTS_API_URL = os.environ.get("FISH_TTS_API_URL", "https://api.fish.audio/v1/tts").strip()
-FISH_TTS_MODEL = os.environ.get("FISH_TTS_MODEL", "s2-pro").strip()
-FISH_TTS_REFERENCE_ID = os.environ.get("FISH_TTS_REFERENCE_ID", "").strip()
-FISH_TTS_VOICE = "fish-s2"
-PIPER_TTS_VOICE = FISH_TTS_VOICE
-PIPER_TTS_VOICES = {FISH_TTS_VOICE: "Fish Audio S2 voice"}
-PIPER_DEFAULT_MODEL_NAME = "en_GB-alan-medium.onnx"
-PIPER_DEFAULT_MODEL_FILES = {
-    PIPER_DEFAULT_MODEL_NAME: {
-        "urls": [
-            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx?download=true",
-        ],
-        "md5": "8f6b35eeb8ef6269021c6cb6d2414c9b",
-    },
-    f"{PIPER_DEFAULT_MODEL_NAME}.json": {
-        "urls": [
-            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json?download=true",
-            "https://huggingface.co/rhasspy/piper-voices/raw/5512791644e2148e4be301d4c7fc2a4bf51a5057/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json",
-        ],
-    },
+OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts").strip()
+OPENAI_TTS_API_URL = os.environ.get(
+    "OPENAI_TTS_API_URL", "https://api.openai.com/v1/audio/speech"
+).strip()
+OPENAI_TTS_VOICES = {
+    "alloy": "Alloy",
+    "ash": "Ash",
+    "coral": "Coral",
+    "echo": "Echo",
+    "fable": "Fable",
+    "nova": "Nova",
+    "onyx": "Onyx",
+    "sage": "Sage",
+    "shimmer": "Shimmer",
 }
-CHAT_TTS_VOICE = PIPER_TTS_VOICE
+OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "alloy").strip()
+if OPENAI_TTS_VOICE not in OPENAI_TTS_VOICES:
+    print(f"Ignoring unsupported OPENAI_TTS_VOICE: {OPENAI_TTS_VOICE!r}")
+    OPENAI_TTS_VOICE = "alloy"
+CHAT_TTS_VOICE = "onyx"
 TTS_TEXT_LIMIT = 500
 # Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
 MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
@@ -1417,7 +1412,7 @@ def external_say():
                             raise ValueError(
                                 f"Speech text cannot exceed {TTS_TEXT_LIMIT} characters."
                             )
-                        if voice not in PIPER_TTS_VOICES:
+                        if voice not in OPENAI_TTS_VOICES:
                             raise ValueError("Unknown text-to-speech voice.")
                         status = submit_external_speech(channel_id, speech_text, voice)
                     else:
@@ -1469,8 +1464,8 @@ def external_say():
         birthday_channel_id=RYAN_BIRTHDAY_CHANNEL_ID,
         tts_text_limit=TTS_TEXT_LIMIT,
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
-        tts_voices=PIPER_TTS_VOICES,
-        tts_default_voice=PIPER_TTS_VOICE,
+        tts_voices=OPENAI_TTS_VOICES,
+        tts_default_voice=OPENAI_TTS_VOICE,
         chat_tts_command_enabled=chat_tts_command_enabled,
         ai_api_calls_enabled=ai_api_calls_enabled,
         control_token_configured=bool(EXTERNAL_SAY_CONTROL_TOKEN),
@@ -1693,99 +1688,17 @@ def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> d
         return json.loads(response.read().decode("utf-8"))
 
 
-def file_md5(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def validate_piper_config(path: Path) -> None:
-    with path.open("r", encoding="utf-8") as file:
-        config = json.load(file)
-    if config.get("phoneme_type") != "espeak" or not config.get("phoneme_id_map"):
-        raise RuntimeError(f"downloaded {path.name} is not a Piper voice config")
-
-
-def download_file(
-    urls: list[str],
-    destination: Path,
-    *,
-    expected_md5: str | None = None,
-    validate_json: bool = False,
-) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    last_error: Exception | None = None
-    for url in urls:
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{destination.name}-", suffix=".download", dir=destination.parent
-        )
-        os.close(file_descriptor)
-        temporary_path = Path(temporary_name)
-        try:
-            with urlopen(url, timeout=60) as response, temporary_path.open("wb") as output:
-                shutil.copyfileobj(response, output)
-            if expected_md5 is not None:
-                actual_md5 = file_md5(temporary_path)
-                if actual_md5 != expected_md5:
-                    raise RuntimeError(
-                        f"downloaded {destination.name} checksum {actual_md5} did not match {expected_md5}"
-                    )
-            if validate_json:
-                validate_piper_config(temporary_path)
-            temporary_path.replace(destination)
-            return
-        except Exception as error:
-            last_error = error
-            temporary_path.unlink(missing_ok=True)
-            print(f"Piper voice file download failed for {destination.name}: {error}")
-
-    raise RuntimeError(f"all downloads failed for {destination.name}") from last_error
-
-
-def ensure_piper_voice_model(model_path: str) -> None:
-    model = Path(model_path)
-    config = Path(f"{model_path}.json")
-    missing_files = [path for path in (model, config) if not path.exists()]
-    if not missing_files:
-        return
-
-    if model.name != PIPER_DEFAULT_MODEL_NAME:
-        missing_names = ", ".join(str(path) for path in missing_files)
-        raise RuntimeError(f"Piper voice model file is missing: {missing_names}")
-
-    for path in (model, config):
-        if path.exists():
-            continue
-        metadata = PIPER_DEFAULT_MODEL_FILES[path.name]
-        print(f"Downloading Piper voice file: {path.name}")
-        try:
-            download_file(
-                metadata["urls"],
-                path,
-                expected_md5=metadata.get("md5"),
-                validate_json=path.suffix == ".json",
-            )
-        except Exception as error:
-            raise RuntimeError(
-                f"Piper voice model file could not be downloaded: {path.name}: {error}"
-            ) from error
-
-
 def synthesize_speech(text: str, voice: str) -> Path:
     if not ai_api_calls_enabled:
         raise RuntimeError("AI API calls are disabled from /say")
-    if voice not in PIPER_TTS_VOICES:
+    if voice not in OPENAI_TTS_VOICES:
         raise RuntimeError("Unknown text-to-speech voice")
 
-    api_key = os.environ.get("FISH_API_KEY", "").strip()
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("FISH_API_KEY is not set")
-    if not FISH_TTS_REFERENCE_ID:
-        raise RuntimeError("FISH_TTS_REFERENCE_ID is not set")
-    if not FISH_TTS_MODEL:
-        raise RuntimeError("FISH_TTS_MODEL is not set")
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    if not OPENAI_TTS_MODEL:
+        raise RuntimeError("OPENAI_TTS_MODEL is not set")
 
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix="discord-tts-", suffix=".mp3"
@@ -1793,17 +1706,18 @@ def synthesize_speech(text: str, voice: str) -> Path:
     os.close(file_descriptor)
     speech_path = Path(temporary_name)
     payload = {
-        "text": text,
-        "reference_id": FISH_TTS_REFERENCE_ID,
-        "format": "mp3",
+        "model": OPENAI_TTS_MODEL,
+        "voice": voice,
+        "input": text,
+        "response_format": "mp3",
     }
     request = Request(
-        FISH_TTS_API_URL,
+        OPENAI_TTS_API_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "model": FISH_TTS_MODEL,
+            "Accept": "audio/mpeg",
         },
         method="POST",
     )
@@ -1811,30 +1725,24 @@ def synthesize_speech(text: str, voice: str) -> Path:
         with urlopen(request, timeout=60) as response:
             audio = response.read()
         if not audio:
-            raise RuntimeError("Fish Audio did not return speech audio")
+            raise RuntimeError("OpenAI did not return speech audio")
         speech_path.write_bytes(audio)
-        print(
-            f"[TTS] provider=fish-audio voice={voice} "
-            f"model={FISH_TTS_MODEL} reference_id={FISH_TTS_REFERENCE_ID}"
-        )
+        print(f"[TTS] provider=openai voice={voice} model={OPENAI_TTS_MODEL}")
         return speech_path
     except HTTPError as error:
         speech_path.unlink(missing_ok=True)
         error_body = error.read().decode("utf-8", errors="replace")
-        print(f"Fish Audio speech failed: HTTP {error.code}: {error_body[:1000]}")
+        print(f"OpenAI speech failed: HTTP {error.code}: {error_body[:1000]}")
         if error.code in {401, 403}:
-            raise RuntimeError("Fish Audio rejected the API key") from error
-        if error.code == 404:
-            raise RuntimeError("Fish Audio voice was not found") from error
-        raise RuntimeError("Fish Audio could not generate speech right now") from error
+            raise RuntimeError("OpenAI rejected the API key") from error
+        raise RuntimeError("OpenAI could not generate speech right now") from error
     except (URLError, TimeoutError) as error:
         speech_path.unlink(missing_ok=True)
-        print(f"Fish Audio speech request failed: {error}")
-        raise RuntimeError("Fish Audio text-to-speech request failed") from error
+        print(f"OpenAI speech request failed: {error}")
+        raise RuntimeError("OpenAI text-to-speech request failed") from error
     except Exception:
         speech_path.unlink(missing_ok=True)
         raise
-
 
 class JsonHTTPError(RuntimeError):
     def __init__(self, url: str, status_code: int, reason: str, body: str):
