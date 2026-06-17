@@ -41,12 +41,12 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 ## Railway deploy steps
 
 1. Create a new Railway project from this repository.
-2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`. Add `OPENAI_API_KEY` if you use text to speech, explicitly enabled OpenAI web search, or chat fallback.
+2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`. Add `OPENAI_API_KEY` only if you use explicitly enabled OpenAI web search or chat fallback; Piper text-to-speech runs locally and does not use OpenAI.
 3. Confirm the start command uses the `Procfile`: `worker: python bot.py`.
 4. Deploy the service.
 5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
 6. Invite the bot and grant **View Channel**, **Connect**, and **Speak** in voice channels used for playback or browser listening. Add text target IDs to `TARGET_CHANNEL_IDS`.
-7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support) and the pinned DAVE-compatible `discord-ext-voice-recv` revision. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
+7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support), `piper-tts` (the `piper` CLI used by local text-to-speech), and the pinned DAVE-compatible `discord-ext-voice-recv` revision. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
 8. To use browser listening, set a strong `EXTERNAL_SAY_CONTROL_TOKEN` and restart after changing environment settings.
 9. Keep a single Railway replica running. Conversation history and universal memory are RAM-only and are not shared between replicas.
 
