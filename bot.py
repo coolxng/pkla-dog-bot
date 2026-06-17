@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import tempfile
 import time
 from collections import OrderedDict
@@ -67,24 +68,11 @@ DEFAULT_CHAT_MAX_COMPLETION_TOKENS = 150
 GROQ_CHAT_INPUT_CHAR_BUDGET = 12_000
 GROQ_REQUEST_MAX_ATTEMPTS = 3
 GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
-# OpenAI documents gpt-4o-mini-tts and alloy as supported Speech API defaults.
-OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
-OPENAI_TTS_VOICES = {
-    "alloy": "Alloy",
-    "ash": "Ash",
-    "coral": "Coral",
-    "echo": "Echo",
-    "fable": "Fable",
-    "nova": "Nova",
-    "onyx": "Onyx",
-    "sage": "Sage",
-    "shimmer": "Shimmer",
-}
-CHAT_TTS_VOICE = "onyx"
-OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "alloy")
-if OPENAI_TTS_VOICE not in OPENAI_TTS_VOICES:
-    print(f"Ignoring unsupported OPENAI_TTS_VOICE: {OPENAI_TTS_VOICE!r}")
-    OPENAI_TTS_VOICE = "alloy"
+PIPER_TTS_BINARY = os.environ.get("PIPER_TTS_BINARY", "piper")
+PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "en_GB-alan-medium.onnx").strip()
+PIPER_TTS_VOICE = "en_GB-alan-medium"
+PIPER_TTS_VOICES = {PIPER_TTS_VOICE: "Alan (English GB, medium)"}
+CHAT_TTS_VOICE = PIPER_TTS_VOICE
 TTS_TEXT_LIMIT = 500
 # Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
 MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
@@ -1411,7 +1399,7 @@ def external_say():
                             raise ValueError(
                                 f"Speech text cannot exceed {TTS_TEXT_LIMIT} characters."
                             )
-                        if voice not in OPENAI_TTS_VOICES:
+                        if voice not in PIPER_TTS_VOICES:
                             raise ValueError("Unknown text-to-speech voice.")
                         status = submit_external_speech(channel_id, speech_text, voice)
                     else:
@@ -1463,8 +1451,8 @@ def external_say():
         birthday_channel_id=RYAN_BIRTHDAY_CHANNEL_ID,
         tts_text_limit=TTS_TEXT_LIMIT,
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
-        tts_voices=OPENAI_TTS_VOICES,
-        tts_default_voice=OPENAI_TTS_VOICE,
+        tts_voices=PIPER_TTS_VOICES,
+        tts_default_voice=PIPER_TTS_VOICE,
         chat_tts_command_enabled=chat_tts_command_enabled,
         ai_api_calls_enabled=ai_api_calls_enabled,
         control_token_configured=bool(EXTERNAL_SAY_CONTROL_TOKEN),
@@ -1690,58 +1678,53 @@ def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> d
 def synthesize_speech(text: str, voice: str) -> Path:
     if not ai_api_calls_enabled:
         raise RuntimeError("AI API calls are disabled from /say")
+    if voice not in PIPER_TTS_VOICES:
+        raise RuntimeError("Unknown text-to-speech voice")
+    model_path = PIPER_TTS_MODEL
+    if not model_path:
+        raise RuntimeError("PIPER_TTS_MODEL is not set")
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-
-    payload = {
-        "model": OPENAI_TTS_MODEL,
-        "voice": voice,
-        "input": text,
-        "response_format": "mp3",
-    }
-    body = json.dumps(payload).encode("utf-8")
-    speech_path: Path | None = None
-    request_headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg",
-    }
-    speech_request = Request(
-        "https://api.openai.com/v1/audio/speech",
-        data=body,
-        headers=request_headers,
-        method="POST",
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix="discord-tts-", suffix=".wav"
     )
+    os.close(file_descriptor)
+    speech_path = Path(temporary_name)
+    command = [
+        PIPER_TTS_BINARY,
+        "--model",
+        model_path,
+        "--output_file",
+        str(speech_path),
+    ]
     try:
-        with urlopen(speech_request, timeout=30) as response:
-            audio_data = response.read()
-        print(f"[AI] provider=openai feature=tts model={OPENAI_TTS_MODEL}")
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            prefix="discord-tts-", suffix=".mp3"
+        subprocess.run(
+            command,
+            input=text,
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=30,
         )
-        speech_path = Path(temporary_name)
-        with os.fdopen(file_descriptor, "wb") as speech_file:
-            speech_file.write(audio_data)
+        if not speech_path.exists() or speech_path.stat().st_size == 0:
+            speech_path.unlink(missing_ok=True)
+            raise RuntimeError("Piper did not write speech audio")
+        print(f"[TTS] provider=piper voice={voice} model={model_path}")
         return speech_path
-    except HTTPError as error:
-        if speech_path is not None:
-            speech_path.unlink(missing_ok=True)
-        error_body = error.read().decode("utf-8", errors="replace")
-        print(
-            f"OpenAI speech HTTP error {error.code} {error.reason}: "
-            f"{error_body[:1000]}"
-        )
-        raise RuntimeError("OpenAI could not generate speech right now") from error
-    except URLError as error:
-        if speech_path is not None:
-            speech_path.unlink(missing_ok=True)
-        print(f"OpenAI speech connection error: {error.reason}")
-        raise RuntimeError("OpenAI speech is unavailable right now") from error
+    except FileNotFoundError as error:
+        speech_path.unlink(missing_ok=True)
+        print(f"Piper speech binary not found: {PIPER_TTS_BINARY}")
+        raise RuntimeError("Piper text-to-speech is not installed") from error
+    except subprocess.TimeoutExpired as error:
+        speech_path.unlink(missing_ok=True)
+        print("Piper speech timed out")
+        raise RuntimeError("Piper text-to-speech timed out") from error
+    except subprocess.CalledProcessError as error:
+        speech_path.unlink(missing_ok=True)
+        stderr = (error.stderr or "").strip()
+        print(f"Piper speech failed: {stderr[:1000]}")
+        raise RuntimeError("Piper could not generate speech right now") from error
     except Exception:
-        if speech_path is not None:
-            speech_path.unlink(missing_ok=True)
+        speech_path.unlink(missing_ok=True)
         raise
 
 
