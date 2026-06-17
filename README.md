@@ -1,6 +1,6 @@
 # Discord Bot
 
-A Python Discord bot with Groq-backed chat responses, optional OpenAI web search and Piper text to speech, voice playback, browser-based live call listening, lightweight in-memory DM/channel conversation history, and optional universal memory commands.
+A Python Discord bot with Groq-backed chat responses, optional OpenAI web search and Fish Audio text to speech, voice playback, browser-based live call listening, lightweight in-memory DM/channel conversation history, and optional universal memory commands.
 
 ## Required environment variables
 
@@ -10,7 +10,9 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | --- | --- | --- |
 | `DISCORD_TOKEN` | Yes | Discord bot token used by `discord.py`. |
 | `GROQ_API_KEY` | Yes | Groq API key used for normal bot replies and optional automatic memory extraction. |
-| `OPENAI_API_KEY` | For OpenAI features | OpenAI API key used for explicitly enabled OpenAI web search and optional chat fallback. Not used for Piper TTS. |
+| `OPENAI_API_KEY` | For OpenAI features | OpenAI API key used for explicitly enabled OpenAI web search and optional chat fallback. Not used for Fish Audio TTS. |
+| `FISH_API_KEY` | Required for TTS | Fish Audio API key used to generate text-to-speech audio. |
+| `FISH_TTS_REFERENCE_ID` | Required for TTS | Fish Audio voice/model ID to use for speech generation (copy this from the Fish Audio voice library or your cloned voice). |
 | `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. Defaults to the existing hardcoded channel list if unset. |
 | `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. Defaults to the existing owner ID if unset. |
 | `EXTERNAL_CHANNEL_ID` | Required for `/say` | Discord channel ID where messages from the external send page are posted. It must also appear in `TARGET_CHANNEL_IDS`. |
@@ -26,8 +28,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `ENABLE_TRANSCRIPTION` | `false` | Compatibility flag only. Transcription support has been removed, so audio is never converted to text even if this is set to true. |
 | `ENABLE_LISTEN_IN` | `true` | Enables authenticated browser listen-in without transcription. Set false to disable inbound voice receiving. |
 | `OPENAI_SEARCH_MODEL` | `chat-latest` | Model used for OpenAI web search requests. |
-| `PIPER_TTS_MODEL` | `en_GB-alan-medium.onnx` | Path to the local Piper `.onnx` voice model used for the only TTS voice, **Alan (English GB, medium)** (`en_GB-alan-medium`). If the default filename is missing, the bot downloads the matching `.onnx` and `.onnx.json` files on first use; custom paths must already have the matching `.onnx.json` file next to the model. |
-| `PIPER_TTS_BINARY` | `piper` | Piper executable to run for local text-to-speech. |
+| `FISH_TTS_MODEL` | `s2-pro` | Fish Audio TTS model header to send with `/v1/tts`. |
+| `FISH_TTS_API_URL` | `https://api.fish.audio/v1/tts` | Fish Audio text-to-speech endpoint. Override only for testing or proxying. |
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
 | `AUTO_MEMORY_ENABLED` | `false` | Enables automatic extraction of shared memory facts from conversations. Off by default. |
@@ -41,12 +43,12 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 ## Railway deploy steps
 
 1. Create a new Railway project from this repository.
-2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`. Add `OPENAI_API_KEY` only if you use explicitly enabled OpenAI web search or chat fallback; Piper text-to-speech runs locally and does not use OpenAI.
+2. Add the required variables in **Variables**: `DISCORD_TOKEN`, `GROQ_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID`. Add `OPENAI_API_KEY` only if you use explicitly enabled OpenAI web search or chat fallback; Fish Audio text-to-speech uses `FISH_API_KEY` and does not use OpenAI.
 3. Confirm the start command uses the `Procfile`: `worker: python bot.py`.
 4. Deploy the service.
 5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
 6. Invite the bot and grant **View Channel**, **Connect**, and **Speak** in voice channels used for playback or browser listening. Add text target IDs to `TARGET_CHANNEL_IDS`.
-7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support), `piper-tts` (the `piper` CLI used by local text-to-speech), and the pinned DAVE-compatible `discord-ext-voice-recv` revision. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
+7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support), the pinned DAVE-compatible `discord-ext-voice-recv` revision. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
 8. To use browser listening, set a strong `EXTERNAL_SAY_CONTROL_TOKEN` and restart after changing environment settings.
 9. Keep a single Railway replica running. Conversation history and universal memory are RAM-only and are not shared between replicas.
 
@@ -72,7 +74,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!deletedms` | Available only in DMs to Discord user `575057023046123520`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
 | `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is received only while a browser listener is connected. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
-| `!tts <message>` | When enabled from `/say`, queues up to 500 characters to be read with the Alan English GB medium Piper voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
+| `!tts <message>` | When enabled from `/say`, queues up to 500 characters to be read with the configured Fish Audio S2 voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
 | `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
 | `/birthdayryan` | Posts a public birthday message for Ryan with a rich embed and the bundled Base64-encoded birthday-card image. |
 | `/pingdeaf user:@member` | DMs a deafened voice member every two seconds until they undeafen. The sender sees a live count of reminder DMs sent, both people get a stop button, the sender is notified if the receiver stops the reminders, and the bot deletes its reminder DMs two minutes after the reminders stop. |
@@ -89,7 +91,7 @@ You can make the bot post a message from a web browser:
 4. When Railway asks for the target port, enter the port used by the bot's web server: `3000` by default, or the value of `PORT` if you set that variable yourself. Do not enter `8080` unless `PORT=8080` is configured.
 5. After Railway creates an address such as `https://your-service.up.railway.app`, open that address with `/say` added to the end: `https://your-service.up.railway.app/say`.
 6. Enter a message, then select **Send to Discord**. The same page also has **Join call**, **Stop audio**, **Leave call**, **Server Mute**, and **Server Deafen** controls, plus buttons for the wolf bark, Minecraft bark, bark-fart, Jamal crazy idek, Jamal 🍇, and Evan crash sounds. The server mute and deafen buttons toggle those Discord voice states for the bot and require the bot to be connected to the selected channel. Voice channel `1447148315312521256` is selected by default; you can edit the channel ID before using the controls.
-7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, use the only allowed voice, **Alan (English GB, medium)**, and select **Speak in call**. The bot must remain connected to that selected channel. The **Bot controls** panel has visual toggles for the Discord `!tts <message>` command and all AI API calls. Turning off **API calls** blocks AI chat, web search, and both direct and command-triggered Piper TTS as well as provider-backed AI calls. Both toggles are stored in memory and reset to enabled whenever the bot restarts.
+7. To use text to speech, select **Join call** for the chosen voice channel first. Enter up to 500 characters under **Text to speech**, use the configured **Fish Audio S2 voice**, and select **Speak in call**. The bot must remain connected to that selected channel. The **Bot controls** panel has visual toggles for the Discord `!tts <message>` command and all AI API calls. Turning off **API calls** blocks AI chat, web search, and both direct and command-triggered Fish Audio TTS as well as provider-backed AI calls. Both toggles are stored in memory and reset to enabled whenever the bot restarts.
 8. To play your own clip, use the right-side **Upload audio** panel. Select the same voice channel the bot already joined, choose an `.mp3` or `.mp4` file, and select **Upload and play**. Uploads are limited to 8 MiB. The server checks both the filename extension and the corresponding MP3 or MP4 header signature instead of trusting the browser MIME type. Video streams in MP4 files are ignored; only their audio is played.
 
 9. To hear the call in the browser, set `EXTERNAL_SAY_CONTROL_TOKEN`, join the selected voice channel, and select **Start listening**. **Mute** affects only that browser, while **Stop listening** closes its stream. The receive session stops after the last browser listener disconnects.
@@ -106,7 +108,7 @@ If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-listening `
 
 The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 
-Normal chat and optional automatic memory extraction use the Groq API associated with `GROQ_API_KEY`. Text-to-speech runs through the local Piper executable configured by `PIPER_TTS_BINARY` and `PIPER_TTS_MODEL`; the expected voice is `en_GB-alan-medium` from the Piper samples page. With the default model filename, the bot downloads the matching `.onnx` and `.onnx.json` files on first use, verifies the model checksum, and validates the JSON config. If you set a custom `PIPER_TTS_MODEL`, deploy the matching `.onnx` and `.onnx.json` files together. The existing OpenAI web-search provider runs only when `ENABLE_OPENAI_WEB_SEARCH=true`. Browser listening does not call either AI provider.
+Normal chat and optional automatic memory extraction use the Groq API associated with `GROQ_API_KEY`. Text-to-speech is generated by Fish Audio using `FISH_API_KEY`, `FISH_TTS_REFERENCE_ID`, and `FISH_TTS_MODEL` (`s2-pro` by default). Copy the voice/model ID for the Fish Audio voice you want and store it in `FISH_TTS_REFERENCE_ID`. The existing OpenAI web-search provider runs only when `ENABLE_OPENAI_WEB_SEARCH=true`. Browser listening does not call either AI provider.
 
 ## Voice receive dependency
 
@@ -126,7 +128,7 @@ If `TARGET_CHANNEL_IDS` is unset or invalid, the bot falls back to the existing 
 
 ## API provider setup
 
-Groq handles normal chat replies and optional automatic memory extraction. Set `GROQ_API_KEY` and optionally override `GROQ_CHAT_MODEL`; the default is the cheap, fast `llama-3.1-8b-instant` model. Chat completions are capped at 150 tokens, keep recent history within a 12,000-character request budget, retry transient Groq failures, and log actionable API errors plus provider/model/token usage. `GROQ_MODEL` remains a backward-compatible alias. Piper handles text to speech with `PIPER_TTS_MODEL` and `PIPER_TTS_BINARY`; OpenAI remains responsible only for the explicitly enabled OpenAI web-search provider and optional chat fallback, configured with `OPENAI_API_KEY`, `ENABLE_OPENAI_WEB_SEARCH`, and `OPENAI_SEARCH_MODEL`. Normal chat never uses OpenAI unless `OPENAI_CHAT_FALLBACK=true`; fallback is off by default. Deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. When explicitly enabled and configured, OpenAI web search runs first; Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers.
+Groq handles normal chat replies and optional automatic memory extraction. Set `GROQ_API_KEY` and optionally override `GROQ_CHAT_MODEL`; the default is the cheap, fast `llama-3.1-8b-instant` model. Chat completions are capped at 150 tokens, keep recent history within a 12,000-character request budget, retry transient Groq failures, and log actionable API errors plus provider/model/token usage. `GROQ_MODEL` remains a backward-compatible alias. Fish Audio handles text to speech with `FISH_API_KEY`, `FISH_TTS_REFERENCE_ID`, and `FISH_TTS_MODEL`; OpenAI remains responsible only for the explicitly enabled OpenAI web-search provider and optional chat fallback, configured with `OPENAI_API_KEY`, `ENABLE_OPENAI_WEB_SEARCH`, and `OPENAI_SEARCH_MODEL`. Normal chat never uses OpenAI unless `OPENAI_CHAT_FALLBACK=true`; fallback is off by default. Deterministic Discord actions such as ping commands are still handled by bot code so mentions stay exact. When explicitly enabled and configured, OpenAI web search runs first; Tavily, Brave Search, SerpAPI, and DDGS remain fallback search providers.
 
 ## Known limitations
 

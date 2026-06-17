@@ -10,7 +10,6 @@ import math
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 from collections import OrderedDict
@@ -71,8 +70,12 @@ GROQ_REQUEST_MAX_ATTEMPTS = 3
 GROQ_RETRYABLE_STATUS_CODES = {429, 498, 500, 502, 503}
 PIPER_TTS_BINARY = os.environ.get("PIPER_TTS_BINARY", "piper")
 PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "en_GB-alan-medium.onnx").strip()
-PIPER_TTS_VOICE = "en_GB-alan-medium"
-PIPER_TTS_VOICES = {PIPER_TTS_VOICE: "Alan (English GB, medium)"}
+FISH_TTS_API_URL = os.environ.get("FISH_TTS_API_URL", "https://api.fish.audio/v1/tts").strip()
+FISH_TTS_MODEL = os.environ.get("FISH_TTS_MODEL", "s2-pro").strip()
+FISH_TTS_REFERENCE_ID = os.environ.get("FISH_TTS_REFERENCE_ID", "").strip()
+FISH_TTS_VOICE = "fish-s2"
+PIPER_TTS_VOICE = FISH_TTS_VOICE
+PIPER_TTS_VOICES = {FISH_TTS_VOICE: "Fish Audio S2 voice"}
 PIPER_DEFAULT_MODEL_NAME = "en_GB-alan-medium.onnx"
 PIPER_DEFAULT_MODEL_FILES = {
     PIPER_DEFAULT_MODEL_NAME: {
@@ -1775,52 +1778,59 @@ def synthesize_speech(text: str, voice: str) -> Path:
         raise RuntimeError("AI API calls are disabled from /say")
     if voice not in PIPER_TTS_VOICES:
         raise RuntimeError("Unknown text-to-speech voice")
-    model_path = PIPER_TTS_MODEL
-    if not model_path:
-        raise RuntimeError("PIPER_TTS_MODEL is not set")
-    ensure_piper_voice_model(model_path)
+
+    api_key = os.environ.get("FISH_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("FISH_API_KEY is not set")
+    if not FISH_TTS_REFERENCE_ID:
+        raise RuntimeError("FISH_TTS_REFERENCE_ID is not set")
+    if not FISH_TTS_MODEL:
+        raise RuntimeError("FISH_TTS_MODEL is not set")
 
     file_descriptor, temporary_name = tempfile.mkstemp(
-        prefix="discord-tts-", suffix=".wav"
+        prefix="discord-tts-", suffix=".mp3"
     )
     os.close(file_descriptor)
     speech_path = Path(temporary_name)
-    command = [
-        PIPER_TTS_BINARY,
-        "--model",
-        model_path,
-        "--output_file",
-        str(speech_path),
-    ]
+    payload = {
+        "text": text,
+        "reference_id": FISH_TTS_REFERENCE_ID,
+        "format": "mp3",
+    }
+    request = Request(
+        FISH_TTS_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "model": FISH_TTS_MODEL,
+        },
+        method="POST",
+    )
     try:
-        subprocess.run(
-            command,
-            input=text,
-            text=True,
-            capture_output=True,
-            check=True,
-            timeout=30,
+        with urlopen(request, timeout=60) as response:
+            audio = response.read()
+        if not audio:
+            raise RuntimeError("Fish Audio did not return speech audio")
+        speech_path.write_bytes(audio)
+        print(
+            f"[TTS] provider=fish-audio voice={voice} "
+            f"model={FISH_TTS_MODEL} reference_id={FISH_TTS_REFERENCE_ID}"
         )
-        if not speech_path.exists() or speech_path.stat().st_size == 0:
-            speech_path.unlink(missing_ok=True)
-            raise RuntimeError("Piper did not write speech audio")
-        print(f"[TTS] provider=piper voice={voice} model={model_path}")
         return speech_path
-    except FileNotFoundError as error:
+    except HTTPError as error:
         speech_path.unlink(missing_ok=True)
-        print(f"Piper speech binary not found: {PIPER_TTS_BINARY}")
-        raise RuntimeError("Piper text-to-speech is not installed") from error
-    except subprocess.TimeoutExpired as error:
+        error_body = error.read().decode("utf-8", errors="replace")
+        print(f"Fish Audio speech failed: HTTP {error.code}: {error_body[:1000]}")
+        if error.code in {401, 403}:
+            raise RuntimeError("Fish Audio rejected the API key") from error
+        if error.code == 404:
+            raise RuntimeError("Fish Audio voice was not found") from error
+        raise RuntimeError("Fish Audio could not generate speech right now") from error
+    except (URLError, TimeoutError) as error:
         speech_path.unlink(missing_ok=True)
-        print("Piper speech timed out")
-        raise RuntimeError("Piper text-to-speech timed out") from error
-    except subprocess.CalledProcessError as error:
-        speech_path.unlink(missing_ok=True)
-        stderr = (error.stderr or "").strip()
-        print(f"Piper speech failed: {stderr[:1000]}")
-        if "No such file" in stderr or "not found" in stderr:
-            raise RuntimeError("Piper voice model file is missing or unreadable") from error
-        raise RuntimeError("Piper could not generate speech right now") from error
+        print(f"Fish Audio speech request failed: {error}")
+        raise RuntimeError("Fish Audio text-to-speech request failed") from error
     except Exception:
         speech_path.unlink(missing_ok=True)
         raise
