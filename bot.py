@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -72,6 +73,21 @@ PIPER_TTS_BINARY = os.environ.get("PIPER_TTS_BINARY", "piper")
 PIPER_TTS_MODEL = os.environ.get("PIPER_TTS_MODEL", "en_GB-alan-medium.onnx").strip()
 PIPER_TTS_VOICE = "en_GB-alan-medium"
 PIPER_TTS_VOICES = {PIPER_TTS_VOICE: "Alan (English GB, medium)"}
+PIPER_DEFAULT_MODEL_NAME = "en_GB-alan-medium.onnx"
+PIPER_DEFAULT_MODEL_FILES = {
+    PIPER_DEFAULT_MODEL_NAME: {
+        "urls": [
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx?download=true",
+        ],
+        "md5": "8f6b35eeb8ef6269021c6cb6d2414c9b",
+    },
+    f"{PIPER_DEFAULT_MODEL_NAME}.json": {
+        "urls": [
+            "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json?download=true",
+            "https://huggingface.co/rhasspy/piper-voices/raw/5512791644e2148e4be301d4c7fc2a4bf51a5057/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json",
+        ],
+    },
+}
 CHAT_TTS_VOICE = PIPER_TTS_VOICE
 TTS_TEXT_LIMIT = 500
 # Uploaded clips are intentionally capped at 8 MiB to limit memory, disk, and bandwidth use.
@@ -1675,6 +1691,86 @@ def fetch_json(url: str, *, headers: dict | None = None, timeout: int = 10) -> d
         return json.loads(response.read().decode("utf-8"))
 
 
+def file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_piper_config(path: Path) -> None:
+    with path.open("r", encoding="utf-8") as file:
+        config = json.load(file)
+    if config.get("phoneme_type") != "espeak" or not config.get("phoneme_id_map"):
+        raise RuntimeError(f"downloaded {path.name} is not a Piper voice config")
+
+
+def download_file(
+    urls: list[str],
+    destination: Path,
+    *,
+    expected_md5: str | None = None,
+    validate_json: bool = False,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+    for url in urls:
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}-", suffix=".download", dir=destination.parent
+        )
+        os.close(file_descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            with urlopen(url, timeout=60) as response, temporary_path.open("wb") as output:
+                shutil.copyfileobj(response, output)
+            if expected_md5 is not None:
+                actual_md5 = file_md5(temporary_path)
+                if actual_md5 != expected_md5:
+                    raise RuntimeError(
+                        f"downloaded {destination.name} checksum {actual_md5} did not match {expected_md5}"
+                    )
+            if validate_json:
+                validate_piper_config(temporary_path)
+            temporary_path.replace(destination)
+            return
+        except Exception as error:
+            last_error = error
+            temporary_path.unlink(missing_ok=True)
+            print(f"Piper voice file download failed for {destination.name}: {error}")
+
+    raise RuntimeError(f"all downloads failed for {destination.name}") from last_error
+
+
+def ensure_piper_voice_model(model_path: str) -> None:
+    model = Path(model_path)
+    config = Path(f"{model_path}.json")
+    missing_files = [path for path in (model, config) if not path.exists()]
+    if not missing_files:
+        return
+
+    if model.name != PIPER_DEFAULT_MODEL_NAME:
+        missing_names = ", ".join(str(path) for path in missing_files)
+        raise RuntimeError(f"Piper voice model file is missing: {missing_names}")
+
+    for path in (model, config):
+        if path.exists():
+            continue
+        metadata = PIPER_DEFAULT_MODEL_FILES[path.name]
+        print(f"Downloading Piper voice file: {path.name}")
+        try:
+            download_file(
+                metadata["urls"],
+                path,
+                expected_md5=metadata.get("md5"),
+                validate_json=path.suffix == ".json",
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"Piper voice model file could not be downloaded: {path.name}: {error}"
+            ) from error
+
+
 def synthesize_speech(text: str, voice: str) -> Path:
     if not ai_api_calls_enabled:
         raise RuntimeError("AI API calls are disabled from /say")
@@ -1683,6 +1779,7 @@ def synthesize_speech(text: str, voice: str) -> Path:
     model_path = PIPER_TTS_MODEL
     if not model_path:
         raise RuntimeError("PIPER_TTS_MODEL is not set")
+    ensure_piper_voice_model(model_path)
 
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix="discord-tts-", suffix=".wav"
@@ -1722,6 +1819,8 @@ def synthesize_speech(text: str, voice: str) -> Path:
         speech_path.unlink(missing_ok=True)
         stderr = (error.stderr or "").strip()
         print(f"Piper speech failed: {stderr[:1000]}")
+        if "No such file" in stderr or "not found" in stderr:
+            raise RuntimeError("Piper voice model file is missing or unreadable") from error
         raise RuntimeError("Piper could not generate speech right now") from error
     except Exception:
         speech_path.unlink(missing_ok=True)
