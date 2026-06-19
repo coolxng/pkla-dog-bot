@@ -668,6 +668,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           <span>Relay: <strong id="relay-state">Stopped</strong></span>
           <span id="capture-indicator" class="live-indicator">Not listening</span>
         </div>
+        <label for="listen-volume">Browser volume</label>
+        <input id="listen-volume" type="range" min="0" max="100" value="100">
         <audio id="discord-audio" preload="none"></audio>
       </section>
       <div class="voice-tools">
@@ -810,6 +812,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const relayState = document.getElementById("relay-state");
     const captureIndicator = document.getElementById("capture-indicator");
     const audio = document.getElementById("discord-audio");
+    const listenVolume = document.getElementById("listen-volume");
     const startListening = document.getElementById("start-listening");
     const muteListening = document.getElementById("mute-listening");
     const stopListening = document.getElementById("stop-listening");
@@ -935,6 +938,13 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       }
     });
 
+    function setListenVolume() {
+      audio.volume = Number(listenVolume.value) / 100;
+    }
+
+    listenVolume.addEventListener("input", setListenVolume);
+    setListenVolume();
+
     function setRelayState(state, live) {
       relayState.textContent = state;
       captureIndicator.textContent = live ? "Live audio" : "Not listening";
@@ -961,7 +971,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       startListening.disabled = true;
       audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}?t=${Date.now()}`;
       audio.muted = false;
-      audio.volume = 1;
+      setListenVolume();
       setRelayState("Connecting…", false);
       try {
         await audio.play();
