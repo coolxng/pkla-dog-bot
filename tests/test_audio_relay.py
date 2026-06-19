@@ -9,11 +9,15 @@ import bot
 from audio_relay import (
     PCM_FRAME_BYTES,
     AudioRelay,
+    JITTER_BUFFER_FRAMES,
+    JITTER_DRAIN_SECONDS,
     MAX_SOURCE_BUFFER_FRAMES,
+    MIX_HEADROOM,
     RelayError,
     SlowClientError,
     chunk_pcm_frames,
     mix_pcm_frames,
+    should_play_source_frame,
 )
 
 
@@ -114,6 +118,24 @@ class RelayLifecycleTests(unittest.TestCase):
             1,
         )
 
+    def test_jitter_buffer_waits_for_a_small_cushion_before_playing(self):
+        frames_buffer = deque([b"a" * PCM_FRAME_BYTES] * (JITTER_BUFFER_FRAMES - 1))
+        now = 10.0
+
+        self.assertFalse(
+            should_play_source_frame(frames_buffer, now, now + JITTER_DRAIN_SECONDS / 2)
+        )
+        frames_buffer.append(b"b" * PCM_FRAME_BYTES)
+        self.assertTrue(should_play_source_frame(frames_buffer, now, now))
+
+    def test_jitter_buffer_drains_tail_after_source_goes_quiet(self):
+        frames_buffer = deque([b"a" * PCM_FRAME_BYTES])
+        now = 10.0
+
+        self.assertTrue(
+            should_play_source_frame(frames_buffer, now, now + JITTER_DRAIN_SECONDS)
+        )
+
     def test_encoder_failure_closes_all_listeners(self):
         idle = Mock()
         relay = StubRelay(on_idle=idle)
@@ -125,10 +147,18 @@ class RelayLifecycleTests(unittest.TestCase):
         self.assertEqual(relay.state().listener_count, 0)
         idle.assert_called_once_with()
 
-    def test_fake_frames_are_mixed_with_saturation(self):
+    def test_fake_frames_are_mixed_with_headroom(self):
         positive = (20_000).to_bytes(2, "little", signed=True) * 1920
         mixed = mix_pcm_frames([positive, positive])
-        self.assertEqual(int.from_bytes(mixed[:2], "little", signed=True), 32767)
+        self.assertEqual(
+            int.from_bytes(mixed[:2], "little", signed=True),
+            round(20_000 * MIX_HEADROOM),
+        )
+
+    def test_extreme_frames_are_mixed_with_saturation(self):
+        positive = (32767).to_bytes(2, "little", signed=True) * 1920
+        mixed = mix_pcm_frames([positive, positive, positive])
+        self.assertLessEqual(int.from_bytes(mixed[:2], "little", signed=True), 32767)
 
 
 class AudioAuthorizationTests(unittest.TestCase):
