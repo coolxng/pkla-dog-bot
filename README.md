@@ -69,6 +69,11 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!remember <fact>` | Adds a shared memory fact manually. |
 | `!memory` | Shows current shared memory facts. |
 | `!search <query>` | Runs a live web search and returns a concise answer. |
+| `!help` | Shows a concise command list based on this README plus simple extras. |
+| `!uptime` | Shows how long the current bot process has been running. |
+| `!coinflip` | Flips a coin and returns heads or tails. |
+| `!roll [NdM]` | Rolls dice, defaulting to `1d6`; accepts small expressions such as `d20` or `2d6`. |
+| `!status` | Shows in-memory TTS, API-call, and listen-in status. |
 | `!forget` | Owner-only command that clears shared memory. |
 | `!deletedms` | Available only in DMs to Discord user `575057023046123520`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
 | `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is received only while a browser listener is connected. |
