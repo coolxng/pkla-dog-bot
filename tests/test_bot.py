@@ -910,6 +910,44 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #General")
 
+    async def test_join_falls_back_when_receive_enabled_connect_fails(self):
+        voice_client = SimpleNamespace()
+        voice_channel = SimpleNamespace(
+            mention="#General",
+            connect=AsyncMock(
+                side_effect=[
+                    bot.discord.DiscordException("receive failed"),
+                    voice_client,
+                ]
+            ),
+        )
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=None),
+            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+        )
+
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
+            patch.object(bot, "env_bool", return_value=True),
+            patch.object(bot, "voice_receive_client_class", return_value=object),
+            patch.object(bot, "start_bark_task") as start_bark_task,
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
+            patch.object(bot, "play_bark", return_value=True) as play_bark,
+        ):
+            response = await bot.join_author_voice(message)
+
+        self.assertEqual(voice_channel.connect.await_count, 2)
+        voice_channel.connect.assert_has_awaits(
+            [
+                call(self_deaf=False, self_mute=False, cls=object),
+                call(self_deaf=False, self_mute=False),
+            ]
+        )
+        start_bark_task.assert_called_once_with(message.guild)
+        sleep.assert_awaited_once_with(bot.BARK_JOIN_DELAY_SECONDS)
+        play_bark.assert_called_once_with(voice_client)
+        self.assertEqual(response, "joined #General")
+
     async def test_join_requires_the_user_to_be_in_voice(self):
         message = SimpleNamespace(
             guild=SimpleNamespace(voice_client=None),
