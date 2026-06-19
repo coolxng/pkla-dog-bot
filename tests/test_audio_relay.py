@@ -1,6 +1,7 @@
 import base64
 import queue
 import unittest
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -8,6 +9,7 @@ import bot
 from audio_relay import (
     PCM_FRAME_BYTES,
     AudioRelay,
+    MAX_SOURCE_BUFFER_FRAMES,
     RelayError,
     SlowClientError,
     chunk_pcm_frames,
@@ -64,7 +66,7 @@ class RelayLifecycleTests(unittest.TestCase):
         self.assertFalse(relay.submit_pcm(b"\x00\x00"))
 
     def test_larger_pcm_chunks_are_split_into_20_ms_frames(self):
-        pcm = b"\x01\x02" * (PCM_FRAME_BYTES + 100)
+        pcm = b"\x01\x02" * (PCM_FRAME_BYTES // 2 + 100)
         frames = list(chunk_pcm_frames(pcm))
 
         self.assertEqual(len(frames), 2)
@@ -75,7 +77,7 @@ class RelayLifecycleTests(unittest.TestCase):
 
     def test_submit_pcm_queues_all_frames_from_large_chunk(self):
         relay = StubRelay(input_frame_limit=3)
-        pcm = b"\x01\x02" * (PCM_FRAME_BYTES + 100)
+        pcm = b"\x01\x02" * (PCM_FRAME_BYTES // 2 + 100)
 
         self.assertTrue(relay.submit_pcm(pcm, source_id=42))
         self.assertEqual(relay._input_frames.qsize(), 2)
@@ -86,6 +88,31 @@ class RelayLifecycleTests(unittest.TestCase):
         self.assertEqual(second_source, 42)
         self.assertEqual(first_frame, pcm[:PCM_FRAME_BYTES])
         self.assertEqual(len(second_frame), PCM_FRAME_BYTES)
+
+    def test_source_buffer_keeps_bursty_frames_in_order(self):
+        relay = StubRelay()
+        source_buffers = {}
+        first = b"a" * PCM_FRAME_BYTES
+        second = b"b" * PCM_FRAME_BYTES
+
+        relay._append_source_frame(source_buffers, 42, first)
+        relay._append_source_frame(source_buffers, 42, second)
+
+        self.assertEqual(list(source_buffers[42]), [first, second])
+
+    def test_source_buffer_drops_oldest_frames_when_backlogged(self):
+        relay = StubRelay()
+        source_buffers = {42: deque(maxlen=MAX_SOURCE_BUFFER_FRAMES)}
+
+        for frame_number in range(MAX_SOURCE_BUFFER_FRAMES + 1):
+            frame = frame_number.to_bytes(2, "little") * (PCM_FRAME_BYTES // 2)
+            relay._append_source_frame(source_buffers, 42, frame)
+
+        oldest_frame = source_buffers[42][0]
+        self.assertEqual(
+            int.from_bytes(oldest_frame[:2], "little"),
+            1,
+        )
 
     def test_encoder_failure_closes_all_listeners(self):
         idle = Mock()
