@@ -2676,9 +2676,23 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
                 await voice_client.move_to(voice_channel)
         else:
             connect_options = {"self_deaf": False, "self_mute": False}
-            if EXTERNAL_SAY_CONTROL_TOKEN and env_bool("ENABLE_LISTEN_IN", True):
+            receive_enabled = EXTERNAL_SAY_CONTROL_TOKEN and env_bool(
+                "ENABLE_LISTEN_IN", True
+            )
+            if receive_enabled:
                 connect_options["cls"] = voice_receive_client_class()
-            voice_client = await voice_channel.connect(**connect_options)
+            try:
+                voice_client = await voice_channel.connect(**connect_options)
+            except (asyncio.TimeoutError, discord.DiscordException):
+                if not receive_enabled:
+                    raise
+                print(
+                    "Receive-enabled voice connection failed; retrying without "
+                    "browser listen-in support"
+                )
+                voice_client = await voice_channel.connect(
+                    self_deaf=False, self_mute=False
+                )
     except (asyncio.TimeoutError, discord.DiscordException) as error:
         print(f"Voice connection error: {error}")
         set_voice_disconnected(guild, voice_channel)
