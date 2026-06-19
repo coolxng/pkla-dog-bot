@@ -22,6 +22,9 @@ DEFAULT_INPUT_FRAMES = 100
 DEFAULT_CLIENT_CHUNKS = 32
 STREAM_CHUNK_BYTES = 4096
 MAX_SOURCE_BUFFER_FRAMES = 50
+JITTER_BUFFER_FRAMES = 3
+JITTER_DRAIN_SECONDS = FRAME_MILLISECONDS / 1000 * 3
+MIX_HEADROOM = 0.85
 _STOP = object()
 
 
@@ -203,17 +206,24 @@ class AudioRelay:
         frame_seconds = FRAME_MILLISECONDS / 1000
         next_frame_at = time.monotonic()
         source_buffers = {}
+        last_received_at = {}
         while not self._stop_event.is_set():
-            self._fill_source_buffers(source_buffers, timeout=frame_seconds)
+            self._fill_source_buffers(
+                source_buffers, last_received_at, timeout=frame_seconds
+            )
+            now = time.monotonic()
             frames = []
             empty_sources = []
             for source_id, frames_buffer in source_buffers.items():
-                if frames_buffer:
+                if should_play_source_frame(
+                    frames_buffer, last_received_at.get(source_id, 0), now
+                ):
                     frames.append(frames_buffer.popleft())
                 if not frames_buffer:
                     empty_sources.append(source_id)
             for source_id in empty_sources:
                 source_buffers.pop(source_id, None)
+                last_received_at.pop(source_id, None)
             mixed = mix_pcm_frames(frames) if frames else bytes(PCM_FRAME_BYTES)
             with self._lock:
                 process = self._process
@@ -228,11 +238,16 @@ class AudioRelay:
             self._stop_event.wait(max(0, next_frame_at - time.monotonic()))
 
     def _fill_source_buffers(
-        self, source_buffers: dict[object | None, deque[bytes]], *, timeout: float
+        self,
+        source_buffers: dict[object | None, deque[bytes]],
+        last_received_at: dict[object | None, float],
+        *,
+        timeout: float,
     ) -> None:
         try:
             source_id, frame = self._input_frames.get(timeout=timeout)
             self._append_source_frame(source_buffers, source_id, frame)
+            last_received_at[source_id] = time.monotonic()
         except queue.Empty:
             return
 
@@ -240,6 +255,7 @@ class AudioRelay:
             try:
                 source_id, frame = self._input_frames.get_nowait()
                 self._append_source_frame(source_buffers, source_id, frame)
+                last_received_at[source_id] = time.monotonic()
             except queue.Empty:
                 return
 
@@ -321,8 +337,17 @@ def chunk_pcm_frames(pcm: bytes) -> Iterator[bytes]:
         yield frame
 
 
+def should_play_source_frame(
+    frames_buffer: deque[bytes], last_received_at: float, now: float
+) -> bool:
+    """Keep a small jitter cushion, then drain when a speaker stops."""
+    if len(frames_buffer) >= JITTER_BUFFER_FRAMES:
+        return True
+    return bool(frames_buffer) and now - last_received_at >= JITTER_DRAIN_SECONDS
+
+
 def mix_pcm_frames(frames: list[bytes]) -> bytes:
-    """Mix signed 16-bit little-endian PCM with saturation."""
+    """Mix signed 16-bit little-endian PCM with headroom and saturation."""
     if not frames:
         return bytes(PCM_FRAME_BYTES)
     mixed = [0] * (PCM_FRAME_BYTES // PCM_SAMPLE_BYTES)
@@ -331,5 +356,8 @@ def mix_pcm_frames(frames: list[bytes]) -> bytes:
         samples.frombytes(frame[:PCM_FRAME_BYTES])
         for index, sample in enumerate(samples):
             mixed[index] += sample
-    output = array("h", (max(-32768, min(32767, sample)) for sample in mixed))
+    gain = MIX_HEADROOM / max(1, len(frames))
+    output = array(
+        "h", (max(-32768, min(32767, round(sample * gain))) for sample in mixed)
+    )
     return output.tobytes()
