@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from array import array
+from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ PCM_FRAME_BYTES = PCM_RATE * PCM_CHANNELS * PCM_SAMPLE_BYTES * FRAME_MILLISECOND
 DEFAULT_INPUT_FRAMES = 100
 DEFAULT_CLIENT_CHUNKS = 32
 STREAM_CHUNK_BYTES = 4096
+MAX_SOURCE_BUFFER_FRAMES = 50
 _STOP = object()
 
 
@@ -200,20 +202,18 @@ class AudioRelay:
     def _mix_loop(self) -> None:
         frame_seconds = FRAME_MILLISECONDS / 1000
         next_frame_at = time.monotonic()
+        source_buffers = {}
         while not self._stop_event.is_set():
-            frames_by_source = {}
-            try:
-                source_id, frame = self._input_frames.get(timeout=frame_seconds)
-                frames_by_source[source_id] = frame
-            except queue.Empty:
-                pass
-            while len(frames_by_source) < 32:
-                try:
-                    source_id, frame = self._input_frames.get_nowait()
-                    frames_by_source[source_id] = frame
-                except queue.Empty:
-                    break
-            frames = list(frames_by_source.values())
+            self._fill_source_buffers(source_buffers, timeout=frame_seconds)
+            frames = []
+            empty_sources = []
+            for source_id, frames_buffer in source_buffers.items():
+                if frames_buffer:
+                    frames.append(frames_buffer.popleft())
+                if not frames_buffer:
+                    empty_sources.append(source_id)
+            for source_id in empty_sources:
+                source_buffers.pop(source_id, None)
             mixed = mix_pcm_frames(frames) if frames else bytes(PCM_FRAME_BYTES)
             with self._lock:
                 process = self._process
@@ -226,6 +226,33 @@ class AudioRelay:
                 return
             next_frame_at += frame_seconds
             self._stop_event.wait(max(0, next_frame_at - time.monotonic()))
+
+    def _fill_source_buffers(
+        self, source_buffers: dict[object | None, deque[bytes]], *, timeout: float
+    ) -> None:
+        try:
+            source_id, frame = self._input_frames.get(timeout=timeout)
+            self._append_source_frame(source_buffers, source_id, frame)
+        except queue.Empty:
+            return
+
+        while True:
+            try:
+                source_id, frame = self._input_frames.get_nowait()
+                self._append_source_frame(source_buffers, source_id, frame)
+            except queue.Empty:
+                return
+
+    @staticmethod
+    def _append_source_frame(
+        source_buffers: dict[object | None, deque[bytes]],
+        source_id: object | None,
+        frame: bytes,
+    ) -> None:
+        frames_buffer = source_buffers.setdefault(
+            source_id, deque(maxlen=MAX_SOURCE_BUFFER_FRAMES)
+        )
+        frames_buffer.append(frame)
 
     def _read_loop(self) -> None:
         with self._lock:
