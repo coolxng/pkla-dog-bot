@@ -564,6 +564,9 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .activity-message { margin: .75rem 0 0; padding: .75rem .75rem .75rem 1.8rem; border-radius: .45rem; background: #151515; font-size: .8rem; font-weight: 700; }
     .activity-message::before { left: .75rem; top: 1.08rem; }
     .activity-error { min-height: 1rem; margin: .4rem 0 0; color: #ff7678; font-size: .72rem; }
+    .recent-actions-list { display: grid; gap: .55rem; margin: .75rem 0 0; padding: 0; list-style: none; }
+    .recent-actions-list li { padding: .65rem .75rem; border-radius: .45rem; background: #151515; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
+    .recent-actions-time { display: block; margin-bottom: .2rem; color: var(--text); font-size: .68rem; font-weight: 750; }
     .toggle-panel { gap: 0; }
     .toggle-control { display: grid; grid-template-columns: 1fr auto; align-items: center; width: 100%; min-height: 0; padding: .65rem 0; border: 0; text-align: left; }
     .toggle-copy { display: grid; }
@@ -724,6 +727,10 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           <p class="activity-message" id="activity-message" aria-live="polite">Checking activity…</p>
           <p class="activity-error" id="activity-error" aria-live="polite"></p>
         </section>
+        <section class="panel recent-actions-panel" aria-labelledby="recent-actions-heading">
+          <h2 id="recent-actions-heading">Recent actions</h2>
+          <ul id="recent-actions" class="recent-actions-list" aria-live="polite"></ul>
+        </section>
         <section class="panel toggle-panel" aria-labelledby="toggles-heading">
           <h2 id="toggles-heading">Bot controls</h2>
           <form method="post">
@@ -816,6 +823,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const activityMessage = document.getElementById("activity-message");
     const activityError = document.getElementById("activity-error");
     const controlStatus = document.getElementById("control-status");
+    const recentActions = document.getElementById("recent-actions");
     const ttsCommandToggle = document.getElementById("tts-command-toggle");
     const apiCallsToggle = document.getElementById("api-calls-toggle");
 
@@ -829,6 +837,19 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       controlStatus.textContent = message;
       controlStatus.classList.toggle("error", isError);
       controlStatus.hidden = false;
+    }
+
+    function addRecentAction(status) {
+      if (!status) return;
+      const entry = document.createElement("li");
+      const timestamp = document.createElement("span");
+      timestamp.className = "recent-actions-time";
+      timestamp.textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+      entry.append(timestamp, document.createTextNode(status));
+      recentActions.prepend(entry);
+      while (recentActions.children.length > 5) {
+        recentActions.lastElementChild.remove();
+      }
     }
 
     document.querySelectorAll('main form[method="post"]').forEach((form) => {
@@ -853,6 +874,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           if (!response.ok) throw new Error(payload.status || "Action failed");
 
           showControlStatus(payload.status || "Action completed.");
+          addRecentAction(payload.status);
           if (action === "toggle_tts_command" && typeof payload.tts_command_enabled === "boolean") {
             updateToggle(ttsCommandToggle, payload.tts_command_enabled);
           }
