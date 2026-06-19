@@ -8,6 +8,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import tempfile
 import time
@@ -96,6 +97,7 @@ EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").st
 EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
 chat_tts_command_enabled = True
 ai_api_calls_enabled = True
+BOT_STARTED_AT = time.monotonic()
 CENTRAL_TIME = ZoneInfo("America/Chicago")
 DEFAULT_OPENAI_WEB_SEARCH_TOOL = "web_search"
 DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 1498022419447943379}
@@ -181,6 +183,7 @@ def parse_int_env(name: str, default: int) -> int:
         print(f"Ignoring invalid integer for {name}: {raw_value!r}")
         return default
 
+
 def parse_float_env(name: str, default: float) -> float:
     raw_value = os.environ.get(name, "").strip()
     if not raw_value:
@@ -191,6 +194,90 @@ def parse_float_env(name: str, default: float) -> float:
         print(f"Ignoring invalid number for {name}: {raw_value!r}")
         return default
 
+
+def format_elapsed_time(total_seconds: float) -> str:
+    total_seconds = int(total_seconds)
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or parts:
+        parts.append(f"{hours}h")
+    if minutes or parts:
+        parts.append(f"{minutes}m")
+    parts.append(f"{seconds}s")
+    return " ".join(parts)
+
+
+def command_help_text() -> str:
+    readme_path = Path(__file__).with_name("README.md")
+    try:
+        readme = readme_path.read_text(encoding="utf-8")
+    except OSError as error:
+        print(f"Could not read README command list: {error}")
+        return (
+            "Commands: !join, !leave, !bark, !tts <message>, !reset, "
+            "!memory, !search <query>, !help, !uptime, !coinflip, "
+            "!roll, !status"
+        )
+
+    in_commands = False
+    commands = []
+    for line in readme.splitlines():
+        if line.strip() == "## Bot commands":
+            in_commands = True
+            continue
+        if in_commands and line.startswith("## "):
+            break
+        if not in_commands or not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) >= 2 and cells[0] != "Command":
+            commands.append(cells[0].replace("`", ""))
+
+    command_list = ", ".join(commands)
+    text = (
+        "**Commands from README**\n"
+        f"{command_list}\n"
+        "**Simple extras**\n"
+        "!help, !uptime, !coinflip, !roll [NdM], !status"
+    )
+    return text if len(text) <= 2000 else text[:1997] + "..."
+
+
+def roll_dice_command(content: str) -> str:
+    expression = content[len("!roll"):].strip().lower() or "1d6"
+    match = re.fullmatch(r"(?:(\d{1,2})?d)?(\d{1,3})", expression)
+    if not match:
+        return "use `!roll`, `!roll d20`, or `!roll 2d6`"
+
+    dice_count = int(match.group(1) or 1)
+    sides = int(match.group(2))
+    if dice_count < 1 or dice_count > 20 or sides < 2 or sides > 100:
+        return "dice must be between 1d2 and 20d100"
+
+    rolls = [random.randint(1, sides) for _ in range(dice_count)]
+    total = sum(rolls)
+    if dice_count == 1:
+        return f"rolled 1d{sides}: **{total}**"
+    return f"rolled {dice_count}d{sides}: {rolls} = **{total}**"
+
+
+def status_command_text() -> str:
+    listen_enabled = env_bool("ENABLE_LISTEN_IN", True)
+    relay_state = browser_audio_relay.state()
+    listen_state = "enabled" if listen_enabled else "disabled"
+    if listen_enabled and active_receive_channel_id is not None:
+        listen_state += f", active with {relay_state.listener_count} browser listener(s)"
+    elif listen_enabled:
+        listen_state += ", idle"
+    return (
+        f"TTS command: {'enabled' if chat_tts_command_enabled else 'disabled'}\n"
+        f"AI/API calls: {'enabled' if ai_api_calls_enabled else 'disabled'}\n"
+        f"Listen-in: {listen_state}"
+    )
 
 
 def current_central_datetime() -> datetime:
@@ -3391,6 +3478,28 @@ async def on_message(message):
             await message.channel.send("universal memory cleared")
         else:
             await message.channel.send("nah you can't do that")
+        return
+
+    if normalized_content == "!help":
+        await message.channel.send(command_help_text())
+        return
+
+    if normalized_content == "!uptime":
+        await message.channel.send(
+            f"uptime: {format_elapsed_time(time.monotonic() - BOT_STARTED_AT)}"
+        )
+        return
+
+    if normalized_content == "!coinflip":
+        await message.channel.send(random.choice(("heads", "tails")))
+        return
+
+    if normalized_content == "!roll" or normalized_content.startswith("!roll "):
+        await message.channel.send(roll_dice_command(content))
+        return
+
+    if normalized_content == "!status":
+        await message.channel.send(status_command_text())
         return
 
     if is_current_time_question(content):
