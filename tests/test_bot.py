@@ -60,6 +60,13 @@ class PingResponseTests(unittest.TestCase):
         self.assertIsNone(bot.ping_response_for("why did you ping jamal"))
 
 
+class SystemPromptTests(unittest.TestCase):
+    def test_pkla_slang_definition_is_in_system_prompt(self):
+        self.assertIn('"pkla" is versatile slang', bot.SYSTEM_PROMPT)
+        self.assertIn('high-quality, cool, great, fire, clean', bot.SYSTEM_PROMPT)
+        self.assertIn('effortless confidence and undeniable swag', bot.SYSTEM_PROMPT)
+
+
 class VoiceReceiveDependencyTests(unittest.TestCase):
     def test_voice_receive_dependency_includes_dave_fix(self):
         requirements = Path("requirements.txt").read_text()
