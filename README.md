@@ -1,3 +1,23 @@
+# pkla
+
+/ p klah /
+
+A versatile slang word used to describe anything of high quality, coolness, or greatness. Most prominently used as a substitute for words like good, fire, clean, or cool. Can also be used to describe a person who carries themselves with undeniable swag, effortless confidence, and an untouchable aura.
+
+*If someone calls you pkla, you do not argue — you accept it.*
+
+## Origin
+
+a catch-all. The word carries an energy that is difficult to define but immediately recognizable — like you already know when something is pkla and when it is not.
+
+## In use
+
+01&nbsp;&nbsp;&nbsp;*"Bro that fit is pkla."*
+
+02&nbsp;&nbsp;&nbsp;*"Yo, what's good pkla dog."*
+
+03&nbsp;&nbsp;&nbsp;*"Nah this beat is pkla, turn it up."*
+
 # Discord Bot
 
 A Python Discord bot with Groq-backed chat responses, optional OpenAI web search and OpenAI text to speech, voice playback, browser-based live call listening, lightweight in-memory DM/channel conversation history, and optional universal memory commands.
