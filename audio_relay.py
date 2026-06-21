@@ -18,12 +18,12 @@ PCM_CHANNELS = 2
 PCM_SAMPLE_BYTES = 2
 FRAME_MILLISECONDS = 20
 PCM_FRAME_BYTES = PCM_RATE * PCM_CHANNELS * PCM_SAMPLE_BYTES * FRAME_MILLISECONDS // 1000
-DEFAULT_INPUT_FRAMES = 100
-DEFAULT_CLIENT_CHUNKS = 32
-STREAM_CHUNK_BYTES = 4096
+DEFAULT_INPUT_FRAMES = 200
+DEFAULT_CLIENT_CHUNKS = 64
+STREAM_CHUNK_BYTES = 2048
 MAX_SOURCE_BUFFER_FRAMES = 50
-JITTER_BUFFER_FRAMES = 3
-JITTER_DRAIN_SECONDS = FRAME_MILLISECONDS / 1000 * 3
+JITTER_BUFFER_FRAMES = 6
+JITTER_DRAIN_SECONDS = FRAME_MILLISECONDS / 1000 * JITTER_BUFFER_FRAMES
 MIX_HEADROOM = 0.85
 _STOP = object()
 
@@ -167,7 +167,7 @@ class AudioRelay:
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
             "-f", "s16le", "-ar", str(PCM_RATE), "-ac", str(PCM_CHANNELS),
-            "-i", "pipe:0", "-vn", "-c:a", "libmp3lame", "-b:a", "64k",
+            "-i", "pipe:0", "-vn", "-c:a", "libmp3lame", "-b:a", "128k",
             "-f", "mp3", "-flush_packets", "1", "pipe:1",
         ]
         try:
@@ -343,7 +343,7 @@ def should_play_source_frame(
     """Keep a small jitter cushion, then drain when a speaker stops."""
     if len(frames_buffer) >= JITTER_BUFFER_FRAMES:
         return True
-    return bool(frames_buffer) and now - last_received_at >= JITTER_DRAIN_SECONDS
+    return bool(frames_buffer) and now - last_received_at >= JITTER_DRAIN_SECONDS - 1e-9
 
 
 def mix_pcm_frames(frames: list[bytes]) -> bytes:
