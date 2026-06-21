@@ -64,6 +64,27 @@ class RelayLifecycleTests(unittest.TestCase):
             next(listener.iter_chunks())
         self.assertEqual(relay.state().listener_count, 0)
 
+    def test_encoder_uses_higher_quality_mp3_settings(self):
+        started_commands = []
+
+        class FakeProcess:
+            stdin = SimpleNamespace(close=Mock())
+            stdout = SimpleNamespace(read=Mock(return_value=b""))
+            stderr = SimpleNamespace()
+            terminate = Mock()
+
+        def process_factory(command, **_kwargs):
+            started_commands.append(command)
+            return FakeProcess()
+
+        relay = AudioRelay(process_factory=process_factory)
+        listener = relay.add_listener()
+        listener.close()
+
+        command = started_commands[0]
+        self.assertIn("libmp3lame", command)
+        self.assertIn("128k", command)
+
     def test_input_queue_is_bounded(self):
         relay = StubRelay(input_frame_limit=1)
         self.assertTrue(relay.submit_pcm(b"\x00\x00"))

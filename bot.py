@@ -124,18 +124,6 @@ EXTERNAL_BARK_SOUNDS = {
         "path": Path(__file__).with_name("minecraft-bark.mp3"),
     },
     "fart": {"label": "Bark fart", "path": Path(__file__).with_name("bark-fart.mp3")},
-    "jamal": {
-        "label": "Jamal crazy idek",
-        "path": Path(__file__).with_name("jamalcrazyidek.mp3"),
-    },
-    "jamal-grape": {
-        "label": "Jamal 🍇",
-        "path": Path(__file__).with_name("jamalg.mp3"),
-    },
-    "evan": {
-        "label": "Evan crash",
-        "path": Path(__file__).with_name("evan-crash.mp4"),
-    },
 }
 DEFAULT_EXTERNAL_VOICE_CHANNEL_ID = 1447148315312521256
 app.config["MAX_CONTENT_LENGTH"] = MAX_EXTERNAL_SAY_REQUEST_BYTES
@@ -2953,6 +2941,8 @@ async def control_external_voice(
     sound = EXTERNAL_BARK_SOUNDS.get(sound_id)
     if sound is None:
         raise ValueError("Unknown bark sound")
+    if not sound["path"].is_file():
+        raise RuntimeError(f'{sound["label"]} audio file is missing')
     voice_client = voice_channel.guild.voice_client
     if not voice_client or not voice_client.is_connected():
         raise RuntimeError("Join the voice call before playing a sound")
