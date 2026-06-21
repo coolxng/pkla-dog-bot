@@ -87,8 +87,8 @@ class RelayLifecycleTests(unittest.TestCase):
 
     def test_input_queue_is_bounded(self):
         relay = StubRelay(input_frame_limit=1)
-        self.assertTrue(relay.submit_pcm(b"\x00\x00"))
-        self.assertFalse(relay.submit_pcm(b"\x00\x00"))
+        self.assertTrue(relay.submit_pcm(b"\x00" * PCM_FRAME_BYTES))
+        self.assertFalse(relay.submit_pcm(b"\x00" * PCM_FRAME_BYTES))
 
     def test_larger_pcm_chunks_are_split_into_20_ms_frames(self):
         pcm = b"\x01\x02" * (PCM_FRAME_BYTES // 2 + 100)
@@ -100,19 +100,31 @@ class RelayLifecycleTests(unittest.TestCase):
         self.assertEqual(frames[0], pcm[:PCM_FRAME_BYTES])
         self.assertTrue(frames[1].startswith(pcm[PCM_FRAME_BYTES:]))
 
-    def test_submit_pcm_queues_all_frames_from_large_chunk(self):
+    def test_submit_pcm_queues_complete_frames_and_buffers_partial_tail(self):
         relay = StubRelay(input_frame_limit=3)
         pcm = b"\x01\x02" * (PCM_FRAME_BYTES // 2 + 100)
 
         self.assertTrue(relay.submit_pcm(pcm, source_id=42))
-        self.assertEqual(relay._input_frames.qsize(), 2)
+        self.assertEqual(relay._input_frames.qsize(), 1)
+        self.assertEqual(relay._pending_pcm[42], pcm[PCM_FRAME_BYTES:])
 
         first_source, first_frame = relay._input_frames.get_nowait()
-        second_source, second_frame = relay._input_frames.get_nowait()
         self.assertEqual(first_source, 42)
-        self.assertEqual(second_source, 42)
         self.assertEqual(first_frame, pcm[:PCM_FRAME_BYTES])
-        self.assertEqual(len(second_frame), PCM_FRAME_BYTES)
+
+    def test_submit_pcm_combines_partial_chunks_before_queueing_frame(self):
+        relay = StubRelay(input_frame_limit=3)
+        first = b"a" * 100
+        second = b"b" * (PCM_FRAME_BYTES - len(first))
+
+        self.assertTrue(relay.submit_pcm(first, source_id=42))
+        self.assertEqual(relay._input_frames.qsize(), 0)
+
+        self.assertTrue(relay.submit_pcm(second, source_id=42))
+        queued_source, queued_frame = relay._input_frames.get_nowait()
+        self.assertEqual(queued_source, 42)
+        self.assertEqual(queued_frame, first + second)
+        self.assertEqual(relay._pending_pcm[42], b"")
 
     def test_source_buffer_keeps_bursty_frames_in_order(self):
         relay = StubRelay()
