@@ -90,6 +90,8 @@ class AudioRelay:
         self._client_chunk_limit = client_chunk_limit
         self._on_idle = on_idle
         self._listeners: dict[str, queue.Queue] = {}
+        self._pending_pcm: dict[object | None, bytes] = {}
+        self._pending_lock = threading.Lock()
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._process = None
@@ -138,12 +140,18 @@ class AudioRelay:
             return True
 
         accepted_all_frames = True
-        for frame in chunk_pcm_frames(pcm):
-            try:
-                self._input_frames.put_nowait((source_id, frame))
-            except queue.Full:
-                accepted_all_frames = False
-                break
+        with self._pending_lock:
+            buffered_pcm = self._pending_pcm.get(source_id, b"") + pcm
+            offset = 0
+            while len(buffered_pcm) - offset >= PCM_FRAME_BYTES:
+                frame = buffered_pcm[offset: offset + PCM_FRAME_BYTES]
+                try:
+                    self._input_frames.put_nowait((source_id, frame))
+                except queue.Full:
+                    accepted_all_frames = False
+                    break
+                offset += PCM_FRAME_BYTES
+            self._pending_pcm[source_id] = buffered_pcm[offset:]
         return accepted_all_frames
 
     def disconnect(self, reason: str | None = None) -> None:
@@ -152,6 +160,8 @@ class AudioRelay:
                 self._encoder_error = reason
             listeners = list(self._listeners.values())
             self._listeners.clear()
+            with self._pending_lock:
+                self._pending_pcm.clear()
             self._stop_locked()
         for chunks in listeners:
             self._force_put(chunks, _STOP)
@@ -163,6 +173,8 @@ class AudioRelay:
                 self._input_frames.get_nowait()
             except queue.Empty:
                 break
+        with self._pending_lock:
+            self._pending_pcm.clear()
         self._stop_event = threading.Event()
         command = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
