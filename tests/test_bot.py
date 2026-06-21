@@ -738,9 +738,6 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
                 "wolf-bark.mp3",
                 "minecraft-bark.mp3",
                 "bark-fart.mp3",
-                "jamalcrazyidek.mp3",
-                "jamalg.mp3",
-                "evan-crash.mp4",
             },
         )
         self.assertTrue(
@@ -1907,8 +1904,8 @@ class GroqConfigTests(unittest.TestCase):
         self.assertIn("listen to live call audio in the browser", bot.SYSTEM_PROMPT)
         self.assertNotIn("transcription", bot.SYSTEM_PROMPT.lower())
         self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
-        self.assertIn("Jamal crazy idek", bot.SYSTEM_PROMPT)
-        self.assertIn("Evan crash", bot.SYSTEM_PROMPT)
+        self.assertIn("Wolf bark", bot.SYSTEM_PROMPT)
+        self.assertIn("Minecraft bark", bot.SYSTEM_PROMPT)
         self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
 class ExternalSayTests(unittest.TestCase):
@@ -1949,9 +1946,8 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(b'value="wolf">Wolf bark</button>', response.data)
         self.assertIn(b'value="minecraft">Minecraft bark</button>', response.data)
         self.assertIn(b'value="fart">Bark fart</button>', response.data)
-        self.assertIn(b'value="jamal">Jamal crazy idek</button>', response.data)
-        self.assertIn('value="jamal-grape">Jamal 🍇</button>', response.text)
-        self.assertIn(b'value="evan">Evan crash</button>', response.data)
+        self.assertNotIn(b'value="jamal">', response.data)
+        self.assertNotIn(b'value="evan">', response.data)
 
     def test_page_has_text_to_speech_controls(self):
         response = self.client.get("/say")
