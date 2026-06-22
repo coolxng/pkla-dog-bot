@@ -26,10 +26,12 @@ import discord
 from discord import app_commands
 from ddgs import DDGS
 from flask import Flask, Response, jsonify, redirect, render_template_string, request, url_for
+from flask_sock import Sock
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from audio_relay import AudioRelay, RelayError
 from browser_talk import BrowserTalkSession, BrowserTalkState
+from pcm_relay import PcmRelay
 
 
 _voice_recv_spec = importlib.util.find_spec("discord.ext.voice_recv")
@@ -39,6 +41,7 @@ voice_recv = (
 
 
 app = Flask(__name__)
+sock = Sock(app)
 
 
 @app.route("/favicon.ico")
@@ -555,6 +558,7 @@ def schedule_receive_idle_cleanup() -> None:
 
 
 browser_audio_relay = AudioRelay(on_idle=schedule_receive_idle_cleanup)
+browser_pcm_relay = PcmRelay(on_idle=schedule_receive_idle_cleanup)
 
 
 
@@ -978,7 +982,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const relayChannel = document.getElementById("relay-channel");
     const relayState = document.getElementById("relay-state");
     const captureIndicator = document.getElementById("capture-indicator");
-    const audio = document.getElementById("discord-audio");
     const listenVolume = document.getElementById("listen-volume");
     const startListening = document.getElementById("start-listening");
     const stopListening = document.getElementById("stop-listening");
@@ -1011,7 +1014,13 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     let activityTimer;
     let relayTimer;
     let talkTimer;
-    let testToneContext;
+    let listenSocket;
+    let listenAudioContext;
+    let listenGainNode;
+    let listenConfig = { sampleRate: 48000, channels: 2, sampleBytes: 2 };
+    let listenFramesReceived = 0;
+    let listenBytesReceived = 0;
+    const speakerPlayback = new Map();
     let talkRecorder;
     let talkStream;
     let talkSessionToken = "";
@@ -1148,8 +1157,17 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       }
     });
 
+    function ensureListenAudioPipeline() {
+      if (listenAudioContext) return;
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) throw new Error("This browser cannot play live call audio.");
+      listenAudioContext = new AudioContext({ sampleRate: listenConfig.sampleRate });
+      listenGainNode = listenAudioContext.createGain();
+      listenGainNode.connect(listenAudioContext.destination);
+    }
+
     function setListenVolume() {
-      audio.volume = Number(listenVolume.value) / 100;
+      if (listenGainNode) listenGainNode.gain.value = Number(listenVolume.value) / 100;
     }
 
     listenVolume.addEventListener("input", setListenVolume);
@@ -1185,6 +1203,48 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       window.clearInterval(relayTimer);
       relayTimer = window.setInterval(pollRelayDebug, 1000);
       pollRelayDebug();
+    }
+
+    function base64ToBytes(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    }
+
+    function pcm16StereoToBuffer(frame) {
+      const sampleCount = Math.floor(frame.length / (listenConfig.channels * listenConfig.sampleBytes));
+      const audioBuffer = listenAudioContext.createBuffer(listenConfig.channels, sampleCount, listenConfig.sampleRate);
+      const channels = Array.from({ length: listenConfig.channels }, (_, index) => audioBuffer.getChannelData(index));
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        const frameOffset = sampleIndex * listenConfig.channels * listenConfig.sampleBytes;
+        for (let channelIndex = 0; channelIndex < listenConfig.channels; channelIndex += 1) {
+          const offset = frameOffset + channelIndex * listenConfig.sampleBytes;
+          const raw = frame[offset] | (frame[offset + 1] << 8);
+          channels[channelIndex][sampleIndex] = (raw > 32767 ? raw - 65536 : raw) / 32768;
+        }
+      }
+      return audioBuffer;
+    }
+
+    function queueFrameForSpeaker(userId, frame) {
+      const source = listenAudioContext.createBufferSource();
+      source.buffer = pcm16StereoToBuffer(frame);
+      source.connect(listenGainNode);
+      const now = listenAudioContext.currentTime;
+      const previous = speakerPlayback.get(userId) || 0;
+      const startAt = previous > now ? previous : now + 0.03;
+      source.start(startAt);
+      speakerPlayback.set(userId, startAt + source.buffer.duration);
+      source.onended = () => {
+        if ((speakerPlayback.get(userId) || 0) <= listenAudioContext.currentTime + 0.01) {
+          speakerPlayback.delete(userId);
+          framesQueued.textContent = String(speakerPlayback.size);
+        }
+      };
+      framesQueued.textContent = String(speakerPlayback.size);
     }
 
     function setTalkState(state, active) {
@@ -1388,25 +1448,25 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     }
 
     async function playTestTone() {
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContext) throw new Error("This browser does not support test-tone playback.");
-      testToneContext ||= new AudioContext();
-      if (testToneContext.state === "suspended") await testToneContext.resume();
-      const oscillator = testToneContext.createOscillator();
-      const gain = testToneContext.createGain();
+      ensureListenAudioPipeline();
+      if (listenAudioContext.state === "suspended") await listenAudioContext.resume();
+      const oscillator = listenAudioContext.createOscillator();
+      const gain = listenAudioContext.createGain();
       oscillator.frequency.value = 440;
       oscillator.type = "sine";
       gain.gain.value = Math.max(0.01, Number(listenVolume.value) / 100 * 0.08);
       oscillator.connect(gain);
-      gain.connect(testToneContext.destination);
+      gain.connect(listenGainNode);
       oscillator.start();
-      oscillator.stop(testToneContext.currentTime + 0.5);
+      oscillator.stop(listenAudioContext.currentTime + 0.5);
     }
 
     function resetListening(state = "Stopped") {
-      audio.pause();
-      audio.removeAttribute("src");
-      audio.load();
+      if (listenSocket) {
+        listenSocket.close();
+        listenSocket = undefined;
+      }
+      speakerPlayback.clear();
       startListening.disabled = false;
       stopListening.disabled = true;
       window.clearInterval(relayTimer);
@@ -1418,24 +1478,52 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         voiceChannel.reportValidity();
         return;
       }
-      startListening.disabled = true;
-      audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}?t=${Date.now()}`;
-      audio.muted = false;
-      setListenVolume();
-      setRelayState("Connected to audio relay. Waiting for Discord voice packets.", false);
-      scheduleRelayDebug();
       try {
-        await audio.play();
+        ensureListenAudioPipeline();
+        if (listenAudioContext.state === "suspended") await listenAudioContext.resume();
+        if (listenSocket && listenSocket.readyState <= WebSocket.OPEN) return;
+        startListening.disabled = true;
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        listenSocket = new WebSocket(`${protocol}://${window.location.host}/say/listen?voice_channel_id=${encodeURIComponent(voiceChannel.value)}`);
+        listenSocket.onopen = () => {
+          stopListening.disabled = false;
+          setListenVolume();
+          setRelayState("Connected to audio relay. Waiting for Discord voice packets.", false);
+          scheduleRelayDebug();
+        };
+        listenSocket.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload.type === "hello") {
+            listenConfig = {
+              sampleRate: payload.sample_rate,
+              channels: payload.channels,
+              sampleBytes: payload.sample_bytes,
+            };
+            return;
+          }
+          if (payload.type === "error") {
+            resetListening(payload.error || "Audio relay failed");
+            showControlStatus(payload.error || "Audio relay failed", true);
+            return;
+          }
+          if (payload.type !== "audio") return;
+          const frame = base64ToBytes(payload.pcm);
+          listenFramesReceived += 1;
+          listenBytesReceived += frame.byteLength;
+          queueFrameForSpeaker(payload.user_id, frame);
+          framesReceived.textContent = String(listenFramesReceived);
+          bytesReceived.textContent = String(listenBytesReceived);
+          lastFrameSize.textContent = String(frame.byteLength);
+          setRelayState("Receiving live Discord audio", true);
+        };
+        listenSocket.onerror = () => resetListening("Audio WebSocket error");
+        listenSocket.onclose = () => {
+          if (listenSocket) resetListening("Audio relay disconnected");
+        };
       } catch (error) {
         resetListening("Connection failed");
+        showControlStatus(error.message, true);
       }
-    });
-
-    audio.addEventListener("playing", () => {
-      setRelayState("Connected", true);
-      startListening.disabled = true;
-      stopListening.disabled = false;
-      scheduleRelayDebug();
     });
 
     stopListening.addEventListener("click", () => resetListening());
@@ -1455,10 +1543,6 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
 
     stopBrowserTalk.addEventListener("click", () => {
       stopBrowserTalkSession().catch((error) => showControlStatus(error.message, true));
-    });
-
-    audio.addEventListener("error", () => {
-      if (audio.getAttribute("src")) resetListening("Disconnected");
     });
 
     document.querySelectorAll(".ping-button").forEach((button) => {
@@ -1842,18 +1926,65 @@ def external_audio_stream(channel_id: int):
 def external_audio_status():
     if not incoming_audio_is_authorized():
         return external_say_authentication_required()
-    relay_state = browser_audio_relay.state()
-    debug = browser_audio_relay.debug_state()
+    relay_state = browser_pcm_relay.state()
+    debug = browser_pcm_relay.debug_state()
     return jsonify(
         listener_count=relay_state.listener_count,
-        running=relay_state.running,
-        encoder_error=relay_state.encoder_error,
+        running=bool(relay_state.listener_count),
+        encoder_error=None,
         frames_received=debug.frames_received,
         bytes_received=debug.bytes_received,
         last_frame_size=debug.last_frame_size,
         frames_queued=debug.frames_queued,
         active_speakers=debug.active_speakers,
     )
+
+
+@sock.route("/say/listen")
+def external_pcm_listen(websocket):
+    if not incoming_audio_is_authorized():
+        websocket.close()
+        return
+
+    raw_channel_id = request.args.get("voice_channel_id", "").strip()
+    try:
+        channel_id = int(raw_channel_id)
+    except ValueError:
+        websocket.send(json.dumps({"type": "error", "error": "Enter a valid numeric voice channel ID."}))
+        websocket.close()
+        return
+
+    listener = browser_pcm_relay.add_listener()
+    try:
+        submit_browser_audio_session(channel_id)
+        websocket.send(
+            json.dumps(
+                {
+                    "type": "hello",
+                    "sample_rate": 48_000,
+                    "channels": 2,
+                    "sample_bytes": 2,
+                }
+            )
+        )
+        while frame := listener.get():
+            source_id, pcm = frame
+            websocket.send(
+                json.dumps(
+                    {
+                        "type": "audio",
+                        "user_id": str(source_id or "unknown"),
+                        "pcm": base64.b64encode(pcm).decode("ascii"),
+                    }
+                )
+            )
+    except Exception as error:
+        try:
+            websocket.send(json.dumps({"type": "error", "error": str(error)}))
+        except Exception:
+            pass
+    finally:
+        listener.close()
 
 
 @app.route("/say/talk-status")
@@ -3063,7 +3194,12 @@ def create_browser_audio_sink(voice_client):
             if bot_user is not None and user.id == bot_user.id:
                 return
 
-            browser_audio_relay.submit_pcm(bytes(pcm), source_id=user.id)
+            decoded_pcm = bytes(pcm)
+            # WebSocket PCM is the primary listen-in path, matching Robert Bot.
+            browser_pcm_relay.submit_pcm(decoded_pcm, source_id=user.id)
+            # Retain the old HTTP audio endpoint for existing open browser tabs.
+            if browser_audio_relay.state().listener_count:
+                browser_audio_relay.submit_pcm(decoded_pcm, source_id=user.id)
 
         def cleanup(self):
             return None
@@ -3106,7 +3242,7 @@ async def start_browser_audio_session(channel_id: int) -> None:
 
 async def stop_receive_session_if_idle() -> None:
     global active_receive_channel_id, active_receive_sink
-    state = browser_audio_relay.state()
+    state = browser_pcm_relay.state()
     if state.listener_count:
         return
     channel_id = active_receive_channel_id
@@ -3125,6 +3261,7 @@ def close_receive_session(reason: str) -> None:
     active_receive_channel_id = None
     active_receive_sink = None
     browser_audio_relay.disconnect(reason)
+    browser_pcm_relay.disconnect()
 
 
 def play_audio(

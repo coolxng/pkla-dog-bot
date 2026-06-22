@@ -225,11 +225,11 @@ class AudioAuthorizationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Listen In", response.data)
-        self.assertIn(b"Stop Listening", response.data)
-        self.assertIn(b"Play Test Tone", response.data)
+        self.assertIn(b"Start listening", response.data)
+        self.assertIn(b"WebSocket", response.data)
+        self.assertIn(b"Test sound", response.data)
         self.assertIn(
-            b'const audio = document.getElementById("discord-audio")', response.data
+            b'new WebSocket(`${protocol}://${window.location.host}/say/listen?', response.data
         )
         self.assertIn(
             b'const startListening = document.getElementById("start-listening")',
@@ -322,7 +322,7 @@ class BrowserTalkAuthorizationTests(unittest.TestCase):
     def test_audio_status_requires_authentication_and_returns_debug_counters(self):
         wrong = base64.b64encode(b"user:wrong").decode()
         correct = base64.b64encode(b"user:secret-token").decode()
-        relay_state = SimpleNamespace(listener_count=1, running=True, encoder_error=None)
+        relay_state = SimpleNamespace(listener_count=1)
         debug_state = SimpleNamespace(
             frames_received=12,
             bytes_received=3456,
@@ -332,8 +332,8 @@ class BrowserTalkAuthorizationTests(unittest.TestCase):
         )
         with (
             patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
-            patch.object(bot.browser_audio_relay, "state", return_value=relay_state),
-            patch.object(bot.browser_audio_relay, "debug_state", return_value=debug_state),
+            patch.object(bot.browser_pcm_relay, "state", return_value=relay_state),
+            patch.object(bot.browser_pcm_relay, "debug_state", return_value=debug_state),
         ):
             denied = self.client.get(
                 "/say/audio-status", headers={"Authorization": f"Basic {wrong}"}
@@ -438,7 +438,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "voice_recv", SimpleNamespace(AudioSink=FakeAudioSink)),
             patch.object(bot, "client", SimpleNamespace(user=None)),
-            patch.object(bot.browser_audio_relay, "submit_pcm") as submit_pcm,
+            patch.object(bot.browser_pcm_relay, "submit_pcm") as submit_pcm,
         ):
             sink = bot.create_browser_audio_sink(voice_client)
             sink.write(user, data)
@@ -457,7 +457,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(bot, "voice_recv", SimpleNamespace(AudioSink=FakeAudioSink)),
             patch.object(bot, "client", SimpleNamespace(user=None)),
-            patch.object(bot.browser_audio_relay, "submit_pcm") as submit_pcm,
+            patch.object(bot.browser_pcm_relay, "submit_pcm") as submit_pcm,
         ):
             sink = bot.create_browser_audio_sink(voice_client)
             sink.write(user, data)
@@ -469,7 +469,7 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
         channel = SimpleNamespace(guild=SimpleNamespace(voice_client=voice_client))
         bot.active_receive_channel_id = 123
         with (
-            patch.object(bot.browser_audio_relay, "state") as state,
+            patch.object(bot.browser_pcm_relay, "state") as state,
             patch.object(bot.client, "get_channel", return_value=channel),
         ):
             state.return_value = SimpleNamespace(listener_count=0)
