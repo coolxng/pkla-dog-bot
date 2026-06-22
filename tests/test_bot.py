@@ -2515,6 +2515,18 @@ class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):
                         bot.submit_external_uploaded_audio(123, audio_path)
                 self.assertFalse(audio_path.exists())
 
+    def test_browser_talk_start_uses_extended_discord_timeout(self):
+        def run_result(coroutine, *_args, **_kwargs):
+            coroutine.close()
+            return {"session_id": "abc"}
+
+        with patch.object(bot, "run_discord_coroutine", side_effect=run_result) as run:
+            result = bot.submit_browser_talk_start(123, "audio/webm;codecs=opus")
+
+        self.assertEqual(result, {"session_id": "abc"})
+        self.assertEqual(run.call_args.kwargs["timeout_seconds"], 30)
+        self.assertIn("fully connected", run.call_args.args[1])
+
 
 class ExternalSayUploadFormTests(unittest.TestCase):
     def setUp(self):

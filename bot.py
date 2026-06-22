@@ -94,6 +94,7 @@ TTS_TEXT_LIMIT = 500
 MAX_UPLOADED_AUDIO_BYTES = 8 * 1024 * 1024
 # Allow multipart headers and form fields in addition to the audio payload itself.
 MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_AUDIO_BYTES + (1024 * 1024)
+BROWSER_TALK_START_TIMEOUT_SECONDS = 30
 EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
 EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
 chat_tts_command_enabled = True
@@ -1576,14 +1577,14 @@ def save_uploaded_audio(upload) -> Path:
         raise
 
 
-def run_discord_coroutine(coroutine, timeout_message: str):
+def run_discord_coroutine(coroutine, timeout_message: str, *, timeout_seconds: float = 10):
     if discord_event_loop is None or not client.is_ready():
         coroutine.close()
         raise RuntimeError("The Discord bot is not ready yet")
 
     future = asyncio.run_coroutine_threadsafe(coroutine, discord_event_loop)
     try:
-        return future.result(timeout=10)
+        return future.result(timeout=timeout_seconds)
     except FutureTimeoutError as error:
         future.cancel()
         raise RuntimeError(timeout_message) from error
@@ -1673,7 +1674,8 @@ def close_browser_talk_session(reason: str) -> None:
 def submit_browser_talk_start(channel_id: int, mime_type: str | None) -> dict:
     return run_discord_coroutine(
         start_browser_talk_session(channel_id, mime_type),
-        "Discord took too long to start browser talk",
+        "Discord took too long to start browser talk. Confirm the bot is fully connected to the selected voice channel and try again.",
+        timeout_seconds=BROWSER_TALK_START_TIMEOUT_SECONDS,
     )
 
 
