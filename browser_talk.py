@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import uuid
+from array import array
 from dataclasses import dataclass
 from typing import Callable
 
@@ -15,6 +16,8 @@ from audio_relay import PCM_CHANNELS, PCM_FRAME_BYTES, PCM_RATE
 
 
 DEFAULT_BROWSER_TALK_CONTAINER = "webm"
+# Values below this are normal microphone floor noise, not useful speech.
+PCM_SPEECH_SAMPLE_THRESHOLD = 400
 
 
 @dataclass(frozen=True)
@@ -42,12 +45,26 @@ def container_format_for_mime_type(mime_type: str | None) -> str:
     return DEFAULT_BROWSER_TALK_CONTAINER
 
 
+def pcm_contains_speech(pcm: bytes) -> bool:
+    samples = array("h")
+    samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    return bool(samples) and max(abs(sample) for sample in samples) >= PCM_SPEECH_SAMPLE_THRESHOLD
+
+
 class LivePCMSource(discord.AudioSource):
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        on_speech: Callable[[], None] | None = None,
+        on_silence: Callable[[], None] | None = None,
+    ):
         self._condition = threading.Condition()
         self._buffer = bytearray()
+        self._vad_pending = bytearray()
         self._closed = False
         self._error: str | None = None
+        self._on_speech = on_speech
+        self._on_silence = on_silence
 
     def feed(self, pcm: bytes) -> None:
         if not pcm:
@@ -55,8 +72,18 @@ class LivePCMSource(discord.AudioSource):
         with self._condition:
             if self._closed:
                 return
-            self._buffer.extend(pcm)
-            self._condition.notify_all()
+            self._vad_pending.extend(pcm)
+            speech_detected = False
+            while len(self._vad_pending) >= PCM_FRAME_BYTES:
+                frame = bytes(self._vad_pending[:PCM_FRAME_BYTES])
+                del self._vad_pending[:PCM_FRAME_BYTES]
+                if pcm_contains_speech(frame):
+                    self._buffer.extend(frame)
+                    speech_detected = True
+            if speech_detected:
+                self._condition.notify_all()
+        if speech_detected and self._on_speech is not None:
+            self._on_speech()
 
     def close(self, error: str | None = None) -> None:
         with self._condition:
@@ -86,6 +113,8 @@ class LivePCMSource(discord.AudioSource):
                 self._buffer.clear()
                 return frame.ljust(PCM_FRAME_BYTES, b"\x00")
 
+            if self._on_silence is not None:
+                self._on_silence()
             return b"\x00" * PCM_FRAME_BYTES
 
     def is_opus(self) -> bool:
@@ -108,7 +137,10 @@ class BrowserTalkSession:
         self.container_format = container_format_for_mime_type(mime_type)
         self._process_factory = process_factory
         self._on_finished = on_finished
-        self._source = LivePCMSource()
+        self._source = LivePCMSource(
+            on_speech=self._resume_discord_speaking,
+            on_silence=self._pause_discord_speaking,
+        )
         self._process: subprocess.Popen | None = None
         self._stdin_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -240,6 +272,14 @@ class BrowserTalkSession:
             self._finalize(f"Discord microphone playback stopped: {error}")
             return
         self._finalize(None)
+
+    def _resume_discord_speaking(self) -> None:
+        if self.active and self.voice_client.is_paused():
+            self.voice_client.resume()
+
+    def _pause_discord_speaking(self) -> None:
+        if self.active and self.voice_client.is_playing():
+            self.voice_client.pause()
 
     def _read_loop(self) -> None:
         process = self._process

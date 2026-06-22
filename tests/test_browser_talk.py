@@ -1,9 +1,14 @@
 import unittest
 
-from browser_talk import BrowserTalkSession
+from audio_relay import PCM_FRAME_BYTES
+from browser_talk import BrowserTalkSession, pcm_contains_speech
 
 
 class BrowserTalkSessionTests(unittest.TestCase):
+    def test_pcm_speech_detection_ignores_silence_and_keeps_voice(self):
+        self.assertFalse(pcm_contains_speech(bytes(PCM_FRAME_BYTES)))
+        self.assertTrue(pcm_contains_speech((500).to_bytes(2, "little", signed=True)))
+
     def test_submit_chunk_writes_to_ffmpeg_without_reentering_state_lock(self):
         class FakeInput:
             def __init__(self):
