@@ -255,8 +255,8 @@ class BrowserTalkAuthorizationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Talk from browser", response.data)
-        self.assertIn(b"Start Talking", response.data)
-        self.assertIn(b"Stop Talking", response.data)
+        self.assertIn(b"Start talking", response.data)
+        self.assertIn(b"Microphone diagnostics", response.data)
         self.assertIn(b"/say/talk/start", response.data)
         self.assertIn(b"/say/talk/chunk/", response.data)
         self.assertIn(b"/say/talk/stop", response.data)

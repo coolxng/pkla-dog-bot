@@ -616,7 +616,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .send-button, .birthday-button, .upload-button, .speak-button { width: 100%; margin-top: .8rem; background: var(--accent); border-color: var(--accent); }
     .send-button:hover:not(:disabled), .birthday-button:hover:not(:disabled), .upload-button:hover:not(:disabled), .speak-button:hover:not(:disabled), .ping-button:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
     .voice-help, .ping-help { margin: .3rem 0 .75rem; font-size: .78rem; }
-    .voice-actions, .listen-actions, .talk-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .65rem; }
+    .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .65rem; }
+    .talk-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; margin-top: .65rem; }
     .server-voice-actions, .member-voice-actions, .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin-top: .5rem; }
     .join-button, .listen-button, .ping-button { background: var(--accent); border-color: var(--accent); }
     .stop-button, .mute-button { border-color: rgba(250,166,26,.5); }
@@ -624,12 +625,23 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .talk-button { background: var(--accent); border-color: var(--accent); }
     .talk-stop-button { border-color: rgba(237,66,69,.55); }
     .server-voice-button, .sound-button { background: var(--surface-raised); }
-    .member-voice-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+    .voice-workspace-heading { margin-bottom: 1rem; }
+    .voice-setup { padding: 1rem; border: 1px solid var(--line-strong); border-radius: .55rem; background: #151515; }
+    .setup-step { margin: 0 0 .25rem; color: var(--accent); font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .voice-stream-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
+    .stream-card { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: .55rem; background: var(--surface-raised); }
+    .stream-card h3 { display: flex; align-items: center; gap: .45rem; }
+    .stream-card h3::before { display: grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: rgba(88,101,242,.2); color: #aeb7ff; font-size: .68rem; }
+    .listen-panel h3::before { content: "IN"; }
+    .talk-panel h3::before { content: "OUT"; }
+    .relay-debug { margin-top: .75rem; border-top: 1px solid var(--line); }
+    .relay-debug summary { padding-top: .75rem; color: var(--muted); font-size: .72rem; cursor: pointer; }
+    .relay-debug[open] summary { color: var(--text); }
+    .member-voice-panel { margin-top: .75rem; }
     .member-voice-button { background: var(--surface-raised); }
     .member-voice-button.danger { border-color: rgba(237,66,69,.55); }
     .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
     .subpanel { padding: 1rem; background: var(--surface-raised); }
-    .listen-panel, .talk-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
     .relay-details { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; color: var(--muted); font-size: .72rem; }
     .relay-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin-top: .75rem; }
     .relay-stat { padding: .55rem; border: 1px solid var(--line); border-radius: .45rem; background: #151515; }
@@ -677,7 +689,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .auth-dialog button { background: var(--accent); border-color: var(--accent); }
     .auth-error { grid-column: 2 / -1; min-height: 0; color: #ff7678 !important; }
     .birthday-panel { margin-top: 1rem; }
-    @media (max-width: 52rem) { .control-grid, .voice-tools { grid-template-columns: 1fr; } }
+    @media (max-width: 52rem) { .control-grid, .voice-tools, .voice-stream-grid { grid-template-columns: 1fr; } }
     @media (max-width: 42rem) {
       main { width: min(calc(100% - 1rem), 70rem); padding-top: 1rem; }
       .page-header { align-items: start; }
@@ -730,81 +742,81 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       <button class="send-button" type="submit">Send to Discord</button>
     </form>
     <form method="post" class="panel voice-section" aria-labelledby="voice-heading">
-      <div class="panel-heading">
-        <p class="section-kicker">Voice channel</p>
-      <h2 id="voice-heading">Voice call</h2>
-      <p class="voice-help">Join or leave a Discord voice channel. Joining also plays the bark and starts scheduled barking.</p>
+      <div class="panel-heading voice-workspace-heading">
+        <p class="section-kicker">Voice workspace</p>
+        <h2 id="voice-heading">Call controls</h2>
+        <p class="voice-help">1. Connect the bot. 2. Listen or talk from this browser. 3. Use clips, text-to-speech, and moderation only when needed.</p>
       </div>
-      <label for="voice-channel-id">Voice channel ID</label>
-      <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
-      <div class="voice-actions">
-        <button class="join-button" type="submit" name="action" value="join">Join call</button>
-        <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
-        <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
-      </div>
-      <div class="server-voice-actions">
-        <button class="server-voice-button" type="submit" name="action" value="server_mute">Server Mute Bot</button>
-        <button class="server-voice-button" type="submit" name="action" value="server_deafen">Server Deafen Bot</button>
-      </div>
-      <section class="member-voice-panel" aria-labelledby="member-voice-heading">
-        <h3 id="member-voice-heading">Member voice moderation</h3>
-        <p class="voice-help">Target a member currently in this selected voice channel. The bot needs Mute Members or Deafen Members permission and cannot moderate a member with an equal or higher role.</p>
-        <label for="target-user-id">Discord user ID</label>
-        <input id="target-user-id" name="target_user_id" inputmode="numeric" pattern="[0-9]+" placeholder="123456789012345678">
-        <div class="member-voice-actions">
-          <button class="member-voice-button danger" type="submit" name="action" value="server_mute_member">Server Mute Member</button>
-          <button class="member-voice-button danger" type="submit" name="action" value="server_deafen_member">Server Deafen Member</button>
-          <button class="member-voice-button" type="submit" name="action" value="server_unmute_member">Remove Server Mute</button>
-          <button class="member-voice-button" type="submit" name="action" value="server_undeafen_member">Remove Server Deafen</button>
+      <section class="voice-setup" aria-labelledby="call-setup-heading">
+        <p class="setup-step">Step 1</p>
+        <h3 id="call-setup-heading">Connect the bot to a call</h3>
+        <p class="voice-help">Enter the voice channel ID, then select Join. The browser features below use this same channel.</p>
+        <label for="voice-channel-id">Discord voice channel ID</label>
+        <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
+        <div class="voice-actions">
+          <button class="join-button" type="submit" name="action" value="join">Join call</button>
+          <button class="stop-button" type="submit" name="action" value="stop">Stop bot audio</button>
+          <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
         </div>
       </section>
-      <section class="listen-panel" aria-labelledby="listen-heading">
-        <h3 id="listen-heading">Listen in browser</h3>
-        <p class="voice-help">Hear live participant audio from the selected Discord voice channel.</p>
+      <div class="voice-stream-grid" aria-label="Browser voice controls">
+      <section class="stream-card listen-panel" aria-labelledby="listen-heading">
+        <p class="setup-step">Step 2A</p>
+        <h3 id="listen-heading">Listen from browser</h3>
+        <p class="voice-help">Hear live participant audio in this tab. This does not transmit your microphone.</p>
         {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
         <div class="listen-actions">
-          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Listen In</button>
-          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop Listening</button>
-          <button id="test-tone" class="mute-button" type="button">Play Test Tone</button>
+          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening</button>
+          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop</button>
+          <button id="test-tone" class="mute-button" type="button">Test sound</button>
         </div>
         <div class="relay-details" aria-live="polite">
-          <span>Selected Discord channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
+          <span>Channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
           <span>Relay: <strong id="relay-state">Stopped</strong></span>
           <span id="capture-indicator" class="live-indicator">Not listening</span>
         </div>
         <label for="listen-volume">Browser volume</label>
         <input id="listen-volume" type="range" min="0" max="100" value="100">
-        <div class="relay-stats" aria-live="polite">
-          <div class="relay-stat"><strong id="frames-received">0</strong><span>Frames Received</span></div>
-          <div class="relay-stat"><strong id="bytes-received">0</strong><span>Bytes Received</span></div>
-          <div class="relay-stat"><strong id="last-frame-size">0</strong><span>Last Frame Size</span></div>
-          <div class="relay-stat"><strong id="frames-queued">0</strong><span>Frames Queued</span></div>
-          <div class="relay-stat"><strong id="active-speakers">0</strong><span>Active Speakers</span></div>
-        </div>
+        <details class="relay-debug">
+          <summary>Listening diagnostics</summary>
+          <div class="relay-stats" aria-live="polite">
+            <div class="relay-stat"><strong id="frames-received">0</strong><span>Frames Received</span></div>
+            <div class="relay-stat"><strong id="bytes-received">0</strong><span>Bytes Received</span></div>
+            <div class="relay-stat"><strong id="last-frame-size">0</strong><span>Last Frame Size</span></div>
+            <div class="relay-stat"><strong id="frames-queued">0</strong><span>Frames Queued</span></div>
+            <div class="relay-stat"><strong id="active-speakers">0</strong><span>Active Speakers</span></div>
+          </div>
+        </details>
         <audio id="discord-audio" preload="none"></audio>
       </section>
-      <section class="talk-panel" aria-labelledby="talk-heading">
+      <section class="stream-card talk-panel" aria-labelledby="talk-heading">
+        <p class="setup-step">Step 2B</p>
         <h3 id="talk-heading">Talk from browser</h3>
-        <p class="voice-help">Use your microphone to speak into the selected Discord voice channel.</p>
+        <p class="voice-help">Send this device's microphone to the connected Discord call. Allow microphone access when your browser asks.</p>
         {% if not browser_talk_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable browser mic talk.</p>{% endif %}
         <div class="talk-actions">
-          <button id="start-browser-talk" class="talk-button" type="button"{% if not browser_talk_enabled %} disabled{% endif %}>Start Talking</button>
-          <button id="stop-browser-talk" class="talk-stop-button" type="button" disabled>Stop Talking</button>
+          <button id="start-browser-talk" class="talk-button" type="button"{% if not browser_talk_enabled %} disabled{% endif %}>Start talking</button>
+          <button id="stop-browser-talk" class="talk-stop-button" type="button" disabled>Stop</button>
         </div>
         <div class="relay-details" aria-live="polite">
-          <span>Talk relay: <strong id="talk-state">Stopped</strong></span>
+          <span>Relay: <strong id="talk-state">Stopped</strong></span>
           <span id="talk-indicator" class="live-indicator">Not talking</span>
         </div>
-        <div class="relay-stats" aria-live="polite">
-          <div class="relay-stat"><strong id="talk-chunks-received">0</strong><span>Chunks Sent</span></div>
-          <div class="relay-stat"><strong id="talk-bytes-received">0</strong><span>Bytes Sent</span></div>
-          <div class="relay-stat"><strong id="talk-last-chunk-size">0</strong><span>Last Chunk Size</span></div>
-          <div class="relay-stat"><strong id="talk-session-id">-</strong><span>Session</span></div>
-          <div class="relay-stat"><strong id="talk-channel-name">-</strong><span>Voice Channel</span></div>
-        </div>
+        <details class="relay-debug">
+          <summary>Microphone diagnostics</summary>
+          <div class="relay-stats" aria-live="polite">
+            <div class="relay-stat"><strong id="talk-chunks-received">0</strong><span>Chunks Sent</span></div>
+            <div class="relay-stat"><strong id="talk-bytes-received">0</strong><span>Bytes Sent</span></div>
+            <div class="relay-stat"><strong id="talk-last-chunk-size">0</strong><span>Last Chunk Size</span></div>
+            <div class="relay-stat"><strong id="talk-session-id">-</strong><span>Session</span></div>
+            <div class="relay-stat"><strong id="talk-channel-name">-</strong><span>Voice Channel</span></div>
+          </div>
+        </details>
       </section>
+      </div>
       <div class="voice-tools">
         <section class="subpanel" aria-labelledby="sound-heading">
+          <p class="setup-step">Optional</p>
           <h3 id="sound-heading">Sound clips</h3>
           <p class="voice-help">Play a sound after the bot has joined.</p>
           <div class="sound-actions">
@@ -814,19 +826,37 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           </div>
         </section>
         <section class="subpanel" aria-labelledby="speech-heading">
-      <h3 id="speech-heading">Text to speech</h3>
-      <p class="voice-help">Speak up to {{ tts_text_limit }} characters in the selected call.</p>
-      <label for="speech-text">Speech text</label>
-      <textarea class="speech-text" id="speech-text" name="speech_text" maxlength="{{ tts_text_limit }}"></textarea>
-      <label for="tts-voice">Voice</label>
-      <select id="tts-voice" name="voice">
-        {% for voice_id, voice_label in tts_voices.items() %}
-        <option value="{{ voice_id }}"{% if voice_id == tts_default_voice %} selected{% endif %}>{{ voice_label }}</option>
-        {% endfor %}
-      </select>
-      <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
+          <p class="setup-step">Optional</p>
+          <h3 id="speech-heading">Text to speech</h3>
+          <p class="voice-help">Speak up to {{ tts_text_limit }} characters in the selected call.</p>
+          <label for="speech-text">Speech text</label>
+          <textarea class="speech-text" id="speech-text" name="speech_text" maxlength="{{ tts_text_limit }}"></textarea>
+          <label for="tts-voice">Voice</label>
+          <select id="tts-voice" name="voice">
+            {% for voice_id, voice_label in tts_voices.items() %}
+            <option value="{{ voice_id }}"{% if voice_id == tts_default_voice %} selected{% endif %}>{{ voice_label }}</option>
+            {% endfor %}
+          </select>
+          <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
         </section>
       </div>
+      <details class="member-voice-panel">
+        <summary>Advanced voice controls and member moderation</summary>
+        <div class="server-voice-actions">
+          <button class="server-voice-button" type="submit" name="action" value="server_mute">Server Mute Bot</button>
+          <button class="server-voice-button" type="submit" name="action" value="server_deafen">Server Deafen Bot</button>
+        </div>
+        <h3 id="member-voice-heading">Member voice moderation</h3>
+        <p class="voice-help">Target a member in this selected voice channel. The bot needs the relevant Discord permissions and cannot moderate equal or higher roles.</p>
+        <label for="target-user-id">Discord user ID</label>
+        <input id="target-user-id" name="target_user_id" inputmode="numeric" pattern="[0-9]+" placeholder="123456789012345678">
+        <div class="member-voice-actions">
+          <button class="member-voice-button danger" type="submit" name="action" value="server_mute_member">Server Mute Member</button>
+          <button class="member-voice-button danger" type="submit" name="action" value="server_deafen_member">Server Deafen Member</button>
+          <button class="member-voice-button" type="submit" name="action" value="server_unmute_member">Remove Server Mute</button>
+          <button class="member-voice-button" type="submit" name="action" value="server_undeafen_member">Remove Server Deafen</button>
+        </div>
+      </details>
       <input type="hidden" name="action" value="play_sound">
     </form>
     <section class="panel ping-section" aria-labelledby="ping-heading">
@@ -1915,7 +1945,8 @@ def submit_external_member_voice_action(action: str, channel_id: int, user_id: i
     )
 
 
-async def external_voice_status(channel_id: int) -> dict:
+def external_voice_status_snapshot(channel_id: int) -> dict:
+    """Read cached Discord voice state without blocking the dashboard request."""
     voice_channel = client.get_channel(channel_id)
     if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
         return {"state": "unavailable", "voice_channel_id": channel_id}
@@ -1950,6 +1981,10 @@ async def external_voice_status(channel_id: int) -> dict:
     return status
 
 
+async def external_voice_status(channel_id: int) -> dict:
+    return external_voice_status_snapshot(channel_id)
+
+
 @app.route("/say/status")
 def external_say_status():
     if not external_say_is_authorized():
@@ -1963,15 +1998,7 @@ def external_say_status():
             state="unavailable", error="Enter a valid numeric voice channel ID."
         ), 400
 
-    try:
-        status = run_discord_coroutine(
-            external_voice_status(channel_id),
-            "Discord took too long to report voice activity",
-        )
-    except Exception as error:
-        print(f"External voice status error: {error}")
-        return jsonify(state="unavailable", error=str(error)), 503
-    return jsonify(status)
+    return jsonify(external_voice_status_snapshot(channel_id))
 
 
 

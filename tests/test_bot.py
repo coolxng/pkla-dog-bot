@@ -2827,14 +2827,14 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertNotIn(b"box-shadow", response.data)
         self.assertNotIn(b"fonts.googleapis.com", response.data)
 
-    def test_status_route_requires_numeric_channel_and_uses_discord_loop(self):
+    def test_status_route_requires_numeric_channel_and_uses_cached_snapshot(self):
         invalid = self.client.get("/say/status?voice_channel_id=nope")
         self.assertEqual(invalid.status_code, 400)
         self.assertEqual(invalid.get_json()["state"], "unavailable")
 
         with patch.object(
             bot,
-            "run_discord_coroutine",
+            "external_voice_status_snapshot",
             return_value={
                 "state": "playing",
                 "voice_channel_id": 123,
@@ -2844,23 +2844,21 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
                 "label": "Minecraft bark",
                 "started_at": "2026-06-11T00:00:00+00:00",
             },
-        ) as run_coroutine:
+        ) as snapshot:
             response = self.client.get("/say/status?voice_channel_id=123")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["label"], "Minecraft bark")
-        coroutine = run_coroutine.call_args.args[0]
-        self.assertEqual(coroutine.cr_frame.f_locals["channel_id"], 123)
-        coroutine.close()
+        snapshot.assert_called_once_with(123)
 
     def test_status_route_uses_same_authentication_as_say_page(self):
-        def status_result(coroutine, _timeout_message):
-            coroutine.close()
+        def status_result(channel_id):
+            self.assertEqual(channel_id, 123)
             return {"state": "unavailable", "voice_channel_id": 123}
 
         with (
             patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
-            patch.object(bot, "run_discord_coroutine", side_effect=status_result),
+            patch.object(bot, "external_voice_status_snapshot", side_effect=status_result),
         ):
             unauthorized = self.client.get("/say/status?voice_channel_id=123")
             authorized = self.client.get(

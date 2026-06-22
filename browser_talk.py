@@ -182,7 +182,8 @@ class BrowserTalkSession:
         if not pcm_chunk:
             return
         with self._state_lock:
-            if not self.active:
+            # Do not call self.active here: it acquires this same non-reentrant lock.
+            if not self._active or self._closing or self._finished:
                 raise RuntimeError("Browser talk is not active")
             process = self._process
             if process is None or process.stdin is None:
@@ -292,4 +293,3 @@ class BrowserTalkSession:
                 pass
         if self._on_finished is not None:
             self._on_finished(self)
-
