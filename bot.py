@@ -115,6 +115,8 @@ PINGDEAF_DELETE_DELAY_SECONDS = 2 * 60
 DISCORD_LOGIN_RETRY_INITIAL_SECONDS = 60
 DISCORD_LOGIN_RETRY_MAX_SECONDS = 15 * 60
 BARK_JOIN_DELAY_SECONDS = 0.25
+VOICE_CONNECT_RETRY_ATTEMPTS = 3
+VOICE_CONNECT_RETRY_DELAY_SECONDS = 1
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 RYAN_BIRTHDAY_IMAGE_BASE64_PATH = (
     Path(__file__).with_name("assets") / "ryan-birthday.png.b64"
@@ -3283,20 +3285,34 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
                 connect_options["cls"] = voice_receive_client_class()
             try:
                 voice_client = await voice_channel.connect(**connect_options)
-            except (asyncio.TimeoutError, discord.DiscordException):
+            except (asyncio.TimeoutError, discord.DiscordException) as receive_error:
                 if not receive_enabled:
                     raise
                 print(
                     "Receive-enabled voice connection failed; retrying without "
-                    "browser listen-in support"
+                    f"browser listen-in support: {receive_error}"
                 )
-                voice_client = await voice_channel.connect(
-                    self_deaf=False, self_mute=False
-                )
+                for attempt in range(1, VOICE_CONNECT_RETRY_ATTEMPTS + 1):
+                    try:
+                        voice_client = await voice_channel.connect(
+                            self_deaf=False, self_mute=False
+                        )
+                        break
+                    except (asyncio.TimeoutError, discord.DiscordException) as error:
+                        if attempt == VOICE_CONNECT_RETRY_ATTEMPTS:
+                            raise
+                        print(
+                            f"Voice connection attempt {attempt} failed; retrying: {error}"
+                        )
+                        await asyncio.sleep(VOICE_CONNECT_RETRY_DELAY_SECONDS)
     except (asyncio.TimeoutError, discord.DiscordException) as error:
-        print(f"Voice connection error: {error}")
+        error_detail = str(error).strip() or type(error).__name__
+        print(f"Voice connection error: {error_detail}")
         set_voice_disconnected(guild, voice_channel)
-        return "couldn't join that voice channel; check my Connect permission and try again"
+        return (
+            "couldn't join that voice channel: "
+            f"{error_detail}. Check the bot's Connect permission and server UDP connectivity."
+        )
 
     set_voice_idle(guild, voice_channel)
     start_bark_task(guild)

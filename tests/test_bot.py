@@ -952,6 +952,25 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #General")
 
+    async def test_join_reports_the_discord_connection_failure(self):
+        voice_channel = SimpleNamespace(
+            mention="#General",
+            connect=AsyncMock(side_effect=bot.discord.DiscordException("voice gateway blocked")),
+        )
+        message = SimpleNamespace(
+            guild=SimpleNamespace(voice_client=None),
+            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+        )
+
+        with (
+            patch.object(bot, "start_bark_task"),
+            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
+        ):
+            response = await bot.join_author_voice(message)
+
+        self.assertIn("voice gateway blocked", response)
+        self.assertIn("UDP connectivity", response)
+
     async def test_join_requires_the_user_to_be_in_voice(self):
         message = SimpleNamespace(
             guild=SimpleNamespace(voice_client=None),
