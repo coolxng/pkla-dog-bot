@@ -56,8 +56,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
-| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, and audio upload controls. |
-| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming browser audio can start. Store it as a secret; do not commit it. |
+| `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, browser mic talk, and audio upload controls. |
+| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming browser audio or browser mic talk can start. Store it as a secret; do not commit it. |
 
 ## Railway deploy steps
 
@@ -66,9 +66,9 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 3. Confirm the start command uses the `Procfile`: `worker: python bot.py`.
 4. Deploy the service.
 5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
-6. Invite the bot and grant **View Channel**, **Connect**, and **Speak** in voice channels used for playback or browser listening. Add text target IDs to `TARGET_CHANNEL_IDS`.
+6. Invite the bot and grant **View Channel**, **Connect**, and **Speak** in voice channels used for playback, browser listening, or browser mic talk. Add text target IDs to `TARGET_CHANNEL_IDS`.
 7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support), the pinned DAVE-compatible `discord-ext-voice-recv` revision. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
-8. To use browser listening, set a strong `EXTERNAL_SAY_CONTROL_TOKEN` and restart after changing environment settings.
+8. To use browser listening or browser mic talk, set a strong `EXTERNAL_SAY_CONTROL_TOKEN` and restart after changing environment settings.
 9. Keep a single Railway replica running. Conversation history and universal memory are RAM-only and are not shared between replicas.
 
 ## Bot commands
@@ -119,8 +119,9 @@ You can make the bot post a message from a web browser:
 8. To play your own clip, use the right-side **Upload audio** panel. Select the same voice channel the bot already joined, choose an `.mp3` or `.mp4` file, and select **Upload and play**. Uploads are limited to 8 MiB. The server checks both the filename extension and the corresponding MP3 or MP4 header signature instead of trusting the browser MIME type. Video streams in MP4 files are ignored; only their audio is played.
 
 9. To hear the call in the browser, set `EXTERNAL_SAY_CONTROL_TOKEN`, join the selected voice channel, and select **Listen In**. Use **Play Test Tone** to verify browser audio first, set browser volume with the slider, and use **Stop Listening** to close its stream. The dashboard shows received frames, PCM bytes, frame size, queue depth, and active speakers. The receive session stops after the last browser listener disconnects.
+10. To speak from the browser, stay connected to the selected voice channel, choose **Start Talking**, grant microphone access, and use **Stop Talking** when you are done. The mic stream uses live chunks over the authenticated `/say` session and requires the same voice permissions as normal playback.
 
-The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send Messages** permissions in the selected voice channel for the standard controls. **Server Mute** and **Server Deafen** additionally require **Mute Members** and **Deafen Members**, respectively. The member moderation controls require those same permissions, and the bot's role must be above the target member's highest role. They only act on a member currently in the selected voice channel. Uploading and browser listening do not connect or move the bot: it must already be connected to that exact channel. Only one clip can play at a time. Select **Stop audio** to end the current sound, uploaded audio, or text-to-speech playback without disconnecting the bot.
+The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send Messages** permissions in the selected voice channel for the standard controls. **Server Mute** and **Server Deafen** additionally require **Mute Members** and **Deafen Members**, respectively. The member moderation controls require those same permissions, and the bot's role must be above the target member's highest role. They only act on a member currently in the selected voice channel. Uploading, browser listening, and browser mic talk do not connect or move the bot: it must already be connected to that exact channel. Only one clip can play at a time. Select **Stop audio** to end the current sound, uploaded audio, or text-to-speech playback without disconnecting the bot.
 
 Uploaded files receive server-generated temporary paths with server-selected `.mp3` or `.mp4` extensions; submitted filenames are never used as filesystem paths. Temporary files are removed when validation, Discord scheduling, or playback startup fails, and successful uploads are removed by the playback completion callback (including playback errors). Files can remain briefly only if the process is forcibly terminated before cleanup runs.
 
@@ -128,7 +129,7 @@ If Railway already shows a public domain under **Settings** → **Networking**, 
 
 Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, `/say` shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 
-If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-listening `/say` controls remain unauthenticated for backward compatibility. **Browser listening refuses to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, toggle the Discord `!tts` command, and request text-to-speech playback. Keeping the URL private is not equivalent to authentication.
+If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-listening `/say` controls remain unauthenticated for backward compatibility. **Browser listening and browser mic talk refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, toggle the Discord `!tts` command, and request text-to-speech playback. Keeping the URL private is not equivalent to authentication.
 
 The page returns an error instead of sending if Discord is not connected, the configured channel is not allowed, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 

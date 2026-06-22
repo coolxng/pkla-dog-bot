@@ -3041,6 +3041,21 @@ class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(playing["state"], "playing")
         self.assertEqual(playing["queued_tts_count"], 2)
 
+    def test_browser_talk_cleanup_restores_idle_only_when_talk_was_active(self):
+        guild, channel, voice_client, _callbacks = self.voice_context()
+        bot.voice_activity_by_guild[guild.id] = {
+            "activity_type": "browser_talk",
+            "voice_channel_id": channel.id,
+        }
+        session = SimpleNamespace(voice_channel=channel)
+        bot.active_browser_talk_session = session
+
+        with patch.object(bot, "set_voice_idle") as set_voice_idle:
+            bot._clear_browser_talk_session(session)
+
+        self.assertIsNone(bot.active_browser_talk_session)
+        set_voice_idle.assert_called_once_with(guild, channel)
+
 
 if __name__ == "__main__":
     unittest.main()

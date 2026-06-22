@@ -29,6 +29,7 @@ from flask import Flask, Response, jsonify, redirect, render_template_string, re
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from audio_relay import AudioRelay, RelayError
+from browser_talk import BrowserTalkSession, BrowserTalkState
 
 
 _voice_recv_spec = importlib.util.find_spec("discord.ext.voice_recv")
@@ -614,18 +615,20 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .send-button, .birthday-button, .upload-button, .speak-button { width: 100%; margin-top: .8rem; background: var(--accent); border-color: var(--accent); }
     .send-button:hover:not(:disabled), .birthday-button:hover:not(:disabled), .upload-button:hover:not(:disabled), .speak-button:hover:not(:disabled), .ping-button:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
     .voice-help, .ping-help { margin: .3rem 0 .75rem; font-size: .78rem; }
-    .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .65rem; }
+    .voice-actions, .listen-actions, .talk-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .65rem; }
     .server-voice-actions, .member-voice-actions, .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin-top: .5rem; }
     .join-button, .listen-button, .ping-button { background: var(--accent); border-color: var(--accent); }
     .stop-button, .mute-button { border-color: rgba(250,166,26,.5); }
     .leave-button, .listen-stop-button { border-color: rgba(237,66,69,.55); }
+    .talk-button { background: var(--accent); border-color: var(--accent); }
+    .talk-stop-button { border-color: rgba(237,66,69,.55); }
     .server-voice-button, .sound-button { background: var(--surface-raised); }
     .member-voice-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
     .member-voice-button { background: var(--surface-raised); }
     .member-voice-button.danger { border-color: rgba(237,66,69,.55); }
     .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
     .subpanel { padding: 1rem; background: var(--surface-raised); }
-    .listen-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+    .listen-panel, .talk-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
     .relay-details { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; color: var(--muted); font-size: .72rem; }
     .relay-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin-top: .75rem; }
     .relay-stat { padding: .55rem; border: 1px solid var(--line); border-radius: .45rem; background: #151515; }
@@ -684,7 +687,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       .copy-button { grid-column: 3; }
     }
     @media (max-width: 42rem) { .relay-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-    @media (max-width: 30rem) { .voice-actions, .listen-actions, .server-voice-actions, .sound-actions { grid-template-columns: 1fr; } }
+    @media (max-width: 30rem) { .voice-actions, .listen-actions, .talk-actions, .server-voice-actions, .sound-actions { grid-template-columns: 1fr; } }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
   </style>
 </head>
@@ -778,6 +781,26 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
           <div class="relay-stat"><strong id="active-speakers">0</strong><span>Active Speakers</span></div>
         </div>
         <audio id="discord-audio" preload="none"></audio>
+      </section>
+      <section class="talk-panel" aria-labelledby="talk-heading">
+        <h3 id="talk-heading">Talk from browser</h3>
+        <p class="voice-help">Use your microphone to speak into the selected Discord voice channel.</p>
+        {% if not browser_talk_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable browser mic talk.</p>{% endif %}
+        <div class="talk-actions">
+          <button id="start-browser-talk" class="talk-button" type="button"{% if not browser_talk_enabled %} disabled{% endif %}>Start Talking</button>
+          <button id="stop-browser-talk" class="talk-stop-button" type="button" disabled>Stop Talking</button>
+        </div>
+        <div class="relay-details" aria-live="polite">
+          <span>Talk relay: <strong id="talk-state">Stopped</strong></span>
+          <span id="talk-indicator" class="live-indicator">Not talking</span>
+        </div>
+        <div class="relay-stats" aria-live="polite">
+          <div class="relay-stat"><strong id="talk-chunks-received">0</strong><span>Chunks Sent</span></div>
+          <div class="relay-stat"><strong id="talk-bytes-received">0</strong><span>Bytes Sent</span></div>
+          <div class="relay-stat"><strong id="talk-last-chunk-size">0</strong><span>Last Chunk Size</span></div>
+          <div class="relay-stat"><strong id="talk-session-id">-</strong><span>Session</span></div>
+          <div class="relay-stat"><strong id="talk-channel-name">-</strong><span>Voice Channel</span></div>
+        </div>
       </section>
       <div class="voice-tools">
         <section class="subpanel" aria-labelledby="sound-heading">
@@ -927,11 +950,20 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const startListening = document.getElementById("start-listening");
     const stopListening = document.getElementById("stop-listening");
     const testTone = document.getElementById("test-tone");
+    const startBrowserTalk = document.getElementById("start-browser-talk");
+    const stopBrowserTalk = document.getElementById("stop-browser-talk");
     const framesReceived = document.getElementById("frames-received");
     const bytesReceived = document.getElementById("bytes-received");
     const lastFrameSize = document.getElementById("last-frame-size");
     const framesQueued = document.getElementById("frames-queued");
     const activeSpeakers = document.getElementById("active-speakers");
+    const talkState = document.getElementById("talk-state");
+    const talkIndicator = document.getElementById("talk-indicator");
+    const talkChunksReceived = document.getElementById("talk-chunks-received");
+    const talkBytesReceived = document.getElementById("talk-bytes-received");
+    const talkLastChunkSize = document.getElementById("talk-last-chunk-size");
+    const talkSessionId = document.getElementById("talk-session-id");
+    const talkChannelName = document.getElementById("talk-channel-name");
     const activityMessage = document.getElementById("activity-message");
     const activityError = document.getElementById("activity-error");
     const controlStatus = document.getElementById("control-status");
@@ -945,7 +977,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     }
     let activityTimer;
     let relayTimer;
+    let talkTimer;
     let testToneContext;
+    let talkRecorder;
+    let talkStream;
+    let talkSessionToken = "";
+    let talkSendChain = Promise.resolve();
+    let talkStopResolver;
+    let talkMimeType = "";
 
     function showControlStatus(message, isError = false) {
       controlStatus.textContent = message;
@@ -1056,18 +1095,23 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       uploadVoiceChannel.value = voiceChannel.value;
       relayChannel.textContent = voiceChannel.value || "None";
       scheduleActivityPoll();
+      scheduleTalkPoll();
     });
     uploadVoiceChannel.addEventListener("input", () => {
       voiceChannel.value = uploadVoiceChannel.value;
       relayChannel.textContent = uploadVoiceChannel.value || "None";
       scheduleActivityPoll();
+      scheduleTalkPoll();
     });
     pollActivity();
+    pollTalkStatus();
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         window.clearTimeout(activityTimer);
+        window.clearTimeout(talkTimer);
       } else {
         pollActivity();
+        pollTalkStatus();
       }
     });
 
@@ -1108,6 +1152,206 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       window.clearInterval(relayTimer);
       relayTimer = window.setInterval(pollRelayDebug, 1000);
       pollRelayDebug();
+    }
+
+    function setTalkState(state, active) {
+      talkState.textContent = state;
+      talkIndicator.textContent = active ? "Live mic" : "Not talking";
+      talkIndicator.classList.toggle("live", active);
+      talkIndicator.classList.toggle("error", /failed|disconnected|error/i.test(state));
+    }
+
+    function updateTalkDebug(status) {
+      talkChunksReceived.textContent = String(status.chunks_received || 0);
+      talkBytesReceived.textContent = String(status.bytes_received || 0);
+      talkLastChunkSize.textContent = String(status.last_chunk_size || 0);
+      talkSessionId.textContent = status.session_id || "-";
+      talkChannelName.textContent = status.voice_channel_name || "-";
+    }
+
+    async function pollTalkStatus() {
+      try {
+        const response = await fetch("/say/talk-status", { cache: "no-store" });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `Status request failed (${response.status})`);
+        const active = status.state === "recording";
+        setTalkState(
+          status.state === "recording"
+            ? "Recording microphone"
+            : status.state === "stopping"
+              ? "Stopping microphone"
+              : "Stopped",
+          active
+        );
+        updateTalkDebug(status);
+      } catch (error) {
+        setTalkState(`Talk status unavailable`, false);
+      } finally {
+        scheduleNextTalkPoll();
+      }
+    }
+
+    function scheduleTalkPoll() {
+      window.clearTimeout(talkTimer);
+      talkTimer = window.setTimeout(pollTalkStatus, 250);
+    }
+
+    function scheduleNextTalkPoll() {
+      window.clearTimeout(talkTimer);
+      if (!document.hidden) talkTimer = window.setTimeout(pollTalkStatus, 3000);
+    }
+
+    function resetBrowserTalk(state = "Stopped") {
+      talkRecorder = null;
+      talkStream = null;
+      talkSessionToken = "";
+      talkMimeType = "";
+      talkSendChain = Promise.resolve();
+      if (talkStopResolver) {
+        talkStopResolver();
+        talkStopResolver = undefined;
+      }
+      stopBrowserTalk.disabled = true;
+      startBrowserTalk.disabled = false;
+      setTalkState(state, false);
+    }
+
+    async function stopBrowserTalkSession() {
+      const sessionId = talkSessionToken;
+      const stopPromise = talkRecorder && talkRecorder.state !== "inactive"
+        ? new Promise((resolve) => {
+            talkStopResolver = resolve;
+          })
+        : Promise.resolve();
+
+      if (talkRecorder && talkRecorder.state !== "inactive") {
+        talkRecorder.stop();
+      }
+
+      try {
+        await talkSendChain.catch(() => {});
+        if (sessionId) {
+          const response = await fetch("/say/talk/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || `Stop request failed (${response.status})`);
+        }
+        await stopPromise;
+      } finally {
+        if (talkStream) {
+          talkStream.getTracks().forEach((track) => track.stop());
+        }
+        resetBrowserTalk();
+        scheduleTalkPoll();
+      }
+    }
+
+    async function startBrowserTalkSession() {
+      if (!voiceChannel.checkValidity()) {
+        voiceChannel.reportValidity();
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This browser cannot access the microphone.");
+      }
+      if (!window.MediaRecorder) {
+        throw new Error("This browser does not support microphone recording.");
+      }
+
+      startBrowserTalk.disabled = true;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      const mimeCandidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/ogg",
+      ];
+      talkMimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+      try {
+        const response = await fetch("/say/talk/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            voice_channel_id: voiceChannel.value,
+            mime_type: talkMimeType,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `Start request failed (${response.status})`);
+        talkSessionToken = payload.session_id;
+        talkStream = stream;
+        talkRecorder = new MediaRecorder(stream, talkMimeType ? { mimeType: talkMimeType } : undefined);
+        talkSendChain = Promise.resolve();
+        talkStopResolver = undefined;
+        talkRecorder.addEventListener("dataavailable", (event) => {
+          if (!talkSessionToken || !event.data || !event.data.size) return;
+          const chunk = event.data;
+          talkSendChain = talkSendChain.then(async () => {
+            const chunkResponse = await fetch(`/say/talk/chunk/${encodeURIComponent(talkSessionToken)}`, {
+              method: "POST",
+              headers: {
+                "Content-Type": chunk.type || "application/octet-stream",
+              },
+              body: chunk,
+            });
+            if (!chunkResponse.ok) {
+              const payload = await chunkResponse.json().catch(() => ({}));
+              throw new Error(payload.error || `Chunk upload failed (${chunkResponse.status})`);
+            }
+          }).catch((error) => {
+            showControlStatus(error.message, true);
+            stopBrowserTalkSession().catch(() => {});
+          });
+        });
+        talkRecorder.addEventListener("stop", async () => {
+          try {
+            await talkSendChain.catch(() => {});
+          } catch {
+            // The status message already reflects the chunk failure.
+          } finally {
+            if (talkStopResolver) {
+              talkStopResolver();
+              talkStopResolver = undefined;
+            }
+          }
+        });
+        talkRecorder.start(250);
+        talkState.textContent = "Recording microphone";
+        talkIndicator.textContent = "Live mic";
+        talkIndicator.classList.add("live");
+        talkIndicator.classList.remove("error");
+        talkChunksReceived.textContent = "0";
+        talkBytesReceived.textContent = "0";
+        talkLastChunkSize.textContent = "0";
+        talkSessionId.textContent = talkSessionToken;
+        talkChannelName.textContent = voiceChannel.value || "-";
+        stopBrowserTalk.disabled = false;
+        scheduleTalkPoll();
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (talkSessionToken) {
+          await fetch("/say/talk/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: talkSessionToken }),
+          }).catch(() => {});
+        }
+        talkStream = null;
+        talkRecorder = null;
+        talkSessionToken = "";
+        talkMimeType = "";
+        startBrowserTalk.disabled = false;
+        throw error;
+      }
     }
 
     async function playTestTone() {
@@ -1165,6 +1409,19 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
 
     testTone.addEventListener("click", () => {
       playTestTone().catch((error) => showControlStatus(error.message, true));
+    });
+
+    startBrowserTalk.addEventListener("click", async () => {
+      try {
+        await startBrowserTalkSession();
+      } catch (error) {
+        showControlStatus(error.message, true);
+        startBrowserTalk.disabled = false;
+      }
+    });
+
+    stopBrowserTalk.addEventListener("click", () => {
+      stopBrowserTalkSession().catch((error) => showControlStatus(error.message, true));
     });
 
     audio.addEventListener("error", () => {
@@ -1390,6 +1647,144 @@ def submit_browser_audio_session(channel_id: int) -> None:
     )
 
 
+def _clear_browser_talk_session(session: BrowserTalkSession) -> None:
+    global active_browser_talk_session
+    if active_browser_talk_session is session:
+        active_browser_talk_session = None
+    guild = getattr(session.voice_channel, "guild", None)
+    if guild is None:
+        return
+    current = voice_activity_by_guild.get(guild.id, {})
+    if current.get("activity_type") != "browser_talk":
+        return
+    voice_client = getattr(guild, "voice_client", None)
+    if voice_client is not None and voice_client.is_connected():
+        set_voice_idle(guild, session.voice_channel)
+    else:
+        set_voice_disconnected(guild, session.voice_channel)
+
+
+def close_browser_talk_session(reason: str) -> None:
+    session = active_browser_talk_session
+    if session is not None:
+        session.stop(reason)
+
+
+def submit_browser_talk_start(channel_id: int, mime_type: str | None) -> dict:
+    return run_discord_coroutine(
+        start_browser_talk_session(channel_id, mime_type),
+        "Discord took too long to start browser talk",
+    )
+
+
+def submit_browser_talk_chunk(session_id: str, chunk: bytes) -> None:
+    run_discord_coroutine(
+        append_browser_talk_chunk(session_id, chunk),
+        "Discord took too long to forward the browser microphone chunk",
+    )
+
+
+def submit_browser_talk_stop(session_id: str) -> dict:
+    return run_discord_coroutine(
+        stop_browser_talk_session(session_id),
+        "Discord took too long to stop browser talk",
+    )
+
+
+def browser_talk_state_payload() -> dict:
+    session = active_browser_talk_session
+    if session is None:
+        return {"state": "idle"}
+    state: BrowserTalkState = session.state()
+    debug = session.debug_state()
+    payload = {
+        "state": "recording" if state.active else "stopping" if state.closing else "idle",
+        "session_id": state.session_id,
+        "voice_channel_id": state.channel_id,
+        "voice_channel_name": state.channel_name,
+        "container_format": state.container_format,
+        "error": state.error,
+        "chunks_received": debug.chunks_received,
+        "bytes_received": debug.bytes_received,
+        "last_chunk_size": debug.last_chunk_size,
+    }
+    return payload
+
+
+async def start_browser_talk_session(channel_id: int, mime_type: str | None) -> dict:
+    global active_browser_talk_session
+    if not EXTERNAL_SAY_CONTROL_TOKEN:
+        raise RuntimeError(
+            "EXTERNAL_SAY_CONTROL_TOKEN must be set before browser talk can start"
+        )
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+
+    voice_client = voice_channel.guild.voice_client
+    if not voice_client or not voice_client.is_connected():
+        raise RuntimeError("Join the selected voice call before using browser talk")
+    if getattr(voice_client, "channel", None) != voice_channel:
+        raise RuntimeError("The bot is connected to a different voice channel")
+    if voice_client.is_playing():
+        raise RuntimeError("Another sound is already playing")
+    if active_browser_talk_session is not None and active_browser_talk_session.active:
+        raise RuntimeError("Browser talk is already active")
+
+    session = BrowserTalkSession(
+        voice_client=voice_client,
+        voice_channel=voice_channel,
+        mime_type=mime_type,
+        on_finished=_clear_browser_talk_session,
+    )
+    active_browser_talk_session = session
+    try:
+        session.start()
+    except Exception:
+        if active_browser_talk_session is session:
+            active_browser_talk_session = None
+        raise
+
+    set_voice_activity(
+        voice_channel.guild,
+        voice_channel,
+        connection_state="connected",
+        activity_type="browser_talk",
+        label="Browser microphone",
+    )
+    return {
+        "session_id": session.session_id,
+        "voice_channel_id": voice_channel.id,
+        "voice_channel_name": voice_channel.name,
+    }
+
+
+async def append_browser_talk_chunk(session_id: str, chunk: bytes) -> None:
+    session = active_browser_talk_session
+    if session is None:
+        raise RuntimeError("Browser talk is not active")
+    if session.session_id != session_id:
+        raise RuntimeError("That browser talk session is no longer active")
+    session.submit_chunk(chunk)
+
+
+async def stop_browser_talk_session(session_id: str) -> dict:
+    session = active_browser_talk_session
+    if session is None:
+        return {"state": "idle"}
+    if session.session_id != session_id:
+        raise RuntimeError("That browser talk session is no longer active")
+
+    session.stop("Browser talk stopped from /say")
+    guild = getattr(session.voice_channel, "guild", None)
+    voice_client = getattr(guild, "voice_client", None)
+    if guild is not None and voice_client is not None and voice_client.is_connected():
+        set_voice_idle(guild, session.voice_channel)
+    elif guild is not None:
+        set_voice_disconnected(guild, session.voice_channel)
+    return {"state": "stopping", "session_id": session.session_id}
+
+
 @app.route("/say/audio/<int:channel_id>")
 def external_audio_stream(channel_id: int):
     if not incoming_audio_is_authorized():
@@ -1425,6 +1820,64 @@ def external_audio_status():
         frames_queued=debug.frames_queued,
         active_speakers=debug.active_speakers,
     )
+
+
+@app.route("/say/talk-status")
+def external_talk_status():
+    if not incoming_audio_is_authorized():
+        return external_say_authentication_required()
+    return jsonify(browser_talk_state_payload())
+
+
+@app.route("/say/talk/start", methods=["POST"])
+def external_talk_start():
+    if not incoming_audio_is_authorized():
+        return external_say_authentication_required()
+    payload = request.get_json(silent=True) or {}
+    raw_channel_id = str(payload.get("voice_channel_id", "")).strip()
+    try:
+        channel_id = int(raw_channel_id)
+    except ValueError:
+        return jsonify(error="Enter a valid numeric voice channel ID."), 400
+
+    mime_type = str(payload.get("mime_type", "")).strip() or None
+    try:
+        status = submit_browser_talk_start(channel_id, mime_type)
+    except Exception as error:
+        print(f"Browser talk start error: {error}")
+        return jsonify(error=str(error)), 503
+    return jsonify(status)
+
+
+@app.route("/say/talk/chunk/<session_id>", methods=["POST"])
+def external_talk_chunk(session_id: str):
+    if not incoming_audio_is_authorized():
+        return external_say_authentication_required()
+    chunk = request.get_data(cache=False)
+    if not chunk:
+        return "", 204
+    try:
+        submit_browser_talk_chunk(session_id, chunk)
+    except Exception as error:
+        print(f"Browser talk chunk error: {error}")
+        return jsonify(error=str(error)), 503
+    return "", 204
+
+
+@app.route("/say/talk/stop", methods=["POST"])
+def external_talk_stop():
+    if not incoming_audio_is_authorized():
+        return external_say_authentication_required()
+    payload = request.get_json(silent=True) or {}
+    session_id = str(payload.get("session_id", "")).strip()
+    if not session_id:
+        return jsonify(error="Missing browser talk session ID."), 400
+    try:
+        status = submit_browser_talk_stop(session_id)
+    except Exception as error:
+        print(f"Browser talk stop error: {error}")
+        return jsonify(error=str(error)), 503
+    return jsonify(status)
 
 
 
@@ -1703,6 +2156,9 @@ def external_say():
         control_token_configured=bool(EXTERNAL_SAY_CONTROL_TOKEN),
         control_authenticated=external_say_is_authorized(),
         incoming_audio_enabled=(
+            bool(EXTERNAL_SAY_CONTROL_TOKEN) and external_say_is_authorized()
+        ),
+        browser_talk_enabled=(
             bool(EXTERNAL_SAY_CONTROL_TOKEN) and external_say_is_authorized()
         ),
     ), response_status
@@ -2479,6 +2935,7 @@ chat_tts_queues: dict[int, asyncio.Queue] = {}
 chat_tts_tasks: dict[int, asyncio.Task] = {}
 # Current voice state is kept in memory per guild and reset when the process restarts.
 voice_activity_by_guild: dict[int, dict] = {}
+active_browser_talk_session: BrowserTalkSession | None = None
 
 
 def voice_channel_fields(voice_channel) -> tuple[int | None, str | None]:
@@ -2779,6 +3236,7 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
     voice_client = guild.voice_client
     already_in_channel = False
     try:
+        close_browser_talk_session("Discord voice channel changed")
         if voice_client and voice_client.is_connected():
             if voice_client.channel == voice_channel:
                 already_in_channel = True
@@ -2843,6 +3301,7 @@ async def leave_guild_voice(guild) -> str:
         return "i'm not in a voice channel"
 
     voice_channel = getattr(voice_client, "channel", None)
+    close_browser_talk_session("Discord voice connection closed")
     await asyncio.to_thread(close_receive_session, "Discord voice connection closed")
     try:
         await voice_client.disconnect()
@@ -3510,6 +3969,7 @@ async def on_voice_state_update(member, before, after):
     if client.user is None or member.id != client.user.id:
         return
     if before.channel is not None and after.channel is None:
+        close_browser_talk_session("Discord voice connection closed")
         await asyncio.to_thread(
             close_receive_session, "Discord voice connection closed"
         )

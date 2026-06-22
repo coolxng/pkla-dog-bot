@@ -241,6 +241,84 @@ class AudioAuthorizationTests(unittest.TestCase):
             "no-store, no-cache, must-revalidate, private",
         )
 
+
+class BrowserTalkAuthorizationTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_page_shows_browser_talk_controls(self):
+        encoded = base64.b64encode(b"user:secret-token").decode()
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
+            response = self.client.get(
+                "/say", headers={"Authorization": f"Basic {encoded}"}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Talk from browser", response.data)
+        self.assertIn(b"Start Talking", response.data)
+        self.assertIn(b"Stop Talking", response.data)
+        self.assertIn(b"/say/talk/start", response.data)
+        self.assertIn(b"/say/talk/chunk/", response.data)
+        self.assertIn(b"/say/talk/stop", response.data)
+
+    def test_talk_routes_require_authentication(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
+            start = self.client.post("/say/talk/start", json={"voice_channel_id": "123"})
+            chunk = self.client.post("/say/talk/chunk/abc", data=b"abc")
+            stop = self.client.post("/say/talk/stop", json={"session_id": "abc"})
+            status = self.client.get("/say/talk-status")
+
+        self.assertEqual(start.status_code, 401)
+        self.assertEqual(chunk.status_code, 401)
+        self.assertEqual(stop.status_code, 401)
+        self.assertEqual(status.status_code, 401)
+
+    def test_talk_routes_forward_payloads(self):
+        encoded = base64.b64encode(b"user:secret-token").decode()
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
+            patch.object(bot, "submit_browser_talk_start", return_value={
+                "session_id": "session-1",
+                "voice_channel_id": 123,
+                "voice_channel_name": "General",
+            }) as start,
+            patch.object(bot, "submit_browser_talk_chunk") as chunk,
+            patch.object(bot, "submit_browser_talk_stop", return_value={
+                "state": "stopping",
+                "session_id": "session-1",
+            }) as stop,
+            patch.object(
+                bot, "browser_talk_state_payload", return_value={"state": "recording"}
+            ) as state_payload,
+        ):
+            start_response = self.client.post(
+                "/say/talk/start",
+                json={"voice_channel_id": 123, "mime_type": "audio/webm;codecs=opus"},
+                headers={"Authorization": f"Basic {encoded}"},
+            )
+            chunk_response = self.client.post(
+                "/say/talk/chunk/session-1",
+                data=b"audio-bytes",
+                headers={"Authorization": f"Basic {encoded}"},
+            )
+            stop_response = self.client.post(
+                "/say/talk/stop",
+                json={"session_id": "session-1"},
+                headers={"Authorization": f"Basic {encoded}"},
+            )
+            status_response = self.client.get(
+                "/say/talk-status", headers={"Authorization": f"Basic {encoded}"}
+            )
+
+        self.assertEqual(start_response.status_code, 200)
+        self.assertEqual(chunk_response.status_code, 204)
+        self.assertEqual(stop_response.status_code, 200)
+        self.assertEqual(status_response.status_code, 200)
+        start.assert_called_once_with(123, "audio/webm;codecs=opus")
+        chunk.assert_called_once_with("session-1", b"audio-bytes")
+        stop.assert_called_once_with("session-1")
+        state_payload.assert_called_once_with()
+
     def test_audio_status_requires_authentication_and_returns_debug_counters(self):
         wrong = base64.b64encode(b"user:wrong").decode()
         correct = base64.b64encode(b"user:secret-token").decode()
