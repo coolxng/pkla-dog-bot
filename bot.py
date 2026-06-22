@@ -615,11 +615,14 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .send-button:hover:not(:disabled), .birthday-button:hover:not(:disabled), .upload-button:hover:not(:disabled), .speak-button:hover:not(:disabled), .ping-button:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
     .voice-help, .ping-help { margin: .3rem 0 .75rem; font-size: .78rem; }
     .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .65rem; }
-    .server-voice-actions, .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin-top: .5rem; }
+    .server-voice-actions, .member-voice-actions, .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin-top: .5rem; }
     .join-button, .listen-button, .ping-button { background: var(--accent); border-color: var(--accent); }
     .stop-button, .mute-button { border-color: rgba(250,166,26,.5); }
     .leave-button, .listen-stop-button { border-color: rgba(237,66,69,.55); }
     .server-voice-button, .sound-button { background: var(--surface-raised); }
+    .member-voice-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+    .member-voice-button { background: var(--surface-raised); }
+    .member-voice-button.danger { border-color: rgba(237,66,69,.55); }
     .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
     .subpanel { padding: 1rem; background: var(--surface-raised); }
     .listen-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
@@ -736,9 +739,21 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
       </div>
       <div class="server-voice-actions">
-        <button class="server-voice-button" type="submit" name="action" value="server_mute">Server Mute</button>
-        <button class="server-voice-button" type="submit" name="action" value="server_deafen">Server Deafen</button>
+        <button class="server-voice-button" type="submit" name="action" value="server_mute">Server Mute Bot</button>
+        <button class="server-voice-button" type="submit" name="action" value="server_deafen">Server Deafen Bot</button>
       </div>
+      <section class="member-voice-panel" aria-labelledby="member-voice-heading">
+        <h3 id="member-voice-heading">Member voice moderation</h3>
+        <p class="voice-help">Target a member currently in this selected voice channel. The bot needs Mute Members or Deafen Members permission and cannot moderate a member with an equal or higher role.</p>
+        <label for="target-user-id">Discord user ID</label>
+        <input id="target-user-id" name="target_user_id" inputmode="numeric" pattern="[0-9]+" placeholder="123456789012345678">
+        <div class="member-voice-actions">
+          <button class="member-voice-button danger" type="submit" name="action" value="server_mute_member">Server Mute Member</button>
+          <button class="member-voice-button danger" type="submit" name="action" value="server_deafen_member">Server Deafen Member</button>
+          <button class="member-voice-button" type="submit" name="action" value="server_unmute_member">Remove Server Mute</button>
+          <button class="member-voice-button" type="submit" name="action" value="server_undeafen_member">Remove Server Deafen</button>
+        </div>
+      </section>
       <section class="listen-panel" aria-labelledby="listen-heading">
         <h3 id="listen-heading">Listen in browser</h3>
         <p class="voice-help">Hear live participant audio from the selected Discord voice channel.</p>
@@ -1431,6 +1446,20 @@ def submit_external_voice_action(action: str, channel_id: int, sound_id: str | N
     )
 
 
+def submit_external_member_voice_action(action: str, channel_id: int, user_id: int) -> str:
+    if action not in {
+        "server_mute_member",
+        "server_deafen_member",
+        "server_unmute_member",
+        "server_undeafen_member",
+    }:
+        raise ValueError("Unknown member voice action")
+    return run_discord_coroutine(
+        control_external_member_voice(action, channel_id, user_id),
+        "Discord took too long to update the member's voice state",
+    )
+
+
 async def external_voice_status(channel_id: int) -> dict:
     voice_channel = client.get_channel(channel_id)
     if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
@@ -1566,6 +1595,10 @@ def external_say():
             "play_sound",
             "server_mute",
             "server_deafen",
+            "server_mute_member",
+            "server_deafen_member",
+            "server_unmute_member",
+            "server_undeafen_member",
             "speak",
             "upload_audio",
         }:
@@ -1578,7 +1611,21 @@ def external_say():
                 response_status = 400
             else:
                 try:
-                    if action == "play_sound":
+                    if action in {
+                        "server_mute_member",
+                        "server_deafen_member",
+                        "server_unmute_member",
+                        "server_undeafen_member",
+                    }:
+                        raw_user_id = request.form.get("target_user_id", "").strip()
+                        try:
+                            user_id = int(raw_user_id)
+                        except ValueError:
+                            raise ValueError("Enter a valid numeric Discord user ID.")
+                        status = submit_external_member_voice_action(
+                            action, channel_id, user_id
+                        )
+                    elif action == "play_sound":
                         status = submit_external_voice_action(
                             action, channel_id, request.form.get("sound")
                         )
@@ -3031,6 +3078,44 @@ async def control_external_voice(
     ):
         raise RuntimeError("Another sound is already playing")
     return f'playing {sound["label"]}'
+
+
+async def control_external_member_voice(
+    action: str, channel_id: int, user_id: int
+) -> str:
+    voice_channel = client.get_channel(channel_id)
+    if not isinstance(voice_channel, (discord.VoiceChannel, discord.StageChannel)):
+        raise RuntimeError("That Discord voice channel is unavailable")
+
+    guild = voice_channel.guild
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.NotFound as error:
+            raise ValueError("That Discord user is not in this server.") from error
+        except discord.Forbidden as error:
+            raise RuntimeError("The bot cannot look up that server member.") from error
+    if guild.me is not None and member.id == guild.me.id:
+        raise ValueError("Use the Bot voice state controls to change the bot.")
+    if getattr(getattr(member, "voice", None), "channel", None) != voice_channel:
+        raise ValueError("That member is not in the selected voice channel.")
+
+    attribute, enabled, label = {
+        "server_mute_member": ("mute", True, "server muted"),
+        "server_deafen_member": ("deafen", True, "server deafened"),
+        "server_unmute_member": ("mute", False, "server unmuted"),
+        "server_undeafen_member": ("deafen", False, "server undeafened"),
+    }.get(action, (None, None, None))
+    if attribute is None:
+        raise ValueError("Unknown member voice action")
+    try:
+        await member.edit(**{attribute: enabled}, reason="PKLA /say voice moderation")
+    except discord.Forbidden as error:
+        raise RuntimeError(
+            "The bot needs the matching moderation permission and a higher role than that member."
+        ) from error
+    return f"{label} {member.display_name}"
 
 
 def pingdeaf_message(channel_name: str) -> str:

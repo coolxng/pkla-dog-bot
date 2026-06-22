@@ -1323,6 +1323,58 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response, "server deafen disabled")
         bot_member.edit.assert_awaited_once_with(deafen=False)
 
+    async def test_member_voice_moderation_edits_target_in_selected_channel(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        target = SimpleNamespace(
+            id=42,
+            display_name="Coolxng",
+            voice=SimpleNamespace(channel=channel),
+            edit=AsyncMock(),
+        )
+        guild = SimpleNamespace(
+            me=SimpleNamespace(id=99),
+            get_member=lambda user_id: target if user_id == 42 else None,
+        )
+        channel.guild = guild
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            response = await bot.control_external_member_voice(
+                "server_deafen_member", 1447148315312521256, 42
+            )
+
+        self.assertEqual(response, "server deafened Coolxng")
+        target.edit.assert_awaited_once_with(
+            deafen=True, reason="PKLA /say voice moderation"
+        )
+
+    async def test_member_voice_moderation_rejects_user_in_other_channel(self):
+        class FakeVoiceChannel:
+            pass
+
+        channel = FakeVoiceChannel()
+        target = SimpleNamespace(
+            id=42,
+            display_name="Coolxng",
+            voice=SimpleNamespace(channel=object()),
+        )
+        channel.guild = SimpleNamespace(
+            me=SimpleNamespace(id=99),
+            get_member=lambda _user_id: target,
+        )
+        with (
+            patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
+            patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
+        ):
+            with self.assertRaisesRegex(ValueError, "not in the selected voice channel"):
+                await bot.control_external_member_voice(
+                    "server_mute_member", 1447148315312521256, 42
+                )
+
     async def test_external_sound_plays_selected_audio(self):
         class FakeVoiceChannel:
             pass
@@ -1933,6 +1985,12 @@ class ExternalSayTests(unittest.TestCase):
         self.assertIn(
             b'name="action" value="server_deafen">Server Deafen', response.data
         )
+        self.assertIn(b"Member voice moderation", response.data)
+        self.assertIn(b'name="target_user_id"', response.data)
+        self.assertIn(b'value="server_mute_member">Server Mute Member', response.data)
+        self.assertIn(
+            b'value="server_deafen_member">Server Deafen Member', response.data
+        )
         self.assertIn(
             b'value="1447148315312521256"',
             response.data,
@@ -2209,6 +2267,39 @@ class ExternalSayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 303)
         submit_voice.assert_called_once_with("server_deafen", 1447148315312521256)
+
+    def test_member_mute_form_uses_selected_channel_and_target_user(self):
+        with patch.object(
+            bot,
+            "submit_external_member_voice_action",
+            return_value="server muted Coolxng",
+        ) as submit_member_voice:
+            response = self.client.post(
+                "/say",
+                data={
+                    "action": "server_mute_member",
+                    "voice_channel_id": "1447148315312521256",
+                    "target_user_id": "575057023046123520",
+                },
+            )
+
+        self.assertEqual(response.status_code, 303)
+        submit_member_voice.assert_called_once_with(
+            "server_mute_member", 1447148315312521256, 575057023046123520
+        )
+
+    def test_member_mute_form_requires_numeric_user_id(self):
+        response = self.client.post(
+            "/say",
+            data={
+                "action": "server_mute_member",
+                "voice_channel_id": "1447148315312521256",
+                "target_user_id": "not-a-user",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Enter a valid numeric Discord user ID.", response.data)
 
     def test_sound_button_plays_selected_sound(self):
         with patch.object(
