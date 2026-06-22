@@ -43,6 +43,15 @@ class RelayState:
     encoder_error: str | None
 
 
+@dataclass(frozen=True)
+class RelayDebug:
+    frames_received: int
+    bytes_received: int
+    last_frame_size: int
+    frames_queued: int
+    active_speakers: int
+
+
 class RelayListener:
     def __init__(self, relay: "AudioRelay", listener_id: str, chunks: queue.Queue):
         self._relay = relay
@@ -93,11 +102,16 @@ class AudioRelay:
         self._pending_pcm: dict[object | None, bytes] = {}
         self._pending_lock = threading.Lock()
         self._lock = threading.Lock()
+        self._debug_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._process = None
         self._mixer_thread: threading.Thread | None = None
         self._reader_thread: threading.Thread | None = None
         self._encoder_error: str | None = None
+        self._frames_received = 0
+        self._bytes_received = 0
+        self._last_frame_size = 0
+        self._source_last_received_at: dict[object | None, float] = {}
 
     @property
     def encoder_error(self) -> str | None:
@@ -110,6 +124,22 @@ class AudioRelay:
                 listener_count=len(self._listeners),
                 running=self._process is not None,
                 encoder_error=self._encoder_error,
+            )
+
+    def debug_state(self) -> RelayDebug:
+        """Return dashboard counters without exposing audio content."""
+        now = time.monotonic()
+        with self._debug_lock:
+            active_speakers = sum(
+                received_at >= now - 2
+                for received_at in self._source_last_received_at.values()
+            )
+            return RelayDebug(
+                frames_received=self._frames_received,
+                bytes_received=self._bytes_received,
+                last_frame_size=self._last_frame_size,
+                frames_queued=self._input_frames.qsize(),
+                active_speakers=active_speakers,
             )
 
     def add_listener(self) -> RelayListener:
@@ -140,6 +170,11 @@ class AudioRelay:
             return True
 
         accepted_all_frames = True
+        with self._debug_lock:
+            self._frames_received += 1
+            self._bytes_received += len(pcm)
+            self._last_frame_size = len(pcm)
+            self._source_last_received_at[source_id] = time.monotonic()
         with self._pending_lock:
             buffered_pcm = self._pending_pcm.get(source_id, b"") + pcm
             offset = 0
@@ -162,6 +197,8 @@ class AudioRelay:
             self._listeners.clear()
             with self._pending_lock:
                 self._pending_pcm.clear()
+            with self._debug_lock:
+                self._source_last_received_at.clear()
             self._stop_locked()
         for chunks in listeners:
             self._force_put(chunks, _STOP)

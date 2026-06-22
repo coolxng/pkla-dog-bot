@@ -624,6 +624,11 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     .subpanel { padding: 1rem; background: var(--surface-raised); }
     .listen-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
     .relay-details { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; color: var(--muted); font-size: .72rem; }
+    .relay-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin-top: .75rem; }
+    .relay-stat { padding: .55rem; border: 1px solid var(--line); border-radius: .45rem; background: #151515; }
+    .relay-stat strong, .relay-stat span { display: block; }
+    .relay-stat strong { font-size: .9rem; }
+    .relay-stat span { color: var(--muted); font-size: .64rem; line-height: 1.25; }
     .live-indicator, .activity-message { position: relative; padding-left: 1rem; }
     .live-indicator::before, .activity-message::before { content: ""; position: absolute; left: 0; top: .48em; width: .45rem; height: .45rem; border-radius: 50%; background: var(--yellow); }
     .live-indicator.live::before, .activity-message.active::before { background: var(--green); }
@@ -675,6 +680,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       .ping-member { grid-template-columns: auto minmax(0, 1fr) auto; }
       .copy-button { grid-column: 3; }
     }
+    @media (max-width: 42rem) { .relay-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 30rem) { .voice-actions, .listen-actions, .server-voice-actions, .sound-actions { grid-template-columns: 1fr; } }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
   </style>
@@ -738,9 +744,9 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <p class="voice-help">Hear live participant audio from the selected Discord voice channel.</p>
         {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
         <div class="listen-actions">
-          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening</button>
-          <button id="mute-listening" class="mute-button" type="button" disabled>Mute</button>
-          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop listening</button>
+          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Listen In</button>
+          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop Listening</button>
+          <button id="test-tone" class="mute-button" type="button">Play Test Tone</button>
         </div>
         <div class="relay-details" aria-live="polite">
           <span>Selected Discord channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
@@ -749,6 +755,13 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         </div>
         <label for="listen-volume">Browser volume</label>
         <input id="listen-volume" type="range" min="0" max="100" value="100">
+        <div class="relay-stats" aria-live="polite">
+          <div class="relay-stat"><strong id="frames-received">0</strong><span>Frames Received</span></div>
+          <div class="relay-stat"><strong id="bytes-received">0</strong><span>Bytes Received</span></div>
+          <div class="relay-stat"><strong id="last-frame-size">0</strong><span>Last Frame Size</span></div>
+          <div class="relay-stat"><strong id="frames-queued">0</strong><span>Frames Queued</span></div>
+          <div class="relay-stat"><strong id="active-speakers">0</strong><span>Active Speakers</span></div>
+        </div>
         <audio id="discord-audio" preload="none"></audio>
       </section>
       <div class="voice-tools">
@@ -897,8 +910,13 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     const audio = document.getElementById("discord-audio");
     const listenVolume = document.getElementById("listen-volume");
     const startListening = document.getElementById("start-listening");
-    const muteListening = document.getElementById("mute-listening");
     const stopListening = document.getElementById("stop-listening");
+    const testTone = document.getElementById("test-tone");
+    const framesReceived = document.getElementById("frames-received");
+    const bytesReceived = document.getElementById("bytes-received");
+    const lastFrameSize = document.getElementById("last-frame-size");
+    const framesQueued = document.getElementById("frames-queued");
+    const activeSpeakers = document.getElementById("active-speakers");
     const activityMessage = document.getElementById("activity-message");
     const activityError = document.getElementById("activity-error");
     const controlStatus = document.getElementById("control-status");
@@ -911,6 +929,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       toggle.querySelector(".toggle-state").textContent = enabled ? "On" : "Off";
     }
     let activityTimer;
+    let relayTimer;
+    let testToneContext;
 
     function showControlStatus(message, isError = false) {
       controlStatus.textContent = message;
@@ -1050,14 +1070,54 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       captureIndicator.classList.toggle("error", /failed|disconnected/i.test(state));
     }
 
+    function updateRelayDebug(status) {
+      framesReceived.textContent = String(status.frames_received || 0);
+      bytesReceived.textContent = String(status.bytes_received || 0);
+      lastFrameSize.textContent = String(status.last_frame_size || 0);
+      framesQueued.textContent = String(status.frames_queued || 0);
+      activeSpeakers.textContent = String(status.active_speakers || 0);
+    }
+
+    async function pollRelayDebug() {
+      try {
+        const response = await fetch("/say/audio-status", { cache: "no-store" });
+        if (!response.ok) return;
+        const status = await response.json();
+        updateRelayDebug(status);
+      } catch {
+        // Audio playback remains usable while the optional diagnostic request retries.
+      }
+    }
+
+    function scheduleRelayDebug() {
+      window.clearInterval(relayTimer);
+      relayTimer = window.setInterval(pollRelayDebug, 1000);
+      pollRelayDebug();
+    }
+
+    async function playTestTone() {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) throw new Error("This browser does not support test-tone playback.");
+      testToneContext ||= new AudioContext();
+      if (testToneContext.state === "suspended") await testToneContext.resume();
+      const oscillator = testToneContext.createOscillator();
+      const gain = testToneContext.createGain();
+      oscillator.frequency.value = 440;
+      oscillator.type = "sine";
+      gain.gain.value = Math.max(0.01, Number(listenVolume.value) / 100 * 0.08);
+      oscillator.connect(gain);
+      gain.connect(testToneContext.destination);
+      oscillator.start();
+      oscillator.stop(testToneContext.currentTime + 0.5);
+    }
+
     function resetListening(state = "Stopped") {
       audio.pause();
       audio.removeAttribute("src");
       audio.load();
       startListening.disabled = false;
-      muteListening.disabled = true;
       stopListening.disabled = true;
-      muteListening.textContent = "Mute";
+      window.clearInterval(relayTimer);
       setRelayState(state, false);
     }
 
@@ -1070,7 +1130,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
       audio.src = `/say/audio/${encodeURIComponent(voiceChannel.value)}?t=${Date.now()}`;
       audio.muted = false;
       setListenVolume();
-      setRelayState("Connecting…", false);
+      setRelayState("Connected to audio relay. Waiting for Discord voice packets.", false);
+      scheduleRelayDebug();
       try {
         await audio.play();
       } catch (error) {
@@ -1081,17 +1142,15 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     audio.addEventListener("playing", () => {
       setRelayState("Connected", true);
       startListening.disabled = true;
-      muteListening.disabled = false;
       stopListening.disabled = false;
-    });
-
-    muteListening.addEventListener("click", () => {
-      audio.muted = !audio.muted;
-      muteListening.textContent = audio.muted ? "Unmute" : "Mute";
-      setRelayState(audio.muted ? "Connected — muted" : "Connected", true);
+      scheduleRelayDebug();
     });
 
     stopListening.addEventListener("click", () => resetListening());
+
+    testTone.addEventListener("click", () => {
+      playTestTone().catch((error) => showControlStatus(error.message, true));
+    });
 
     audio.addEventListener("error", () => {
       if (audio.getAttribute("src")) resetListening("Disconnected");
@@ -1333,6 +1392,24 @@ def external_audio_stream(channel_id: int):
     response.headers["X-Accel-Buffering"] = "no"
     response.headers["Content-Disposition"] = "inline"
     return response
+
+
+@app.route("/say/audio-status")
+def external_audio_status():
+    if not incoming_audio_is_authorized():
+        return external_say_authentication_required()
+    relay_state = browser_audio_relay.state()
+    debug = browser_audio_relay.debug_state()
+    return jsonify(
+        listener_count=relay_state.listener_count,
+        running=relay_state.running,
+        encoder_error=relay_state.encoder_error,
+        frames_received=debug.frames_received,
+        bytes_received=debug.bytes_received,
+        last_frame_size=debug.last_frame_size,
+        frames_queued=debug.frames_queued,
+        active_speakers=debug.active_speakers,
+    )
 
 
 

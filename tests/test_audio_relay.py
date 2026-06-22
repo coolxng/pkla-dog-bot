@@ -90,6 +90,18 @@ class RelayLifecycleTests(unittest.TestCase):
         self.assertTrue(relay.submit_pcm(b"\x00" * PCM_FRAME_BYTES))
         self.assertFalse(relay.submit_pcm(b"\x00" * PCM_FRAME_BYTES))
 
+    def test_debug_state_tracks_browser_relay_counters(self):
+        relay = StubRelay(input_frame_limit=3)
+
+        relay.submit_pcm(b"x" * 123, source_id=42)
+
+        debug = relay.debug_state()
+        self.assertEqual(debug.frames_received, 1)
+        self.assertEqual(debug.bytes_received, 123)
+        self.assertEqual(debug.last_frame_size, 123)
+        self.assertEqual(debug.frames_queued, 0)
+        self.assertEqual(debug.active_speakers, 1)
+
     def test_larger_pcm_chunks_are_split_into_20_ms_frames(self):
         pcm = b"\x01\x02" * (PCM_FRAME_BYTES // 2 + 100)
         frames = list(chunk_pcm_frames(pcm))
@@ -213,8 +225,9 @@ class AudioAuthorizationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Start listening", response.data)
-        self.assertIn(b"Stop listening", response.data)
+        self.assertIn(b"Listen In", response.data)
+        self.assertIn(b"Stop Listening", response.data)
+        self.assertIn(b"Play Test Tone", response.data)
         self.assertIn(
             b'const audio = document.getElementById("discord-audio")', response.data
         )
@@ -227,6 +240,34 @@ class AudioAuthorizationTests(unittest.TestCase):
             response.headers["Cache-Control"],
             "no-store, no-cache, must-revalidate, private",
         )
+
+    def test_audio_status_requires_authentication_and_returns_debug_counters(self):
+        wrong = base64.b64encode(b"user:wrong").decode()
+        correct = base64.b64encode(b"user:secret-token").decode()
+        relay_state = SimpleNamespace(listener_count=1, running=True, encoder_error=None)
+        debug_state = SimpleNamespace(
+            frames_received=12,
+            bytes_received=3456,
+            last_frame_size=7680,
+            frames_queued=2,
+            active_speakers=1,
+        )
+        with (
+            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
+            patch.object(bot.browser_audio_relay, "state", return_value=relay_state),
+            patch.object(bot.browser_audio_relay, "debug_state", return_value=debug_state),
+        ):
+            denied = self.client.get(
+                "/say/audio-status", headers={"Authorization": f"Basic {wrong}"}
+            )
+            allowed = self.client.get(
+                "/say/audio-status", headers={"Authorization": f"Basic {correct}"}
+            )
+
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.json["frames_received"], 12)
+        self.assertEqual(allowed.json["active_speakers"], 1)
 
     def test_stream_listener_closes_when_discord_receive_start_fails(self):
         correct = base64.b64encode(b"user:secret-token").decode()

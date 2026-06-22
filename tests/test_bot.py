@@ -2964,8 +2964,9 @@ class ExternalListeningFeatureTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Listen in browser", response.data)
-        self.assertIn(b"Start listening", response.data)
-        self.assertIn(b"Stop listening", response.data)
+        self.assertIn(b"Listen In", response.data)
+        self.assertIn(b"Stop Listening", response.data)
+        self.assertIn(b"Play Test Tone", response.data)
         self.assertNotIn(b"Call transcription", response.data)
         self.assertNotIn(b"/say/transcript", response.data)
         self.assertNotIn(b'value="start_transcription"', response.data)
