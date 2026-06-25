@@ -1988,6 +1988,7 @@ class ExternalSayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Say it your way.", response.data)
+        self.assertIn(b'name="text_channel_id"', response.data)
         self.assertIn(b'/favicon.ico?v=1', response.data)
         self.assertNotIn(b'name="token"', response.data)
 
@@ -2383,10 +2384,15 @@ class ExternalSayTests(unittest.TestCase):
     def test_valid_form_redirects_and_refresh_does_not_resubmit(self):
         submitted_messages = []
         original_submit = bot.submit_external_message
-        bot.submit_external_message = submitted_messages.append
+
+        def submit_message(message, channel_id=None):
+            submitted_messages.append((message, channel_id))
+
+        bot.submit_external_message = submit_message
         try:
             response = self.client.post(
-                "/say", data={"message": "hello Discord"}
+                "/say",
+                data={"text_channel_id": "123456789", "message": "hello Discord"},
             )
             redirected_response = self.client.get(response.headers["Location"])
             refreshed_response = self.client.get(response.headers["Location"])
@@ -2398,7 +2404,16 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(redirected_response.status_code, 200)
         self.assertIn(b"Message sent", redirected_response.data)
         self.assertEqual(refreshed_response.status_code, 200)
-        self.assertEqual(submitted_messages, ["hello Discord"])
+        self.assertEqual(submitted_messages, [("hello Discord", 123456789)])
+
+    def test_message_form_rejects_non_numeric_text_channel_id(self):
+        response = self.client.post(
+            "/say",
+            data={"action": "send", "text_channel_id": "not-a-channel", "message": "hello"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Enter a valid numeric text channel ID", response.data)
 
 
 class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):

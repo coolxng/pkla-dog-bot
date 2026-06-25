@@ -743,6 +743,8 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <p class="section-kicker">Text channel</p>
         <h2>Send a message</h2>
       </div>
+      <label for="text-channel-id">Discord text channel ID</label>
+      <input id="text-channel-id" name="text_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ text_channel_id or '' }}" placeholder="Enter a text channel ID" required>
       <label for="message">Message</label>
       <textarea id="message" name="message" maxlength="2000" required></textarea>
       <button class="send-button" type="submit">Send to Discord</button>
@@ -750,7 +752,7 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
     <form method="post" class="panel voice-section" aria-labelledby="voice-heading">
       <div class="panel-heading voice-workspace-heading">
         <p class="section-kicker">Voice workspace</p>
-        <h2 id="voice-heading">Call controls</h2>
+        <h2 id="voice-heading">Voice call controls</h2>
         <p class="voice-help">1. Connect the bot. 2. Listen or talk from this browser. 3. Use clips, text-to-speech, and moderation only when needed.</p>
       </div>
       <section class="voice-setup" aria-labelledby="call-setup-heading">
@@ -761,20 +763,20 @@ EXTERNAL_SAY_PAGE = """<!doctype html>
         <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
         <div class="voice-actions">
           <button class="join-button" type="submit" name="action" value="join">Join call</button>
-          <button class="stop-button" type="submit" name="action" value="stop">Stop bot audio</button>
+          <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
           <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
         </div>
       </section>
       <div class="voice-stream-grid" aria-label="Browser voice controls">
       <section class="stream-card listen-panel" aria-labelledby="listen-heading">
         <p class="setup-step">Step 2A</p>
-        <h3 id="listen-heading">Listen from browser</h3>
+        <h3 id="listen-heading">Listen in browser</h3>
         <p class="voice-help">Hear live participant audio in this tab. This does not transmit your microphone.</p>
         {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
         <div class="listen-actions">
-          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening</button>
-          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop</button>
-          <button id="test-tone" class="mute-button" type="button">Test sound</button>
+          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening / Listen In</button>
+          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop Listening</button>
+          <button id="test-tone" class="mute-button" type="button">Test sound / Play Test Tone</button>
         </div>
         <div class="relay-details" aria-live="polite">
           <span>Channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
@@ -1721,10 +1723,11 @@ async def send_external_ryan_birthday(channel_id: int) -> None:
     await channel.send(content, embed=embed, file=birthday_image)
 
 
-def submit_external_message(message: str) -> None:
-    channel_id = external_channel_id()
-    if channel_id is None or channel_id not in TARGET_CHANNEL_IDS:
-        raise RuntimeError("EXTERNAL_CHANNEL_ID must be one of TARGET_CHANNEL_IDS")
+def submit_external_message(message: str, channel_id: int | None = None) -> None:
+    if channel_id is None:
+        channel_id = external_channel_id()
+        if channel_id is None:
+            raise RuntimeError("Enter a Discord text channel ID.")
     run_discord_coroutine(
         send_external_message(channel_id, message),
         "Discord took too long to accept the message",
@@ -2278,7 +2281,18 @@ def external_say():
                     response_status = 503
         else:
             message = request.form.get("message", "")
-            if not message.strip():
+            raw_text_channel_id = request.form.get("text_channel_id", "").strip()
+            text_channel_id = None
+            if raw_text_channel_id:
+                try:
+                    text_channel_id = int(raw_text_channel_id)
+                except ValueError:
+                    status = "Enter a valid numeric text channel ID."
+                    error = True
+                    response_status = 400
+            if error:
+                pass
+            elif not message.strip():
                 status = "Enter a message first."
                 error = True
                 response_status = 400
@@ -2288,7 +2302,7 @@ def external_say():
                 response_status = 400
             else:
                 try:
-                    submit_external_message(message)
+                    submit_external_message(message, text_channel_id)
                     if fetch_request:
                         return jsonify(status="Message sent.")
                     return redirect(url_for("external_say", sent="1"), code=303)
@@ -2308,6 +2322,7 @@ def external_say():
         ping_members=external_ping_members(),
         bark_sounds=EXTERNAL_BARK_SOUNDS,
         voice_channel_id=external_voice_channel_id(),
+        text_channel_id=external_channel_id(),
         birthday_channel_id=RYAN_BIRTHDAY_CHANNEL_ID,
         tts_text_limit=TTS_TEXT_LIMIT,
         max_upload_audio_mib=MAX_UPLOADED_AUDIO_BYTES // (1024 * 1024),
