@@ -68,7 +68,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.
 6. Invite the bot and grant **View Channel**, **Connect**, and **Speak** in voice channels used for playback, browser listening, or browser mic talk. Add text target IDs to `TARGET_CHANNEL_IDS`.
 7. Ensure the deployment installs `requirements.txt`, including `discord.py[voice]` (PyNaCl and DAVE support), the pinned DAVE-compatible `discord-ext-voice-recv` revision, and `Flask-Sock` for browser listen-in WebSockets. The extension supplies inbound voice support that `discord.py` itself does not expose. Keep FFmpeg available for the existing playback features.
-8. To use browser listening or browser mic talk, set a strong `EXTERNAL_SAY_CONTROL_TOKEN` and restart after changing environment settings.
+8. Set a strong `EXTERNAL_SAY_CONTROL_TOKEN` before exposing `/say`, then restart after changing environment settings.
 9. Keep a single Railway replica running. Conversation history and universal memory are RAM-only and are not shared between replicas.
 
 ## Bot commands
@@ -126,9 +126,9 @@ Uploaded files receive server-generated temporary paths with server-selected `.m
 
 If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
 
-Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. When configured, `/say` shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
+Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. The page shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 
-If `EXTERNAL_SAY_CONTROL_TOKEN` is intentionally left unset, the non-listening `/say` controls remain unauthenticated for backward compatibility. **Browser listening and browser mic talk refuse to start without the token.** Anyone who knows or discovers an unauthenticated public URL can still post to Discord, join or leave voice calls, play sounds, upload audio, toggle the Discord `!tts` command, and request text-to-speech playback. Keeping the URL private is not equivalent to authentication.
+If `EXTERNAL_SAY_CONTROL_TOKEN` is left unset, `/say` remains visible as a setup page but control posts are rejected. This prevents an accidentally exposed URL from posting to Discord, joining or leaving voice calls, playing sounds, uploading audio, toggling API usage, or requesting text-to-speech playback.
 
 The page returns an error instead of sending if Discord is not connected, the selected text channel ID is invalid or unavailable, a message exceeds Discord's 2,000-character limit, speech exceeds 500 characters, an upload is missing, empty, malformed, not an MP3 or MP4, or over 8 MiB, the selected TTS voice is not allowed, another sound is playing. Flask also rejects oversized request bodies with a readable HTTP 413 response.
 

@@ -304,6 +304,7 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(command.parameters), 1)
         self.assertEqual(command.parameters[0].name, "user")
         self.assertTrue(command.parameters[0].required)
+        self.assertTrue(command.default_permissions.mute_members)
 
     async def test_sync_keeps_global_command_and_clears_guild_commands(self):
         guilds = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
@@ -353,6 +354,21 @@ class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):
         member.send.assert_not_awaited()
         interaction.response.send_message.assert_awaited_once_with(
             "That user is not in a voice channel.", ephemeral=True
+        )
+
+    async def test_rejects_sender_without_mute_members_permission(self):
+        interaction = self.interaction()
+        interaction.user.guild_permissions = SimpleNamespace(
+            mute_members=False, administrator=False
+        )
+        member = self.member(channel=SimpleNamespace(name="General"), self_deaf=True)
+
+        await bot.handle_pingdeaf(interaction, member)
+
+        member.send.assert_not_awaited()
+        interaction.response.send_message.assert_awaited_once_with(
+            "You need the Mute Members permission to use /pingdeaf.",
+            ephemeral=True,
         )
 
     async def test_rejects_member_who_is_not_deafened(self):
@@ -1981,10 +1997,18 @@ class GroqConfigTests(unittest.TestCase):
 
 class ExternalSayTests(unittest.TestCase):
     def setUp(self):
+        self.token_patch = patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token")
+        self.token_patch.start()
+        self.addCleanup(self.token_patch.stop)
         self.client = bot.app.test_client()
+        self.client.set_cookie(
+            bot.EXTERNAL_SAY_AUTH_COOKIE,
+            bot.external_say_auth_cookie_value(),
+        )
 
     def test_page_is_available_without_a_control_token(self):
-        response = self.client.get("/say")
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", ""):
+            response = self.client.get("/say")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Say it your way.", response.data)
@@ -2564,7 +2588,14 @@ class ExternalUploadedAudioTests(unittest.IsolatedAsyncioTestCase):
 
 class ExternalSayUploadFormTests(unittest.TestCase):
     def setUp(self):
+        self.token_patch = patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token")
+        self.token_patch.start()
+        self.addCleanup(self.token_patch.stop)
         self.client = bot.app.test_client()
+        self.client.set_cookie(
+            bot.EXTERNAL_SAY_AUTH_COOKIE,
+            bot.external_say_auth_cookie_value(),
+        )
 
     @staticmethod
     def upload_data(content=b"ID3audio", filename="clip.mp3", channel_id="123"):
@@ -2697,15 +2728,16 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertIn(b"Upload request is too large", response.data)
 
     def test_control_token_popup_authenticates_browser_with_cookie(self):
+        unauthenticated_client = bot.app.test_client()
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
-            locked_page = self.client.get("/say")
-            invalid_login = self.client.post(
+            locked_page = unauthenticated_client.get("/say")
+            invalid_login = unauthenticated_client.post(
                 "/say/login", json={"token": "wrong-token"}
             )
-            valid_login = self.client.post(
+            valid_login = unauthenticated_client.post(
                 "/say/login", json={"token": "secret-token"}
             )
-            unlocked_page = self.client.get("/say")
+            unlocked_page = unauthenticated_client.get("/say")
 
         self.assertEqual(locked_page.status_code, 200)
         self.assertIn(b'id="control-token-dialog"', locked_page.data)
@@ -2717,8 +2749,9 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertNotIn(b'id="control-token-dialog"', unlocked_page.data)
 
     def test_control_posts_still_require_authentication(self):
+        unauthenticated_client = bot.app.test_client()
         with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"):
-            response = self.client.post(
+            response = unauthenticated_client.post(
                 "/say", data={"action": "join", "voice_channel_id": "123"}
             )
 
@@ -2734,10 +2767,26 @@ class ExternalSayUploadFormTests(unittest.TestCase):
         self.assertIn(b"External control token not configured", response.data)
         self.assertNotIn(b'id="control-token-form"', response.data)
 
+    def test_missing_server_token_rejects_control_posts(self):
+        with patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", ""):
+            response = self.client.post(
+                "/say", data={"action": "join", "voice_channel_id": "123"}
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Basic", response.headers["WWW-Authenticate"])
+
 
 class ExternalVoiceStatusRouteTests(unittest.TestCase):
     def setUp(self):
+        self.token_patch = patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token")
+        self.token_patch.start()
+        self.addCleanup(self.token_patch.stop)
         self.client = bot.app.test_client()
+        self.client.set_cookie(
+            bot.EXTERNAL_SAY_AUTH_COOKIE,
+            bot.external_say_auth_cookie_value(),
+        )
 
     def test_say_page_contains_activity_panel_and_polling_ui(self):
         response = self.client.get("/say")
@@ -2886,6 +2935,7 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         snapshot.assert_called_once_with(123)
 
     def test_status_route_uses_same_authentication_as_say_page(self):
+        unauthenticated_client = bot.app.test_client()
         def status_result(channel_id):
             self.assertEqual(channel_id, 123)
             return {"state": "unavailable", "voice_channel_id": 123}
@@ -2894,7 +2944,7 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
             patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token"),
             patch.object(bot, "external_voice_status_snapshot", side_effect=status_result),
         ):
-            unauthorized = self.client.get("/say/status?voice_channel_id=123")
+            unauthorized = unauthenticated_client.get("/say/status?voice_channel_id=123")
             authorized = self.client.get(
                 "/say/status?voice_channel_id=123",
                 headers={"Authorization": "Basic dXNlcjpzZWNyZXQtdG9rZW4="},
@@ -3107,7 +3157,14 @@ if __name__ == "__main__":
 
 class ExternalListeningFeatureTests(unittest.TestCase):
     def setUp(self):
+        self.token_patch = patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token")
+        self.token_patch.start()
+        self.addCleanup(self.token_patch.stop)
         self.client = bot.app.test_client()
+        self.client.set_cookie(
+            bot.EXTERNAL_SAY_AUTH_COOKIE,
+            bot.external_say_auth_cookie_value(),
+        )
 
     def test_page_keeps_browser_listening_without_transcription_controls(self):
         response = self.client.get("/say")

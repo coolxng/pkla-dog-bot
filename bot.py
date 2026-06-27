@@ -1615,7 +1615,7 @@ def external_say_auth_cookie_value() -> str:
 
 def external_say_is_authorized() -> bool:
     if not EXTERNAL_SAY_CONTROL_TOKEN:
-        return True
+        return False
     cookie_value = request.cookies.get(EXTERNAL_SAY_AUTH_COOKIE, "")
     if cookie_value and hmac.compare_digest(
         cookie_value, external_say_auth_cookie_value()
@@ -3957,6 +3957,17 @@ async def pingdeaf_until_undeafened(
 
 
 async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if permissions is not None and not (
+        getattr(permissions, "mute_members", False)
+        or getattr(permissions, "administrator", False)
+    ):
+        await interaction.response.send_message(
+            "You need the Mute Members permission to use /pingdeaf.",
+            ephemeral=True,
+        )
+        return
+
     voice_state = user.voice
     if voice_state is None or voice_state.channel is None:
         await interaction.response.send_message(
@@ -4024,6 +4035,7 @@ async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member
 
 @command_tree.command(name="pingdeaf", description="DM a deafened voice member to undeafen.")
 @app_commands.describe(user="The deafened member to ping")
+@app_commands.default_permissions(mute_members=True)
 @app_commands.guild_only()
 async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
     await handle_pingdeaf(interaction, user)
