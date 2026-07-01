@@ -62,10 +62,7 @@ logger = logging.getLogger("pkla_dog")
 
 @app.route("/favicon.ico")
 def favicon():
-    with app.open_resource("static/favicon.png.b64") as favicon_file:
-        encoded_favicon = b"".join(favicon_file.read().split())
-    favicon_data = base64.b64decode(encoded_favicon, validate=True)
-    return Response(favicon_data, mimetype="image/png")
+    return app.send_static_file("pkla-dog-icon.svg")
 
 
 @app.route("/")

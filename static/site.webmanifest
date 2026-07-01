@@ -1,0 +1,16 @@
+{
+  "name": "PKLA Dog Bot",
+  "short_name": "PKLA Dog",
+  "icons": [
+    {
+      "src": "/static/pkla-dog-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "theme_color": "#0f0f0f",
+  "background_color": "#0f0f0f",
+  "display": "standalone",
+  "start_url": "/say"
+}
