@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import io
 import json
+import logging
 import math
 import os
 import random
@@ -32,6 +33,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from audio_relay import AudioRelay, RelayError
 from browser_talk import BrowserTalkSession, BrowserTalkState
 from pcm_relay import PcmRelay
+from storage import default_state_store
 
 
 _voice_recv_spec = importlib.util.find_spec("discord.ext.voice_recv")
@@ -42,6 +44,13 @@ voice_recv = (
 
 app = Flask(__name__)
 sock = Sock(app)
+
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("pkla_dog")
 
 
 @app.route("/favicon.ico")
@@ -57,8 +66,43 @@ def home():
     return "alive"
 
 
+@app.route("/health")
+def health():
+    relay_state = browser_pcm_relay.state()
+    return jsonify(
+        status="ok" if client.is_ready() else "starting",
+        discord_ready=client.is_ready(),
+        discord_user=str(client.user) if client.user else None,
+        uptime_seconds=round(time.monotonic() - BOT_STARTED_AT, 1),
+        voice_receive_available=voice_recv is not None,
+        listen_in_enabled=env_bool("ENABLE_LISTEN_IN", True),
+        active_receive_channel_id=active_receive_channel_id,
+        pcm_listener_count=relay_state.listener_count,
+        ai_api_calls_enabled=ai_api_calls_enabled,
+        chat_tts_command_enabled=chat_tts_command_enabled,
+    )
+
+
 def run_web_server():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+    port = int(os.environ.get("PORT", 3000))
+    use_production_server = env_bool("USE_PRODUCTION_WEB_SERVER", True)
+    if use_production_server:
+        try:
+            from gevent import pywsgi
+            from geventwebsocket.handler import WebSocketHandler
+
+            logger.info("Starting gevent web server on port %s", port)
+            server = pywsgi.WSGIServer(
+                ("0.0.0.0", port), app, handler_class=WebSocketHandler
+            )
+            server.serve_forever()
+            return
+        except ImportError:
+            logger.warning(
+                "gevent/gevent-websocket not installed; falling back to Flask dev server"
+            )
+    logger.info("Starting Flask dev server on port %s", port)
+    app.run(host="0.0.0.0", port=port)
 
 
 def start_web_server():
@@ -419,19 +463,50 @@ def create_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
 TARGET_CHANNEL_IDS = parse_int_set_env("TARGET_CHANNEL_IDS", DEFAULT_TARGET_CHANNEL_IDS)
 OWNER_ID = parse_int_env("OWNER_ID", DEFAULT_OWNER_ID)
 
-PING_RESPONSES = {
-    "ping ozzy": "<@586732970283630633>",
-    "ping luka": "<@755983018908188742>",
-    "ping coolxng": "<@575057023046123520>",
-    "ping ryan": "<@835585273399476264>",
-    "ping jamal": "<@1247415021080678452>",
-    "ping jaedon": "<@1149829095958528020>",
-    "ping j": "<@1149829095958528020>",
-    "ping reqo": "<@375402301646700546>",
-    "ping hayden": "<@1069346669566623928>",
-    "ping 6uke": "<@1135595806171332760>",
-    "ping tom pearls": "<@607667203126591509>",
+DEFAULT_PING_MEMBER_IDS = {
+    "ozzy": "586732970283630633",
+    "luka": "755983018908188742",
+    "coolxng": "575057023046123520",
+    "ryan": "835585273399476264",
+    "jamal": "1247415021080678452",
+    "jaedon": "1149829095958528020",
+    "j": "1149829095958528020",
+    "reqo": "375402301646700546",
+    "hayden": "1069346669566623928",
+    "6uke": "1135595806171332760",
+    "tom pearls": "607667203126591509",
 }
+
+
+def parse_ping_member_ids(default: dict[str, str]) -> dict[str, str]:
+    raw_value = os.environ.get("PING_MEMBERS_JSON", "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        print(f"Ignoring invalid PING_MEMBERS_JSON: {error}")
+        return default
+    if not isinstance(parsed, dict):
+        print("Ignoring PING_MEMBERS_JSON because it must be a JSON object")
+        return default
+    return {str(name).strip().lower(): str(user_id).strip() for name, user_id in parsed.items()}
+
+
+def build_ping_responses(member_ids: dict[str, str]) -> dict[str, str]:
+    responses: dict[str, str] = {}
+    for trigger, user_id in member_ids.items():
+        trigger = trigger.strip().lower()
+        user_id = user_id.strip()
+        if not trigger or not user_id.isdigit():
+            print(f"Ignoring invalid ping member entry: {trigger!r} -> {user_id!r}")
+            continue
+        responses[f"ping {trigger}"] = f"<@{user_id}>"
+    return responses or build_ping_responses(DEFAULT_PING_MEMBER_IDS)
+
+
+PING_MEMBER_IDS = parse_ping_member_ids(DEFAULT_PING_MEMBER_IDS)
+PING_RESPONSES = build_ping_responses(PING_MEMBER_IDS)
 PING_REQUEST_PREFIX_RE = re.compile(
     r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*",
     flags=re.IGNORECASE,
@@ -536,9 +611,10 @@ pingdeaf_sender_views: dict[int, discord.ui.View] = {}
 pingdeaf_messages: dict[int, list[discord.Message]] = {}
 pingdeaf_cleanup_tasks: set[asyncio.Task] = set()
 
-# Universal memory is RAM-only and is wiped on restart; it is not persistent storage.
+# Universal memory is persisted to SQLite when PERSIST_STATE=true.
 universal_memory: list[str] = []
 MAX_UNIVERSAL_MEMORIES = 50
+state_store = default_state_store()
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -1798,17 +1874,20 @@ def format_user_history_content(display_name: str, content: str) -> str:
 def _add_to_history(user_id: int, role: str, content: str) -> None:
     if user_id not in conversation_history:
         if len(conversation_history) >= MAX_USERS:
-            conversation_history.popitem(last=False)
+            evicted_user_id, _ = conversation_history.popitem(last=False)
+            state_store.delete_dm_history(evicted_user_id)
         conversation_history[user_id] = []
     conversation_history[user_id].append({"role": role, "content": content})
     if len(conversation_history[user_id]) > 20:
         conversation_history[user_id] = conversation_history[user_id][-20:]
+    state_store.save_dm_history(user_id, conversation_history[user_id])
 
 
 def _add_to_channel_history(channel_id: int, role: str, content: str, display_name: str | None = None) -> None:
     if channel_id not in channel_conversation_history:
         if len(channel_conversation_history) >= MAX_CHANNELS:
-            channel_conversation_history.popitem(last=False)
+            evicted_channel_id, _ = channel_conversation_history.popitem(last=False)
+            state_store.delete_channel_history(evicted_channel_id)
         channel_conversation_history[channel_id] = []
 
     if role == "user" and display_name:
@@ -1817,6 +1896,9 @@ def _add_to_channel_history(channel_id: int, role: str, content: str, display_na
     channel_conversation_history[channel_id].append({"role": role, "content": content})
     if len(channel_conversation_history[channel_id]) > 20:
         channel_conversation_history[channel_id] = channel_conversation_history[channel_id][-20:]
+    state_store.save_channel_history(
+        channel_id, channel_conversation_history[channel_id]
+    )
 
 
 def get_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> list:
@@ -1843,8 +1925,10 @@ def add_to_active_history(
 def clear_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
     if is_dm:
         conversation_history.pop(user_id, None)
+        state_store.delete_dm_history(user_id)
     else:
         channel_conversation_history.pop(channel_id, None)
+        state_store.delete_channel_history(channel_id)
 
 
 def record_command_exchange(message, response: str, *, is_dm: bool) -> None:
@@ -1869,6 +1953,10 @@ def pop_last_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> No
     history = conversation_history.get(user_id) if is_dm else channel_conversation_history.get(channel_id)
     if history:
         history.pop()
+        if is_dm:
+            state_store.save_dm_history(user_id, history)
+        else:
+            state_store.save_channel_history(channel_id, history)
 
 
 def clean_reply(reply: str) -> str:
@@ -1917,7 +2005,20 @@ def add_universal_memory(fact: str) -> bool:
     universal_memory.append(fact)
     if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
         universal_memory.pop(0)
+    state_store.save_universal_memory(universal_memory)
     return True
+
+
+def load_persisted_state() -> None:
+    if not state_store.enabled:
+        return
+    loaded_memory = state_store.load_universal_memory()
+    if loaded_memory:
+        universal_memory[:] = loaded_memory[-MAX_UNIVERSAL_MEMORIES:]
+    for user_id, messages in state_store.load_dm_histories().items():
+        conversation_history[user_id] = messages[-20:]
+    for channel_id, messages in state_store.load_channel_histories().items():
+        channel_conversation_history[channel_id] = messages[-20:]
 
 
 def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:
@@ -3137,7 +3238,7 @@ async def sync_slash_commands() -> bool:
             command_tree.clear_commands(guild=guild)
             await command_tree.sync(guild=guild)
     except discord.HTTPException as error:
-        print(f"Could not sync slash commands: {error}")
+        logger.error("Could not sync slash commands: %s", error)
         return False
     return True
 
@@ -3148,7 +3249,7 @@ async def on_ready():
     discord_event_loop = asyncio.get_running_loop()
     if not slash_commands_synced:
         slash_commands_synced = await sync_slash_commands()
-    print(f"Logged in as {client.user}")
+    logger.info("Logged in as %s", client.user)
 
 
 @client.event
@@ -3289,6 +3390,7 @@ async def on_message(message):
     if normalized_content == "!forget":
         if user_id == OWNER_ID:
             universal_memory.clear()
+            state_store.clear_universal_memory()
             await message.channel.send("universal memory cleared")
         else:
             await message.channel.send("nah you can't do that")
@@ -3409,6 +3511,7 @@ async def run_discord_client(token: str) -> None:
 def main():
     if env_bool("ENABLE_TRANSCRIPTION", False):
         print("ENABLE_TRANSCRIPTION is ignored because transcription support is removed")
+    load_persisted_state()
     start_web_server()
     asyncio.run(run_discord_client(os.environ["DISCORD_TOKEN"]))
 
