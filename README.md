@@ -52,6 +52,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
 | `AUTO_MEMORY_ENABLED` | `false` | Enables automatic extraction of shared memory facts from conversations. Off by default. |
+| `PERSIST_STATE` | `false` | Persist universal memory and conversation history to SQLite across restarts. |
+| `STATE_DB_PATH` | `bot_state.db` | SQLite database path used when `PERSIST_STATE=true`. |
 | `TAVILY_API_KEY` | unset | Optional fallback search provider. |
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
@@ -156,8 +158,8 @@ Groq handles normal chat replies and optional automatic memory extraction. Set `
 
 ## Known limitations
 
-- Conversation history is RAM-only and is wiped on restart. Server-channel history is shared by channel, while DM history remains per user.
-- Universal memory is RAM-only and is wiped on restart.
+- Conversation history and universal memory are RAM-only by default and are wiped on restart. Set `PERSIST_STATE=true` to store both in SQLite via `STATE_DB_PATH`.
+- Server-channel history is shared by channel, while DM history remains per user.
 - Voice receive depends on an alpha extension built on Discord's undocumented/reverse-engineered receive behavior, so Discord changes can disrupt browser listening independently of outbound playback.
 - Auto-memory extraction is disabled by default because it can store personal facts across users.
 - The bot should run as a single replica because in-memory history and memory are not shared across processes.
