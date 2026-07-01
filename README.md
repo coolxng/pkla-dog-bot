@@ -33,6 +33,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_API_KEY` | For OpenAI features | OpenAI API key used for explicitly enabled OpenAI web search and optional chat fallback. Used for OpenAI text to speech when TTS is requested. |
 | `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. Defaults to the existing hardcoded channel list if unset. |
 | `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. Defaults to the existing owner ID if unset. |
+| `PING_MEMBERS_JSON` | Recommended | JSON object mapping ping trigger names to Discord user IDs, for example `{"ozzy":"586732970283630633","j":"1149829095958528020"}`. Defaults to the built-in member list if unset. |
 | `EXTERNAL_CHANNEL_ID` | Required for `/say` | Discord channel ID where messages from the external send page are posted. It must also appear in `TARGET_CHANNEL_IDS`. |
 
 ## Optional environment variables

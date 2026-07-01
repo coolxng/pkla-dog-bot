@@ -420,19 +420,50 @@ def create_chat_completion(messages: list[dict], *, max_tokens: int) -> str:
 TARGET_CHANNEL_IDS = parse_int_set_env("TARGET_CHANNEL_IDS", DEFAULT_TARGET_CHANNEL_IDS)
 OWNER_ID = parse_int_env("OWNER_ID", DEFAULT_OWNER_ID)
 
-PING_RESPONSES = {
-    "ping ozzy": "<@586732970283630633>",
-    "ping luka": "<@755983018908188742>",
-    "ping coolxng": "<@575057023046123520>",
-    "ping ryan": "<@835585273399476264>",
-    "ping jamal": "<@1247415021080678452>",
-    "ping jaedon": "<@1149829095958528020>",
-    "ping j": "<@1149829095958528020>",
-    "ping reqo": "<@375402301646700546>",
-    "ping hayden": "<@1069346669566623928>",
-    "ping 6uke": "<@1135595806171332760>",
-    "ping tom pearls": "<@607667203126591509>",
+DEFAULT_PING_MEMBER_IDS = {
+    "ozzy": "586732970283630633",
+    "luka": "755983018908188742",
+    "coolxng": "575057023046123520",
+    "ryan": "835585273399476264",
+    "jamal": "1247415021080678452",
+    "jaedon": "1149829095958528020",
+    "j": "1149829095958528020",
+    "reqo": "375402301646700546",
+    "hayden": "1069346669566623928",
+    "6uke": "1135595806171332760",
+    "tom pearls": "607667203126591509",
 }
+
+
+def parse_ping_member_ids(default: dict[str, str]) -> dict[str, str]:
+    raw_value = os.environ.get("PING_MEMBERS_JSON", "").strip()
+    if not raw_value:
+        return default
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as error:
+        print(f"Ignoring invalid PING_MEMBERS_JSON: {error}")
+        return default
+    if not isinstance(parsed, dict):
+        print("Ignoring PING_MEMBERS_JSON because it must be a JSON object")
+        return default
+    return {str(name).strip().lower(): str(user_id).strip() for name, user_id in parsed.items()}
+
+
+def build_ping_responses(member_ids: dict[str, str]) -> dict[str, str]:
+    responses: dict[str, str] = {}
+    for trigger, user_id in member_ids.items():
+        trigger = trigger.strip().lower()
+        user_id = user_id.strip()
+        if not trigger or not user_id.isdigit():
+            print(f"Ignoring invalid ping member entry: {trigger!r} -> {user_id!r}")
+            continue
+        responses[f"ping {trigger}"] = f"<@{user_id}>"
+    return responses or build_ping_responses(DEFAULT_PING_MEMBER_IDS)
+
+
+PING_MEMBER_IDS = parse_ping_member_ids(DEFAULT_PING_MEMBER_IDS)
+PING_RESPONSES = build_ping_responses(PING_MEMBER_IDS)
 PING_REQUEST_PREFIX_RE = re.compile(
     r"^(?:(?:<@!?\d+>|pkla dog|bot|please|pls|can you|could you|would you|yo|hey|aye|bro|dog)\s+)*",
     flags=re.IGNORECASE,

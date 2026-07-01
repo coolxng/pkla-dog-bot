@@ -13,6 +13,26 @@ import bot
 
 
 class PingResponseTests(unittest.TestCase):
+    def test_custom_ping_members_json_overrides_defaults(self):
+        custom_members = json.dumps({"alpha": "111111111111111111", "beta": "222222222222222222"})
+        with patch.dict(bot.os.environ, {"PING_MEMBERS_JSON": custom_members}, clear=False):
+            member_ids = bot.parse_ping_member_ids(bot.DEFAULT_PING_MEMBER_IDS)
+            responses = bot.build_ping_responses(member_ids)
+
+        self.assertEqual(
+            responses,
+            {
+                "ping alpha": "<@111111111111111111>",
+                "ping beta": "<@222222222222222222>",
+            },
+        )
+
+    def test_invalid_ping_members_json_falls_back_to_defaults(self):
+        with patch.dict(bot.os.environ, {"PING_MEMBERS_JSON": "not-json"}, clear=False):
+            member_ids = bot.parse_ping_member_ids(bot.DEFAULT_PING_MEMBER_IDS)
+
+        self.assertEqual(member_ids, bot.DEFAULT_PING_MEMBER_IDS)
+
     def test_exact_ping_matches_case_insensitively(self):
         self.assertEqual(bot.ping_response_for("ping Jamal"), "<@1247415021080678452>")
 
