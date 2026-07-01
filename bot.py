@@ -26,7 +26,15 @@ from zoneinfo import ZoneInfo
 import discord
 from ddgs import DDGS
 from discord import app_commands
-from flask import Flask, Response, jsonify, redirect, render_template_string, request, url_for
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 from flask_sock import Sock
 from werkzeug.exceptions import RequestEntityTooLarge
 
