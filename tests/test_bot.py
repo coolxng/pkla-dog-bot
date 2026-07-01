@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.error import HTTPError
 from unittest.mock import ANY, AsyncMock, Mock, PropertyMock, call, patch
 
 import bot
@@ -739,6 +738,38 @@ class DeleteDmMessagesTests(unittest.IsolatedAsyncioTestCase):
 
         delete_messages.assert_not_awaited()
         message.add_reaction.assert_not_awaited()
+        call_model.assert_not_awaited()
+
+    async def test_delete_command_respects_configured_owner_id(self):
+        channel = self.FakeDMChannel(10, [])
+        custom_owner_id = 424242424242424242
+        message = SimpleNamespace(
+            author=SimpleNamespace(id=custom_owner_id, display_name="Owner"),
+            channel=channel,
+            content="!deletedms",
+            add_reaction=AsyncMock(),
+        )
+
+        with (
+            patch.object(bot, "OWNER_ID", custom_owner_id),
+            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
+            patch.object(bot.client._connection, "user", SimpleNamespace(id=999)),
+            patch.object(
+                bot,
+                "dm_channels_for_cleanup",
+                return_value=[channel],
+            ),
+            patch.object(
+                bot,
+                "delete_bot_dm_messages",
+                new=AsyncMock(return_value=(3, 0, 0)),
+            ) as delete_messages,
+            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
+        ):
+            await bot.on_message(message)
+
+        delete_messages.assert_awaited_once_with([channel], 999)
+        message.add_reaction.assert_awaited_once_with("✅")
         call_model.assert_not_awaited()
 
 
@@ -1909,10 +1940,9 @@ class GroqConfigTests(unittest.TestCase):
 
         self.assertEqual(post_json.call_args.args[1]["model"], "legacy-model")
 
-    def test_listen_in_and_transcription_flags_default_safely(self):
+    def test_listen_in_flag_defaults_safely(self):
         with patch.dict(bot.os.environ, {}, clear=True):
             self.assertTrue(bot.env_bool("ENABLE_LISTEN_IN", True))
-            self.assertFalse(bot.env_bool("ENABLE_TRANSCRIPTION", False))
 
     def test_openai_web_search_is_disabled_by_default(self):
         with (
@@ -2626,7 +2656,7 @@ class ExternalSayUploadFormTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 submitted = []
 
-                def submit(channel_id, audio_path):
+                def submit(channel_id, audio_path, submitted=submitted):
                     submitted.append((channel_id, audio_path))
                     return "playing uploaded audio in #General"
 

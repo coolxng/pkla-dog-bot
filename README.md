@@ -43,7 +43,6 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_CHAT_FALLBACK` | `false` | Allows normal chat to fall back to OpenAI only when explicitly enabled. When false, Groq failures return a clean error without spending OpenAI credits. |
 | `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | OpenAI model used only when `OPENAI_CHAT_FALLBACK=true`. |
 | `ENABLE_OPENAI_WEB_SEARCH` | `false` | Enables the existing OpenAI web-search provider. Off by default so ordinary/search-triggering messages cannot spend OpenAI credits accidentally; other configured search providers still work. |
-| `ENABLE_TRANSCRIPTION` | `false` | Compatibility flag only. Transcription support has been removed, so audio is never converted to text even if this is set to true. |
 | `ENABLE_LISTEN_IN` | `true` | Enables authenticated browser listen-in without transcription. Set false to disable inbound voice receiving. |
 | `OPENAI_SEARCH_MODEL` | `chat-latest` | Model used for OpenAI web search requests. |
 | `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI Speech API model used for text-to-speech audio. |
@@ -94,7 +93,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!roll [NdM]` | Rolls dice, defaulting to `1d6`; accepts small expressions such as `d20` or `2d6`. |
 | `!status` | Shows in-memory TTS, API-call, and listen-in status. |
 | `!forget` | Owner-only command that clears shared memory. |
-| `!deletedms` | Available only in DMs to Discord user `575057023046123520`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
+| `!deletedms` | Available only in DMs from `OWNER_ID`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
 | `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is received only while a browser listener is connected. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | When enabled from `/say`, queues up to 500 characters to be read with the configured OpenAI voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
@@ -138,7 +137,7 @@ Normal chat and optional automatic memory extraction use the Groq API associated
 
 `discord.py==2.7.1` provides outbound voice playback and DAVE session handling but no supported inbound receive pipeline. The June 2025 PyPI release of `discord-ext-voice-recv` predates Discord's March 2026 DAVE enforcement and cannot correctly decode current encrypted receive packets. This project therefore pins the full stabilized DAVE receive pipeline at revision `ee160c0f36516927b6214bc9d6babe524016770f`, which adds DAVE payload handling, media-kind filtering, unknown-SSRC recovery, jitter recovery, and hardened Opus decoding for long-running receive sessions. This is an upstream community revision rather than a stable PyPI release, so test voice receive after dependency or Discord voice changes before deploying. If the extension cannot be imported, the connected client was created without receive support, credentials are missing, or required Discord permissions are absent, `/say` returns a clear error and does not begin capture.
 
-Received audio is relayed live to connected authenticated browsers when `ENABLE_LISTEN_IN=true`. It is not persisted, transcribed, posted to text channels, or sent to any AI transcription provider. Transcription support has been removed and `ENABLE_TRANSCRIPTION=false` documents that intended state.
+Received audio is relayed live to connected authenticated browsers when `ENABLE_LISTEN_IN=true`. It is not persisted, transcribed, posted to text channels, or sent to any AI transcription provider.
 
 ## Channel setup
 

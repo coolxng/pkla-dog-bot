@@ -8,7 +8,6 @@ import time
 import uuid
 from dataclasses import dataclass
 
-
 _STOP = object()
 DEFAULT_LISTENER_FRAMES = 100
 
@@ -28,7 +27,7 @@ class PcmRelayDebug:
 
 
 class PcmRelayListener:
-    def __init__(self, relay: "PcmRelay", listener_id: str, frames: queue.Queue):
+    def __init__(self, relay: PcmRelay, listener_id: str, frames: queue.Queue):
         self._relay = relay
         self._listener_id = listener_id
         self._frames = frames

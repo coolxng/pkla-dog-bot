@@ -1,5 +1,4 @@
 import base64
-import queue
 import unittest
 from collections import deque
 from types import SimpleNamespace
@@ -7,12 +6,12 @@ from unittest.mock import Mock, patch
 
 import bot
 from audio_relay import (
-    PCM_FRAME_BYTES,
-    AudioRelay,
     JITTER_BUFFER_FRAMES,
     JITTER_DRAIN_SECONDS,
     MAX_SOURCE_BUFFER_FRAMES,
     MIX_HEADROOM,
+    PCM_FRAME_BYTES,
+    AudioRelay,
     RelayError,
     SlowClientError,
     chunk_pcm_frames,

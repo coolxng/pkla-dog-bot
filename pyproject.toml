@@ -15,3 +15,8 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 check_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = "bot"
+# discord.py stubs and dynamic voice-client APIs are not fully typed yet.
+disable_error_code = ["attr-defined", "arg-type", "assignment", "misc", "union-attr"]
+
