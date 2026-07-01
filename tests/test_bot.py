@@ -2052,6 +2052,37 @@ class GroqConfigTests(unittest.TestCase):
         self.assertIn("Minecraft bark", bot.SYSTEM_PROMPT)
         self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
 
+class HealthEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_health_reports_runtime_status(self):
+        relay_state = SimpleNamespace(listener_count=2)
+        with (
+            patch.object(bot.client, "is_ready", return_value=True),
+            patch.object(bot.client, "user", SimpleNamespace(__str__=lambda self: "pkla#0001")),
+            patch.object(bot.browser_pcm_relay, "state", return_value=relay_state),
+            patch.object(bot, "active_receive_channel_id", 123456789),
+        ):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["discord_ready"])
+        self.assertEqual(payload["discord_user"], "pkla#0001")
+        self.assertEqual(payload["pcm_listener_count"], 2)
+        self.assertEqual(payload["active_receive_channel_id"], 123456789)
+        self.assertIn("uptime_seconds", payload)
+
+    def test_health_reports_starting_before_discord_is_ready(self):
+        with patch.object(bot.client, "is_ready", return_value=False):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "starting")
+
+
 class ExternalSayTests(unittest.TestCase):
     def setUp(self):
         self.token_patch = patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret-token")

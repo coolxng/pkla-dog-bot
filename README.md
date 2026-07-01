@@ -59,6 +59,8 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
+| `LOG_LEVEL` | `INFO` | Python log level for structured runtime logging. |
+| `USE_PRODUCTION_WEB_SERVER` | `true` | Use gevent WSGI for `/say` and WebSockets. Set `false` for local Flask dev server. |
 | `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, browser mic talk, and audio upload controls. |
 | `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming browser audio or browser mic talk can start. Store it as a secret; do not commit it. |
 
@@ -127,7 +129,7 @@ The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send 
 
 Uploaded files receive server-generated temporary paths with server-selected `.mp3` or `.mp4` extensions; submitted filenames are never used as filesystem paths. Temporary files are removed when validation, Discord scheduling, or playback startup fails, and successful uploads are removed by the playback completion callback (including playback errors). Files can remain briefly only if the process is forcibly terminated before cleanup runs.
 
-If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
+If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port. `/health` returns JSON with Discord readiness, uptime, voice-receive state, and feature toggles.
 
 Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. The page shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 

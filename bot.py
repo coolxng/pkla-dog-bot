@@ -6,6 +6,7 @@ import importlib
 import importlib.util
 import io
 import json
+import logging
 import math
 import os
 import random
@@ -44,6 +45,13 @@ voice_recv = (
 app = Flask(__name__)
 sock = Sock(app)
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("pkla_dog")
+
 
 @app.route("/favicon.ico")
 def favicon():
@@ -58,8 +66,43 @@ def home():
     return "alive"
 
 
+@app.route("/health")
+def health():
+    relay_state = browser_pcm_relay.state()
+    return jsonify(
+        status="ok" if client.is_ready() else "starting",
+        discord_ready=client.is_ready(),
+        discord_user=str(client.user) if client.user else None,
+        uptime_seconds=round(time.monotonic() - BOT_STARTED_AT, 1),
+        voice_receive_available=voice_recv is not None,
+        listen_in_enabled=env_bool("ENABLE_LISTEN_IN", True),
+        active_receive_channel_id=active_receive_channel_id,
+        pcm_listener_count=relay_state.listener_count,
+        ai_api_calls_enabled=ai_api_calls_enabled,
+        chat_tts_command_enabled=chat_tts_command_enabled,
+    )
+
+
 def run_web_server():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+    port = int(os.environ.get("PORT", 3000))
+    use_production_server = env_bool("USE_PRODUCTION_WEB_SERVER", True)
+    if use_production_server:
+        try:
+            from gevent import pywsgi
+            from geventwebsocket.handler import WebSocketHandler
+
+            logger.info("Starting gevent web server on port %s", port)
+            server = pywsgi.WSGIServer(
+                ("0.0.0.0", port), app, handler_class=WebSocketHandler
+            )
+            server.serve_forever()
+            return
+        except ImportError:
+            logger.warning(
+                "gevent/gevent-websocket not installed; falling back to Flask dev server"
+            )
+    logger.info("Starting Flask dev server on port %s", port)
+    app.run(host="0.0.0.0", port=port)
 
 
 def start_web_server():
@@ -4217,7 +4260,7 @@ async def sync_slash_commands() -> bool:
             command_tree.clear_commands(guild=guild)
             await command_tree.sync(guild=guild)
     except discord.HTTPException as error:
-        print(f"Could not sync slash commands: {error}")
+        logger.error("Could not sync slash commands: %s", error)
         return False
     return True
 
@@ -4228,7 +4271,7 @@ async def on_ready():
     discord_event_loop = asyncio.get_running_loop()
     if not slash_commands_synced:
         slash_commands_synced = await sync_slash_commands()
-    print(f"Logged in as {client.user}")
+    logger.info("Logged in as %s", client.user)
 
 
 @client.event
