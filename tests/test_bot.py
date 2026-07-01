@@ -2088,12 +2088,18 @@ class HealthEndpointTests(unittest.TestCase):
 
     def test_health_reports_runtime_status(self):
         relay_state = SimpleNamespace(listener_count=2)
+
+        class FakeDiscordUser:
+            def __str__(self):
+                return "pkla#0001"
+
         with (
             patch.object(bot.client, "is_ready", return_value=True),
-            patch.object(bot.client, "user", SimpleNamespace(__str__=lambda self: "pkla#0001")),
+            patch.object(type(bot.client), "user", new_callable=PropertyMock) as user_property,
             patch.object(bot.browser_pcm_relay, "state", return_value=relay_state),
             patch.object(bot, "active_receive_channel_id", 123456789),
         ):
+            user_property.return_value = FakeDiscordUser()
             response = self.client.get("/health")
 
         self.assertEqual(response.status_code, 200)
@@ -2131,7 +2137,8 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Say it your way.", response.data)
         self.assertIn(b'name="text_channel_id"', response.data)
-        self.assertIn(b'/favicon.ico?v=1', response.data)
+        self.assertIn(b'/static/pkla-dog-icon.svg?v=2', response.data)
+        self.assertIn(b'/static/site.webmanifest', response.data)
         self.assertNotIn(b'name="token"', response.data)
 
     def test_page_has_voice_controls_with_default_channel(self):
@@ -2274,8 +2281,8 @@ class ExternalSayTests(unittest.TestCase):
         response = self.client.get("/favicon.ico")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.mimetype, "image/png")
-        self.assertTrue(response.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(response.mimetype, "image/svg+xml")
+        self.assertIn(b"PKLA Dog", response.data)
         response.close()
 
     def test_empty_message_is_rejected(self):

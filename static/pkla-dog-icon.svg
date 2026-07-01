@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">PKLA Dog</title>
+  <desc id="desc">A dark dog with upright ears, a gold third eye mark, and a black studded jacket.</desc>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="40%" r="70%">
+      <stop offset="0" stop-color="#202020"/>
+      <stop offset="1" stop-color="#050505"/>
+    </radialGradient>
+    <linearGradient id="fur" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0b1118"/>
+      <stop offset=".48" stop-color="#1d252b"/>
+      <stop offset="1" stop-color="#07090d"/>
+    </linearGradient>
+    <linearGradient id="tan" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#d7b086"/>
+      <stop offset="1" stop-color="#6f523e"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity=".55"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="108" fill="url(#bg)"/>
+  <g filter="url(#shadow)">
+    <path d="M132 202 C111 100 143 55 207 168 Z" fill="#111821" stroke="#3b3430" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M380 202 C401 100 369 55 305 168 Z" fill="#111821" stroke="#3b3430" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M158 206 C162 113 211 88 256 90 C301 88 350 113 354 206 C363 296 323 372 256 374 C189 372 149 296 158 206 Z" fill="url(#fur)" stroke="#495057" stroke-width="6"/>
+    <path d="M206 240 C190 214 184 188 188 155 C152 196 151 284 196 322 C202 291 212 265 206 240 Z" fill="url(#tan)" opacity=".9"/>
+    <path d="M306 240 C322 214 328 188 324 155 C360 196 361 284 316 322 C310 291 300 265 306 240 Z" fill="url(#tan)" opacity=".9"/>
+    <path d="M238 185 C242 243 232 303 204 346 C230 363 282 363 308 346 C280 303 270 243 274 185 C263 203 249 203 238 185 Z" fill="#d9ddd7" opacity=".88"/>
+    <ellipse cx="213" cy="225" rx="20" ry="15" fill="#8a4f37"/>
+    <ellipse cx="299" cy="225" rx="20" ry="15" fill="#8a4f37"/>
+    <circle cx="213" cy="223" r="7" fill="#1b0f0c"/>
+    <circle cx="299" cy="223" r="7" fill="#1b0f0c"/>
+    <path d="M230 278 C243 267 269 267 282 278 C277 296 266 304 256 304 C246 304 235 296 230 278 Z" fill="#050608"/>
+    <path d="M228 323 C243 337 269 337 284 323" fill="none" stroke="#111" stroke-width="7" stroke-linecap="round"/>
+    <path d="M193 401 C204 354 229 335 256 335 C283 335 308 354 319 401 L348 474 L164 474 Z" fill="#111" stroke="#30343a" stroke-width="8"/>
+    <path d="M158 387 C106 412 82 456 72 512 L196 512 C197 462 185 421 158 387 Z" fill="#15171c"/>
+    <path d="M354 387 C406 412 430 456 440 512 L316 512 C315 462 327 421 354 387 Z" fill="#15171c"/>
+    <g fill="#e6e6e6" opacity=".9">
+      <circle cx="148" cy="426" r="4"/><circle cx="169" cy="446" r="4"/><circle cx="135" cy="468" r="4"/>
+      <circle cx="364" cy="426" r="4"/><circle cx="343" cy="446" r="4"/><circle cx="377" cy="468" r="4"/>
+    </g>
+    <path d="M204 162 C226 129 286 129 308 162 C286 179 226 179 204 162 Z" fill="#ffd82d" stroke="#050505" stroke-width="7"/>
+    <circle cx="256" cy="157" r="16" fill="#151515"/>
+    <path d="M254 181 C243 197 252 203 262 196" fill="none" stroke="#ffd82d" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="256" cy="400" r="20" fill="#ffcf4b" opacity=".82"/>
+  </g>
+</svg>
