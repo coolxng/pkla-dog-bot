@@ -4,6 +4,8 @@ __pycache__/
 .venv/
 venv/
 *.log
+bot_state.db
+bot_state.db-*
 memory_state.json
 .pytest_cache/
 .mypy_cache/

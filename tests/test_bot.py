@@ -1670,6 +1670,12 @@ class ConversationHistoryTests(unittest.TestCase):
     def setUp(self):
         bot.conversation_history.clear()
         bot.channel_conversation_history.clear()
+        self.disabled_store = bot.state_store.__class__(
+            bot.state_store.db_path, enabled=False
+        )
+        self.store_patch = patch.object(bot, "state_store", self.disabled_store)
+        self.store_patch.start()
+        self.addCleanup(self.store_patch.stop)
 
     def test_channel_history_is_shared_and_labels_speakers(self):
         bot.add_to_active_history(123, 1, "user", "remember this", is_dm=False, display_name="Alice")
@@ -1705,6 +1711,37 @@ class ConversationHistoryTests(unittest.TestCase):
             bot.get_active_history(456, 2, is_dm=False),
             [{"role": "user", "content": "Bob: second"}],
         )
+
+    def test_load_persisted_state_restores_saved_history_and_memory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "state.db"
+            enabled_store = bot.state_store.__class__(db_path, enabled=True)
+            enabled_store.save_universal_memory(["shared fact"])
+            enabled_store.save_channel_history(
+                123,
+                [{"role": "user", "content": "Alice: hello"}],
+            )
+            enabled_store.save_dm_history(
+                7,
+                [{"role": "user", "content": "private"}],
+            )
+
+            bot.universal_memory.clear()
+            bot.conversation_history.clear()
+            bot.channel_conversation_history.clear()
+
+            with patch.object(bot, "state_store", enabled_store):
+                bot.load_persisted_state()
+
+            self.assertEqual(bot.universal_memory, ["shared fact"])
+            self.assertEqual(
+                bot.channel_conversation_history[123],
+                [{"role": "user", "content": "Alice: hello"}],
+            )
+            self.assertEqual(
+                bot.conversation_history[7],
+                [{"role": "user", "content": "private"}],
+            )
 
 
 class TextToSpeechTests(unittest.TestCase):
