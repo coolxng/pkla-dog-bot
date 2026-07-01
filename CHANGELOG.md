@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- Move the `/say` dashboard HTML from an inline string in `bot.py` to `templates/say.html`.
+- Fix `!deletedms` to honor `OWNER_ID` instead of the hardcoded default owner.
+- Add Ruff and mypy to CI and `requirements-dev.txt`.
+- Remove stale `ENABLE_TRANSCRIPTION` and Piper TTS entries from `.env.example`.
 - Require `/say` control posts to be authenticated instead of allowing unauthenticated controls when `EXTERNAL_SAY_CONTROL_TOKEN` is unset.
 - Require Mute Members permission for `/pingdeaf`.
 - Add GitHub Actions CI for dependency installation and unit tests.

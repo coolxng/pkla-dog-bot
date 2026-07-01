@@ -15,18 +15,18 @@ import tempfile
 import time
 from collections import OrderedDict
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 from threading import Thread
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import discord
-from discord import app_commands
 from ddgs import DDGS
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
+from discord import app_commands
+from flask import Flask, Response, jsonify, redirect, render_template_string, request, url_for
 from flask_sock import Sock
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -34,7 +34,6 @@ from audio_relay import AudioRelay, RelayError
 from browser_talk import BrowserTalkSession, BrowserTalkState
 from pcm_relay import PcmRelay
 from storage import default_state_store
-
 
 _voice_recv_spec = importlib.util.find_spec("discord.ext.voice_recv")
 voice_recv = (
@@ -1292,8 +1291,10 @@ def external_say():
                         raw_user_id = request.form.get("target_user_id", "").strip()
                         try:
                             user_id = int(raw_user_id)
-                        except ValueError:
-                            raise ValueError("Enter a valid numeric Discord user ID.")
+                        except ValueError as error:
+                            raise ValueError(
+                                "Enter a valid numeric Discord user ID."
+                            ) from error
                         status = submit_external_member_voice_action(
                             action, channel_id, user_id
                         )
@@ -2215,7 +2216,7 @@ def set_voice_activity(
         "activity_type": activity_type,
         "label": label,
         "started_at": (
-            datetime.now(timezone.utc).isoformat() if activity_type else None
+            datetime.now(UTC).isoformat() if activity_type else None
         ),
     }
     if queued_tts_count is not None:
@@ -2516,7 +2517,7 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
                 connect_options["cls"] = voice_receive_client_class()
             try:
                 voice_client = await voice_channel.connect(**connect_options)
-            except (asyncio.TimeoutError, discord.DiscordException) as receive_error:
+            except (TimeoutError, discord.DiscordException) as receive_error:
                 if not receive_enabled:
                     raise
                 print(
@@ -2529,14 +2530,14 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
                             self_deaf=False, self_mute=False
                         )
                         break
-                    except (asyncio.TimeoutError, discord.DiscordException) as error:
+                    except (TimeoutError, discord.DiscordException) as error:
                         if attempt == VOICE_CONNECT_RETRY_ATTEMPTS:
                             raise
                         print(
                             f"Voice connection attempt {attempt} failed; retrying: {error}"
                         )
                         await asyncio.sleep(VOICE_CONNECT_RETRY_DELAY_SECONDS)
-    except (asyncio.TimeoutError, discord.DiscordException) as error:
+    except (TimeoutError, discord.DiscordException) as error:
         error_detail = str(error).strip() or type(error).__name__
         print(f"Voice connection error: {error_detail}")
         set_voice_disconnected(guild, voice_channel)
@@ -2581,7 +2582,7 @@ async def leave_guild_voice(guild) -> str:
     await asyncio.to_thread(close_receive_session, "Discord voice connection closed")
     try:
         await voice_client.disconnect()
-    except (asyncio.TimeoutError, discord.DiscordException) as error:
+    except (TimeoutError, discord.DiscordException) as error:
         print(f"Voice disconnect error: {error}")
         return "couldn't leave the voice channel; try again"
 
@@ -3276,7 +3277,7 @@ async def on_message(message):
     if normalized_content == "!deletedms":
         if (
             isinstance(message.channel, discord.DMChannel)
-            and message.author.id == DEFAULT_OWNER_ID
+            and message.author.id == OWNER_ID
         ):
             await handle_delete_dms_command(message)
         return
@@ -3509,9 +3510,6 @@ async def run_discord_client(token: str) -> None:
 
 
 def main():
-    if env_bool("ENABLE_TRANSCRIPTION", False):
-        print("ENABLE_TRANSCRIPTION is ignored because transcription support is removed")
-    load_persisted_state()
     start_web_server()
     asyncio.run(run_discord_client(os.environ["DISCORD_TOKEN"]))
 

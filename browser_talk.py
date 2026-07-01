@@ -7,13 +7,12 @@ import threading
 import time
 import uuid
 from array import array
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import discord
 
 from audio_relay import PCM_CHANNELS, PCM_FRAME_BYTES, PCM_RATE
-
 
 DEFAULT_BROWSER_TALK_CONTAINER = "webm"
 # Values below this are normal microphone floor noise, not useful speech.
@@ -129,7 +128,7 @@ class BrowserTalkSession:
         voice_channel,
         mime_type: str | None = None,
         process_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
-        on_finished: Callable[["BrowserTalkSession"], None] | None = None,
+        on_finished: Callable[[BrowserTalkSession], None] | None = None,
     ):
         self.session_id = uuid.uuid4().hex
         self.voice_client = voice_client

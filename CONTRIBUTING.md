@@ -5,7 +5,9 @@
 Use Python 3.11 and install the pinned runtime dependencies:
 
 ```sh
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
+ruff check .
+mypy bot.py audio_relay.py pcm_relay.py browser_talk.py
 python -m unittest discover -s tests
 ```
 

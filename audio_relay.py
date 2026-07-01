@@ -12,7 +12,6 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-
 PCM_RATE = 48_000
 PCM_CHANNELS = 2
 PCM_SAMPLE_BYTES = 2
@@ -53,7 +52,7 @@ class RelayDebug:
 
 
 class RelayListener:
-    def __init__(self, relay: "AudioRelay", listener_id: str, chunks: queue.Queue):
+    def __init__(self, relay: AudioRelay, listener_id: str, chunks: queue.Queue):
         self._relay = relay
         self._listener_id = listener_id
         self._chunks = chunks
@@ -104,7 +103,7 @@ class AudioRelay:
         self._lock = threading.Lock()
         self._debug_lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._process = None
+        self._process: subprocess.Popen | None = None
         self._mixer_thread: threading.Thread | None = None
         self._reader_thread: threading.Thread | None = None
         self._encoder_error: str | None = None
@@ -254,8 +253,8 @@ class AudioRelay:
     def _mix_loop(self) -> None:
         frame_seconds = FRAME_MILLISECONDS / 1000
         next_frame_at = time.monotonic()
-        source_buffers = {}
-        last_received_at = {}
+        source_buffers: dict[object | None, deque[bytes]] = {}
+        last_received_at: dict[object | None, float] = {}
         while not self._stop_event.is_set():
             self._fill_source_buffers(
                 source_buffers, last_received_at, timeout=frame_seconds
