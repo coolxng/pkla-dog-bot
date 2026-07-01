@@ -6,3 +6,6 @@ discord-ext-voice-recv @ https://github.com/vocolboy/discord-ext-voice-recv/arch
 ddgs==9.8.0
 Flask==3.1.3
 Flask-Sock==0.7.0
+gevent==24.11.1
+gevent-websocket==0.10.1
+gunicorn==23.0.0

@@ -12,6 +12,26 @@ import bot
 
 
 class PingResponseTests(unittest.TestCase):
+    def test_custom_ping_members_json_overrides_defaults(self):
+        custom_members = json.dumps({"alpha": "111111111111111111", "beta": "222222222222222222"})
+        with patch.dict(bot.os.environ, {"PING_MEMBERS_JSON": custom_members}, clear=False):
+            member_ids = bot.parse_ping_member_ids(bot.DEFAULT_PING_MEMBER_IDS)
+            responses = bot.build_ping_responses(member_ids)
+
+        self.assertEqual(
+            responses,
+            {
+                "ping alpha": "<@111111111111111111>",
+                "ping beta": "<@222222222222222222>",
+            },
+        )
+
+    def test_invalid_ping_members_json_falls_back_to_defaults(self):
+        with patch.dict(bot.os.environ, {"PING_MEMBERS_JSON": "not-json"}, clear=False):
+            member_ids = bot.parse_ping_member_ids(bot.DEFAULT_PING_MEMBER_IDS)
+
+        self.assertEqual(member_ids, bot.DEFAULT_PING_MEMBER_IDS)
+
     def test_exact_ping_matches_case_insensitively(self):
         self.assertEqual(bot.ping_response_for("ping Jamal"), "<@1247415021080678452>")
 
@@ -1681,6 +1701,12 @@ class ConversationHistoryTests(unittest.TestCase):
     def setUp(self):
         bot.conversation_history.clear()
         bot.channel_conversation_history.clear()
+        self.disabled_store = bot.state_store.__class__(
+            bot.state_store.db_path, enabled=False
+        )
+        self.store_patch = patch.object(bot, "state_store", self.disabled_store)
+        self.store_patch.start()
+        self.addCleanup(self.store_patch.stop)
 
     def test_channel_history_is_shared_and_labels_speakers(self):
         bot.add_to_active_history(123, 1, "user", "remember this", is_dm=False, display_name="Alice")
@@ -1716,6 +1742,37 @@ class ConversationHistoryTests(unittest.TestCase):
             bot.get_active_history(456, 2, is_dm=False),
             [{"role": "user", "content": "Bob: second"}],
         )
+
+    def test_load_persisted_state_restores_saved_history_and_memory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "state.db"
+            enabled_store = bot.state_store.__class__(db_path, enabled=True)
+            enabled_store.save_universal_memory(["shared fact"])
+            enabled_store.save_channel_history(
+                123,
+                [{"role": "user", "content": "Alice: hello"}],
+            )
+            enabled_store.save_dm_history(
+                7,
+                [{"role": "user", "content": "private"}],
+            )
+
+            bot.universal_memory.clear()
+            bot.conversation_history.clear()
+            bot.channel_conversation_history.clear()
+
+            with patch.object(bot, "state_store", enabled_store):
+                bot.load_persisted_state()
+
+            self.assertEqual(bot.universal_memory, ["shared fact"])
+            self.assertEqual(
+                bot.channel_conversation_history[123],
+                [{"role": "user", "content": "Alice: hello"}],
+            )
+            self.assertEqual(
+                bot.conversation_history[7],
+                [{"role": "user", "content": "private"}],
+            )
 
 
 class TextToSpeechTests(unittest.TestCase):
@@ -2024,6 +2081,37 @@ class GroqConfigTests(unittest.TestCase):
         self.assertIn("Wolf bark", bot.SYSTEM_PROMPT)
         self.assertIn("Minecraft bark", bot.SYSTEM_PROMPT)
         self.assertIn("normal AI reply does not itself execute", bot.SYSTEM_PROMPT)
+
+class HealthEndpointTests(unittest.TestCase):
+    def setUp(self):
+        self.client = bot.app.test_client()
+
+    def test_health_reports_runtime_status(self):
+        relay_state = SimpleNamespace(listener_count=2)
+        with (
+            patch.object(bot.client, "is_ready", return_value=True),
+            patch.object(bot.client, "user", SimpleNamespace(__str__=lambda self: "pkla#0001")),
+            patch.object(bot.browser_pcm_relay, "state", return_value=relay_state),
+            patch.object(bot, "active_receive_channel_id", 123456789),
+        ):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["discord_ready"])
+        self.assertEqual(payload["discord_user"], "pkla#0001")
+        self.assertEqual(payload["pcm_listener_count"], 2)
+        self.assertEqual(payload["active_receive_channel_id"], 123456789)
+        self.assertIn("uptime_seconds", payload)
+
+    def test_health_reports_starting_before_discord_is_ready(self):
+        with patch.object(bot.client, "is_ready", return_value=False):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["status"], "starting")
+
 
 class ExternalSayTests(unittest.TestCase):
     def setUp(self):

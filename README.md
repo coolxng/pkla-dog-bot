@@ -33,6 +33,7 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_API_KEY` | For OpenAI features | OpenAI API key used for explicitly enabled OpenAI web search and optional chat fallback. Used for OpenAI text to speech when TTS is requested. |
 | `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. Defaults to the existing hardcoded channel list if unset. |
 | `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. Defaults to the existing owner ID if unset. |
+| `PING_MEMBERS_JSON` | Recommended | JSON object mapping ping trigger names to Discord user IDs, for example `{"ozzy":"586732970283630633","j":"1149829095958528020"}`. Defaults to the built-in member list if unset. |
 | `EXTERNAL_CHANNEL_ID` | Required for `/say` | Discord channel ID where messages from the external send page are posted. It must also appear in `TARGET_CHANNEL_IDS`. |
 
 ## Optional environment variables
@@ -51,10 +52,14 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `OPENAI_WEB_SEARCH_TOOL` | `web_search` | OpenAI Responses API web-search tool name. |
 | `OPENAI_SEARCH_REASONING_EFFORT` | `low` for reasoning-capable models | Reasoning effort for OpenAI web search when supported. |
 | `AUTO_MEMORY_ENABLED` | `false` | Enables automatic extraction of shared memory facts from conversations. Off by default. |
+| `PERSIST_STATE` | `false` | Persist universal memory and conversation history to SQLite across restarts. |
+| `STATE_DB_PATH` | `bot_state.db` | SQLite database path used when `PERSIST_STATE=true`. |
 | `TAVILY_API_KEY` | unset | Optional fallback search provider. |
 | `BRAVE_SEARCH_API_KEY` | unset | Optional fallback search provider. |
 | `SERPAPI_API_KEY` | unset | Optional fallback search provider. |
 | `PORT` | `3000` | Flask keepalive web server port. |
+| `LOG_LEVEL` | `INFO` | Python log level for structured runtime logging. |
+| `USE_PRODUCTION_WEB_SERVER` | `true` | Use gevent WSGI for `/say` and WebSockets. Set `false` for local Flask dev server. |
 | `EXTERNAL_VOICE_CHANNEL_ID` | `1447148315312521256` | Voice channel prefilled on the `/say` page for its Join, Leave, sound, TTS, browser mic talk, and audio upload controls. |
 | `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Password that protects all `/say` access with HTTP Basic authentication. It is **required** before incoming browser audio or browser mic talk can start. Store it as a secret; do not commit it. |
 
@@ -123,7 +128,7 @@ The Discord bot role needs **View Channel**, **Connect**, **Speak**, and **Send 
 
 Uploaded files receive server-generated temporary paths with server-selected `.mp3` or `.mp4` extensions; submitted filenames are never used as filesystem paths. Temporary files are removed when validation, Discord scheduling, or playback startup fails, and successful uploads are removed by the playback completion callback (including playback errors). Files can remain briefly only if the process is forcibly terminated before cleanup runs.
 
-If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port.
+If Railway already shows a public domain under **Settings** → **Networking**, use that existing domain instead of generating another one. Opening the domain without `/say` should display `alive`, which confirms that Railway is routing to the correct port. `/health` returns JSON with Discord readiness, uptime, voice-receive state, and feature toggles.
 
 Set `EXTERNAL_SAY_CONTROL_TOKEN` to a long random secret before exposing `/say`. The page shows an external-control-token login popup and stores a validated HttpOnly browser cookie. API clients can continue sending HTTP Basic credentials with any non-empty username and the configured token as the password. Railway and similar hosts should store the token in their secret-variable UI.
 
@@ -155,8 +160,8 @@ Groq handles normal chat replies and optional automatic memory extraction. Set `
 
 ## Known limitations
 
-- Conversation history is RAM-only and is wiped on restart. Server-channel history is shared by channel, while DM history remains per user.
-- Universal memory is RAM-only and is wiped on restart.
+- Conversation history and universal memory are RAM-only by default and are wiped on restart. Set `PERSIST_STATE=true` to store both in SQLite via `STATE_DB_PATH`.
+- Server-channel history is shared by channel, while DM history remains per user.
 - Voice receive depends on an alpha extension built on Discord's undocumented/reverse-engineered receive behavior, so Discord changes can disrupt browser listening independently of outbound playback.
 - Auto-memory extraction is disabled by default because it can store personal facts across users.
 - The bot should run as a single replica because in-memory history and memory are not shared across processes.

@@ -1,0 +1,1019 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord Bot — Say</title>
+  <link rel="icon" type="image/png" href="/favicon.ico?v=1">
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --canvas: #0f0f0f;
+      --surface: #1a1a1a;
+      --surface-raised: #202020;
+      --line: rgba(255, 255, 255, .08);
+      --line-strong: rgba(255, 255, 255, .16);
+      --text: #f5f5f5;
+      --muted: #999;
+      --accent: #5865f2;
+      --accent-hover: #6873f4;
+      --green: #3ba55c;
+      --yellow: #faa61a;
+      --red: #ed4245;
+    }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; background: var(--canvas); color: var(--text); line-height: 1.5; }
+    button, input, select, textarea { font: inherit; }
+    button {
+      min-height: 2.6rem; padding: .65rem .9rem; border: 1px solid var(--line-strong); border-radius: .5rem;
+      background: transparent; color: var(--text); font-weight: 700; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    button:hover:not(:disabled) { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.28); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    input, select, textarea {
+      width: 100%; padding: .72rem .8rem; border: 1px solid var(--line-strong); border-radius: .5rem;
+      background: #151515; color: var(--text); transition: border-color 120ms ease;
+    }
+    input:hover, select:hover, textarea:hover { border-color: rgba(255,255,255,.28); }
+    textarea { min-height: 7rem; resize: vertical; }
+    label { display: block; margin: .85rem 0 .35rem; color: #c8c8c8; font-size: .78rem; font-weight: 700; }
+    main { width: min(calc(100% - 2rem), 70rem); margin: 0 auto; padding: 1.5rem 0 3rem; }
+    .page-header { display: flex; align-items: end; justify-content: space-between; gap: 1.5rem; margin-bottom: 1.5rem; padding: 1rem 0 1.5rem; border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 .25rem; color: var(--accent); font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    h1, h2, h3 { margin: 0; line-height: 1.2; letter-spacing: -.02em; }
+    h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); }
+    h2 { font-size: 1.05rem; }
+    h3 { font-size: .95rem; }
+    .page-intro, .voice-help, .ping-help { color: var(--muted); }
+    .page-intro { margin: .35rem 0 0; font-size: .9rem; }
+    .control-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(18rem, .8fr); gap: 1rem; align-items: start; }
+    .primary-column, .side-panels { display: grid; gap: 1rem; }
+    .panel, .subpanel {
+      padding: 1.15rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface);
+    }
+    .panel-heading { margin-bottom: .85rem; }
+    .section-kicker { margin: 0 0 .3rem; color: var(--muted); font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .send-button, .birthday-button, .upload-button, .speak-button { width: 100%; margin-top: .8rem; background: var(--accent); border-color: var(--accent); }
+    .send-button:hover:not(:disabled), .birthday-button:hover:not(:disabled), .upload-button:hover:not(:disabled), .speak-button:hover:not(:disabled), .ping-button:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .voice-help, .ping-help { margin: .3rem 0 .75rem; font-size: .78rem; }
+    .voice-actions, .listen-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .65rem; }
+    .talk-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; margin-top: .65rem; }
+    .server-voice-actions, .member-voice-actions, .sound-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; margin-top: .5rem; }
+    .join-button, .listen-button, .ping-button { background: var(--accent); border-color: var(--accent); }
+    .stop-button, .mute-button { border-color: rgba(250,166,26,.5); }
+    .leave-button, .listen-stop-button { border-color: rgba(237,66,69,.55); }
+    .talk-button { background: var(--accent); border-color: var(--accent); }
+    .talk-stop-button { border-color: rgba(237,66,69,.55); }
+    .server-voice-button, .sound-button { background: var(--surface-raised); }
+    .voice-workspace-heading { margin-bottom: 1rem; }
+    .voice-setup { padding: 1rem; border: 1px solid var(--line-strong); border-radius: .55rem; background: #151515; }
+    .setup-step { margin: 0 0 .25rem; color: var(--accent); font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .voice-stream-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
+    .stream-card { min-width: 0; padding: 1rem; border: 1px solid var(--line); border-radius: .55rem; background: var(--surface-raised); }
+    .stream-card h3 { display: flex; align-items: center; gap: .45rem; }
+    .stream-card h3::before { display: grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: rgba(88,101,242,.2); color: #aeb7ff; font-size: .68rem; }
+    .listen-panel h3::before { content: "IN"; }
+    .talk-panel h3::before { content: "OUT"; }
+    .relay-debug { margin-top: .75rem; border-top: 1px solid var(--line); }
+    .relay-debug summary { padding-top: .75rem; color: var(--muted); font-size: .72rem; cursor: pointer; }
+    .relay-debug[open] summary { color: var(--text); }
+    .member-voice-panel { margin-top: .75rem; }
+    .member-voice-button { background: var(--surface-raised); }
+    .member-voice-button.danger { border-color: rgba(237,66,69,.55); }
+    .voice-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-top: .75rem; }
+    .subpanel { padding: 1rem; background: var(--surface-raised); }
+    .relay-details { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; color: var(--muted); font-size: .72rem; }
+    .relay-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .5rem; margin-top: .75rem; }
+    .relay-stat { padding: .55rem; border: 1px solid var(--line); border-radius: .45rem; background: #151515; }
+    .relay-stat strong, .relay-stat span { display: block; }
+    .relay-stat strong { font-size: .9rem; }
+    .relay-stat span { color: var(--muted); font-size: .64rem; line-height: 1.25; }
+    .live-indicator, .activity-message { position: relative; padding-left: 1rem; }
+    .live-indicator::before, .activity-message::before { content: ""; position: absolute; left: 0; top: .48em; width: .45rem; height: .45rem; border-radius: 50%; background: var(--yellow); }
+    .live-indicator.live::before, .activity-message.active::before { background: var(--green); }
+    .live-indicator.error::before, .activity-message.error::before { background: var(--red); }
+    .speech-text { min-height: 6.4rem; }
+    .ping-list { display: grid; gap: .45rem; }
+    .ping-member { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: .65rem; align-items: center; padding: .55rem 0; border-bottom: 1px solid var(--line); }
+    .ping-member:last-child { border-bottom: 0; }
+    .member-avatar { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: 50%; background: #2a2a2a; color: #ccc; font-size: .65rem; font-weight: 800; }
+    .member-name { display: block; font-size: .82rem; font-weight: 750; }
+    .member-id { display: block; color: var(--muted); font-size: .68rem; overflow-wrap: anywhere; }
+    .ping-button, .copy-button { min-height: 2rem; padding: .35rem .65rem; font-size: .72rem; }
+    .copy-button.copied { border-color: var(--green); color: #8ed4a2; }
+    .activity-message { margin: .75rem 0 0; padding: .75rem .75rem .75rem 1.8rem; border-radius: .45rem; background: #151515; font-size: .8rem; font-weight: 700; }
+    .activity-message::before { left: .75rem; top: 1.08rem; }
+    .activity-error { min-height: 1rem; margin: .4rem 0 0; color: #ff7678; font-size: .72rem; }
+    .recent-actions-list { display: grid; gap: .55rem; margin: .75rem 0 0; padding: 0; list-style: none; }
+    .recent-actions-list li { padding: .65rem .75rem; border-radius: .45rem; background: #151515; color: var(--muted); font-size: .78rem; overflow-wrap: anywhere; }
+    .recent-actions-time { display: block; margin-bottom: .2rem; color: var(--text); font-size: .68rem; font-weight: 750; }
+    .toggle-panel { gap: 0; }
+    .toggle-control { display: grid; grid-template-columns: 1fr auto; align-items: center; width: 100%; min-height: 0; padding: .65rem 0; border: 0; text-align: left; }
+    .toggle-copy { display: grid; }
+    .toggle-label { font-size: .82rem; }
+    .toggle-state { color: var(--muted); font-size: .7rem; }
+    .toggle-track { position: relative; width: 2.35rem; height: 1.3rem; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--accent); }
+    .toggle-control[aria-pressed="false"] .toggle-track { background: #111; }
+    .toggle-thumb { position: absolute; top: .16rem; left: 1.18rem; width: .86rem; height: .86rem; border-radius: 50%; background: #fff; transition: left 120ms ease; }
+    .toggle-control[aria-pressed="false"] .toggle-thumb { left: .2rem; }
+    .toggle-divider { height: 1px; margin: 0; border: 0; background: var(--line); }
+    .upload-panel input[type="file"] { padding: 2.5rem 1rem; border-style: dashed; text-align: center; cursor: pointer; }
+    .status { margin: 0 0 1rem; padding: .75rem 1rem; border: 1px solid rgba(250,166,26,.35); border-radius: .5rem; background: #211d14; color: #f4c96d; font-size: .82rem; }
+    .status.error { border-color: rgba(237,66,69,.4); background: #251516; color: #ff8b8d; }
+    .auth-dialog { position: static; width: min(calc(100% - 2rem), 70rem); margin: 1rem auto 0; padding: .85rem 1rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface); color: var(--text); }
+    .auth-dialog[open] { display: block; }
+    .auth-dialog form { display: grid; grid-template-columns: 1fr minmax(12rem, 22rem) auto; gap: .7rem; align-items: end; }
+    .auth-dialog h2 { font-size: .9rem; }
+    .auth-dialog p { margin: .2rem 0 0; color: var(--muted); font-size: .72rem; }
+    .auth-dialog label { margin: 0 0 .3rem; }
+    .auth-dialog button { background: var(--accent); border-color: var(--accent); }
+    .auth-error { grid-column: 2 / -1; min-height: 0; color: #ff7678 !important; }
+    .birthday-panel { margin-top: 1rem; }
+    @media (max-width: 52rem) { .control-grid, .voice-tools, .voice-stream-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 42rem) {
+      main { width: min(calc(100% - 1rem), 70rem); padding-top: 1rem; }
+      .page-header { align-items: start; }
+      .auth-dialog { width: calc(100% - 1rem); }
+      .auth-dialog form { grid-template-columns: 1fr; }
+      .auth-error { grid-column: 1; }
+      .ping-member { grid-template-columns: auto minmax(0, 1fr) auto; }
+      .copy-button { grid-column: 3; }
+    }
+    @media (max-width: 42rem) { .relay-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 30rem) { .voice-actions, .listen-actions, .talk-actions, .server-voice-actions, .sound-actions { grid-template-columns: 1fr; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+  </style>
+</head>
+<body>
+  {% if not control_authenticated or not control_token_configured %}
+  <dialog id="control-token-dialog" class="auth-dialog">
+    {% if control_token_configured %}
+    <form id="control-token-form">
+      <h2>External controls login</h2>
+      <p>Enter the configured external control token to unlock `/say` and live listening.</p>
+      <label for="control-token">External control token</label>
+      <input id="control-token" name="token" type="password" autocomplete="current-password" required autofocus>
+      <p id="control-token-error" class="auth-error" aria-live="polite"></p>
+      <button type="submit">Unlock controls</button>
+    </form>
+    {% else %}
+    <h2>External control token not configured</h2>
+    <p>Set <code>EXTERNAL_SAY_CONTROL_TOKEN</code> in the server environment and restart or redeploy the bot. The browser cannot securely create the server token.</p>
+    {% endif %}
+  </dialog>
+  {% endif %}
+  <main>
+    <header class="page-header">
+      <p class="eyebrow">Discord control room</p>
+      <h1>Say it your way.</h1>
+      <p class="page-intro">Send a message, join the call, or play something for everyone—without the controls getting in your way.</p>
+    </header>
+    <p id="control-status" class="status{% if error %} error{% endif %}" aria-live="polite"{% if not status %} hidden{% endif %}>{{ status or "" }}</p>
+    <div class="control-grid">
+      <div class="primary-column">
+    <form method="post" class="panel message-panel">
+      <input type="hidden" name="action" value="send">
+      <div class="panel-heading">
+        <p class="section-kicker">Text channel</p>
+        <h2>Send a message</h2>
+      </div>
+      <label for="text-channel-id">Discord text channel ID</label>
+      <input id="text-channel-id" name="text_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ text_channel_id or '' }}" placeholder="Enter a text channel ID" required>
+      <label for="message">Message</label>
+      <textarea id="message" name="message" maxlength="2000" required></textarea>
+      <button class="send-button" type="submit">Send to Discord</button>
+    </form>
+    <form method="post" class="panel voice-section" aria-labelledby="voice-heading">
+      <div class="panel-heading voice-workspace-heading">
+        <p class="section-kicker">Voice workspace</p>
+        <h2 id="voice-heading">Voice call controls</h2>
+        <p class="voice-help">1. Connect the bot. 2. Listen or talk from this browser. 3. Use clips, text-to-speech, and moderation only when needed.</p>
+      </div>
+      <section class="voice-setup" aria-labelledby="call-setup-heading">
+        <p class="setup-step">Step 1</p>
+        <h3 id="call-setup-heading">Connect the bot to a call</h3>
+        <p class="voice-help">Enter the voice channel ID, then select Join. The browser features below use this same channel.</p>
+        <label for="voice-channel-id">Discord voice channel ID</label>
+        <input id="voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
+        <div class="voice-actions">
+          <button class="join-button" type="submit" name="action" value="join">Join call</button>
+          <button class="stop-button" type="submit" name="action" value="stop">Stop audio</button>
+          <button class="leave-button" type="submit" name="action" value="leave">Leave call</button>
+        </div>
+      </section>
+      <div class="voice-stream-grid" aria-label="Browser voice controls">
+      <section class="stream-card listen-panel" aria-labelledby="listen-heading">
+        <p class="setup-step">Step 2A</p>
+        <h3 id="listen-heading">Listen in browser</h3>
+        <p class="voice-help">Hear live participant audio in this tab. This does not transmit your microphone.</p>
+        {% if not incoming_audio_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable incoming audio.</p>{% endif %}
+        <div class="listen-actions">
+          <button id="start-listening" class="listen-button" type="button"{% if not incoming_audio_enabled %} disabled{% endif %}>Start listening / Listen In</button>
+          <button id="stop-listening" class="listen-stop-button" type="button" disabled>Stop Listening</button>
+          <button id="test-tone" class="mute-button" type="button">Test sound / Play Test Tone</button>
+        </div>
+        <div class="relay-details" aria-live="polite">
+          <span>Channel: <strong id="relay-channel">{{ voice_channel_id }}</strong></span>
+          <span>Relay: <strong id="relay-state">Stopped</strong></span>
+          <span id="capture-indicator" class="live-indicator">Not listening</span>
+        </div>
+        <label for="listen-volume">Browser volume</label>
+        <input id="listen-volume" type="range" min="0" max="100" value="100">
+        <details class="relay-debug">
+          <summary>Listening diagnostics</summary>
+          <div class="relay-stats" aria-live="polite">
+            <div class="relay-stat"><strong id="frames-received">0</strong><span>Frames Received</span></div>
+            <div class="relay-stat"><strong id="bytes-received">0</strong><span>Bytes Received</span></div>
+            <div class="relay-stat"><strong id="last-frame-size">0</strong><span>Last Frame Size</span></div>
+            <div class="relay-stat"><strong id="frames-queued">0</strong><span>Frames Queued</span></div>
+            <div class="relay-stat"><strong id="active-speakers">0</strong><span>Active Speakers</span></div>
+          </div>
+        </details>
+        <audio id="discord-audio" preload="none"></audio>
+      </section>
+      <section class="stream-card talk-panel" aria-labelledby="talk-heading">
+        <p class="setup-step">Step 2B</p>
+        <h3 id="talk-heading">Talk from browser</h3>
+        <p class="voice-help">Send this device's microphone to the connected Discord call. Allow microphone access when your browser asks.</p>
+        {% if not browser_talk_enabled %}<p class="status error">Set EXTERNAL_SAY_CONTROL_TOKEN to enable browser mic talk.</p>{% endif %}
+        <div class="talk-actions">
+          <button id="start-browser-talk" class="talk-button" type="button"{% if not browser_talk_enabled %} disabled{% endif %}>Start talking</button>
+          <button id="stop-browser-talk" class="talk-stop-button" type="button" disabled>Stop</button>
+        </div>
+        <div class="relay-details" aria-live="polite">
+          <span>Relay: <strong id="talk-state">Stopped</strong></span>
+          <span id="talk-indicator" class="live-indicator">Not talking</span>
+        </div>
+        <details class="relay-debug">
+          <summary>Microphone diagnostics</summary>
+          <div class="relay-stats" aria-live="polite">
+            <div class="relay-stat"><strong id="talk-chunks-received">0</strong><span>Chunks Sent</span></div>
+            <div class="relay-stat"><strong id="talk-bytes-received">0</strong><span>Bytes Sent</span></div>
+            <div class="relay-stat"><strong id="talk-last-chunk-size">0</strong><span>Last Chunk Size</span></div>
+            <div class="relay-stat"><strong id="talk-session-id">-</strong><span>Session</span></div>
+            <div class="relay-stat"><strong id="talk-channel-name">-</strong><span>Voice Channel</span></div>
+          </div>
+        </details>
+      </section>
+      </div>
+      <div class="voice-tools">
+        <section class="subpanel" aria-labelledby="sound-heading">
+          <p class="setup-step">Optional</p>
+          <h3 id="sound-heading">Sound clips</h3>
+          <p class="voice-help">Play a sound after the bot has joined.</p>
+          <div class="sound-actions">
+            {% for sound_id, sound in bark_sounds.items() %}
+            <button class="sound-button" type="submit" name="sound" value="{{ sound_id }}">{{ sound.label }}</button>
+            {% endfor %}
+          </div>
+        </section>
+        <section class="subpanel" aria-labelledby="speech-heading">
+          <p class="setup-step">Optional</p>
+          <h3 id="speech-heading">Text to speech</h3>
+          <p class="voice-help">Speak up to {{ tts_text_limit }} characters in the selected call.</p>
+          <label for="speech-text">Speech text</label>
+          <textarea class="speech-text" id="speech-text" name="speech_text" maxlength="{{ tts_text_limit }}"></textarea>
+          <label for="tts-voice">Voice</label>
+          <select id="tts-voice" name="voice">
+            {% for voice_id, voice_label in tts_voices.items() %}
+            <option value="{{ voice_id }}"{% if voice_id == tts_default_voice %} selected{% endif %}>{{ voice_label }}</option>
+            {% endfor %}
+          </select>
+          <button class="speak-button" type="submit" name="action" value="speak">Speak in call</button>
+        </section>
+      </div>
+      <details class="member-voice-panel">
+        <summary>Advanced voice controls and member moderation</summary>
+        <div class="server-voice-actions">
+          <button class="server-voice-button" type="submit" name="action" value="server_mute">Server Mute Bot</button>
+          <button class="server-voice-button" type="submit" name="action" value="server_deafen">Server Deafen Bot</button>
+        </div>
+        <h3 id="member-voice-heading">Member voice moderation</h3>
+        <p class="voice-help">Target a member in this selected voice channel. The bot needs the relevant Discord permissions and cannot moderate equal or higher roles.</p>
+        <label for="target-user-id">Discord user ID</label>
+        <input id="target-user-id" name="target_user_id" inputmode="numeric" pattern="[0-9]+" placeholder="123456789012345678">
+        <div class="member-voice-actions">
+          <button class="member-voice-button danger" type="submit" name="action" value="server_mute_member">Server Mute Member</button>
+          <button class="member-voice-button danger" type="submit" name="action" value="server_deafen_member">Server Deafen Member</button>
+          <button class="member-voice-button" type="submit" name="action" value="server_unmute_member">Remove Server Mute</button>
+          <button class="member-voice-button" type="submit" name="action" value="server_undeafen_member">Remove Server Deafen</button>
+        </div>
+      </details>
+      <input type="hidden" name="action" value="play_sound">
+    </form>
+    <section class="panel ping-section" aria-labelledby="ping-heading">
+        <div class="panel-heading">
+        <p class="section-kicker">Quick mentions</p>
+        <h2 id="ping-heading">Ping a member</h2>
+        <p class="ping-help">Select Ping to add a mention to the message, or Copy to copy the ready-to-paste mention.</p>
+        </div>
+        <div class="ping-list">
+          {% for member in ping_members %}
+          <div class="ping-member">
+            <span class="member-avatar" aria-hidden="true">{{ member.name[:2] }}</span>
+            <div>
+              <span class="member-name">{{ member.name }}</span>
+              <code class="member-id">{{ member.user_id }}</code>
+            </div>
+            <button class="ping-button" type="button" data-mention="{{ member.mention }}">Ping</button>
+            <button class="copy-button" type="button" data-mention="{{ member.mention }}">Copy</button>
+          </div>
+          {% endfor %}
+        </div>
+    </section>
+      </div>
+      <aside class="side-panels">
+        <section class="panel activity-panel" aria-labelledby="activity-heading">
+          <h2 id="activity-heading">Activity</h2>
+          <p class="voice-help">Live status for the selected voice channel.</p>
+          <p class="activity-message" id="activity-message" aria-live="polite">Checking activity…</p>
+          <p class="activity-error" id="activity-error" aria-live="polite"></p>
+        </section>
+        <section class="panel recent-actions-panel" aria-labelledby="recent-actions-heading">
+          <h2 id="recent-actions-heading">Recent actions</h2>
+          <ul id="recent-actions" class="recent-actions-list" aria-live="polite"></ul>
+        </section>
+        <section class="panel toggle-panel" aria-labelledby="toggles-heading">
+          <h2 id="toggles-heading">Bot controls</h2>
+          <form method="post">
+            <input type="hidden" name="action" value="toggle_tts_command">
+            <button id="tts-command-toggle" class="toggle-control" type="submit" aria-pressed="{{ 'true' if chat_tts_command_enabled else 'false' }}">
+              <span class="toggle-copy">
+                <span class="toggle-label">Chat TTS command</span>
+                <span class="toggle-state">{{ 'On' if chat_tts_command_enabled else 'Off' }}</span>
+              </span>
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </button>
+            <p class="voice-help">Allow Discord messages to use <code>!tts &lt;message&gt;</code>. Direct speech is controlled by API calls.</p>
+          </form>
+          <hr class="toggle-divider">
+          <form method="post">
+            <input type="hidden" name="action" value="toggle_api_calls">
+            <button id="api-calls-toggle" class="toggle-control" type="submit" aria-pressed="{{ 'true' if ai_api_calls_enabled else 'false' }}">
+              <span class="toggle-copy">
+                <span class="toggle-label">API calls</span>
+                <span class="toggle-state">{{ 'On' if ai_api_calls_enabled else 'Off' }}</span>
+              </span>
+              <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+            </button>
+            <p class="voice-help">Turn off AI chat, web search, and text-to-speech requests to avoid using provider credits.</p>
+          </form>
+        </section>
+        <section class="panel upload-panel" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Upload audio</h2>
+        <p class="voice-help">Upload an MP3 or MP4 up to {{ max_upload_audio_mib }} MiB. For MP4 files, only the audio is played. The bot must already be connected to the selected voice channel.</p>
+        <form method="post" enctype="multipart/form-data">
+          <input type="hidden" name="action" value="upload_audio">
+          <label for="upload-voice-channel-id">Voice channel ID</label>
+          <input id="upload-voice-channel-id" name="voice_channel_id" inputmode="numeric" pattern="[0-9]+" value="{{ voice_channel_id }}" required>
+          <label for="audio-file">MP3 or MP4 file</label>
+          <input id="audio-file" name="audio_file" type="file" accept=".mp3,.mp4,audio/mpeg,video/mp4" required>
+          <button class="upload-button" type="submit">Upload and play</button>
+        </form>
+        </section>
+      </aside>
+    </div>
+    <form method="post" class="panel birthday-panel">
+      <input type="hidden" name="action" value="birthday_ryan">
+      <div class="panel-heading">
+        <p class="section-kicker">Birthday delivery</p>
+        <h2>Ryan's birthday card</h2>
+        <p class="voice-help">Send the birthday embed and poster to channel {{ birthday_channel_id }}.</p>
+      </div>
+      <button class="birthday-button" type="submit">Send Ryan's birthday card</button>
+    </form>
+  </main>
+  <script>
+    const controlTokenDialog = document.getElementById("control-token-dialog");
+    const controlTokenForm = document.getElementById("control-token-form");
+    if (controlTokenDialog) controlTokenDialog.show();
+    if (controlTokenForm) {
+      controlTokenForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const tokenInput = document.getElementById("control-token");
+        const errorMessage = document.getElementById("control-token-error");
+        const submitButton = controlTokenForm.querySelector("button[type=submit]");
+        errorMessage.textContent = "";
+        submitButton.disabled = true;
+        try {
+          const response = await fetch("/say/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: tokenInput.value }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "Login failed");
+          window.location.reload();
+        } catch (error) {
+          errorMessage.textContent = error.message;
+          tokenInput.select();
+          submitButton.disabled = false;
+        }
+      });
+    }
+
+    const message = document.getElementById("message");
+    const voiceChannel = document.getElementById("voice-channel-id");
+    const uploadVoiceChannel = document.getElementById("upload-voice-channel-id");
+    const relayChannel = document.getElementById("relay-channel");
+    const relayState = document.getElementById("relay-state");
+    const captureIndicator = document.getElementById("capture-indicator");
+    const listenVolume = document.getElementById("listen-volume");
+    const startListening = document.getElementById("start-listening");
+    const stopListening = document.getElementById("stop-listening");
+    const testTone = document.getElementById("test-tone");
+    const startBrowserTalk = document.getElementById("start-browser-talk");
+    const stopBrowserTalk = document.getElementById("stop-browser-talk");
+    const framesReceived = document.getElementById("frames-received");
+    const bytesReceived = document.getElementById("bytes-received");
+    const lastFrameSize = document.getElementById("last-frame-size");
+    const framesQueued = document.getElementById("frames-queued");
+    const activeSpeakers = document.getElementById("active-speakers");
+    const talkState = document.getElementById("talk-state");
+    const talkIndicator = document.getElementById("talk-indicator");
+    const talkChunksReceived = document.getElementById("talk-chunks-received");
+    const talkBytesReceived = document.getElementById("talk-bytes-received");
+    const talkLastChunkSize = document.getElementById("talk-last-chunk-size");
+    const talkSessionId = document.getElementById("talk-session-id");
+    const talkChannelName = document.getElementById("talk-channel-name");
+    const activityMessage = document.getElementById("activity-message");
+    const activityError = document.getElementById("activity-error");
+    const controlStatus = document.getElementById("control-status");
+    const recentActions = document.getElementById("recent-actions");
+    const ttsCommandToggle = document.getElementById("tts-command-toggle");
+    const apiCallsToggle = document.getElementById("api-calls-toggle");
+
+    function updateToggle(toggle, enabled) {
+      toggle.setAttribute("aria-pressed", String(enabled));
+      toggle.querySelector(".toggle-state").textContent = enabled ? "On" : "Off";
+    }
+    let activityTimer;
+    let relayTimer;
+    let talkTimer;
+    let listenSocket;
+    let listenAudioContext;
+    let listenGainNode;
+    let listenConfig = { sampleRate: 48000, channels: 2, sampleBytes: 2 };
+    let listenFramesReceived = 0;
+    let listenBytesReceived = 0;
+    const speakerPlayback = new Map();
+    let talkRecorder;
+    let talkStream;
+    let talkSessionToken = "";
+    let talkSendChain = Promise.resolve();
+    let talkStopResolver;
+    let talkMimeType = "";
+
+    function showControlStatus(message, isError = false) {
+      controlStatus.textContent = message;
+      controlStatus.classList.toggle("error", isError);
+      controlStatus.hidden = false;
+    }
+
+    function addRecentAction(status) {
+      if (!status) return;
+      const entry = document.createElement("li");
+      const timestamp = document.createElement("span");
+      timestamp.className = "recent-actions-time";
+      timestamp.textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+      entry.append(timestamp, document.createTextNode(status));
+      recentActions.prepend(entry);
+      while (recentActions.children.length > 5) {
+        recentActions.lastElementChild.remove();
+      }
+    }
+
+    document.querySelectorAll('main form[method="post"]').forEach((form) => {
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitButton = event.submitter;
+        const formData = new FormData(form);
+        if (submitButton?.name) formData.set(submitButton.name, submitButton.value);
+        const action = formData.get("action");
+        if (submitButton) submitButton.disabled = true;
+
+        try {
+          const response = await fetch("/say", {
+            method: "POST",
+            headers: { "X-Requested-With": "fetch" },
+            body: formData,
+          });
+          const contentType = response.headers.get("content-type") || "";
+          const payload = contentType.includes("application/json")
+            ? await response.json()
+            : { status: response.ok ? "Action completed." : `Request failed (${response.status})` };
+          if (!response.ok) throw new Error(payload.status || "Action failed");
+
+          showControlStatus(payload.status || "Action completed.");
+          addRecentAction(payload.status);
+          if (action === "toggle_tts_command" && typeof payload.tts_command_enabled === "boolean") {
+            updateToggle(ttsCommandToggle, payload.tts_command_enabled);
+          }
+          if (action === "toggle_api_calls" && typeof payload.api_calls_enabled === "boolean") {
+            updateToggle(apiCallsToggle, payload.api_calls_enabled);
+          }
+          if (action === "send") message.value = "";
+          if (action === "speak") document.getElementById("speech-text").value = "";
+          if (action === "upload_audio") document.getElementById("audio-file").value = "";
+          scheduleActivityPoll();
+        } catch (error) {
+          showControlStatus(error.message, true);
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+    });
+
+    function describeActivity(status) {
+      if (status.state === "unavailable") return "Voice channel unavailable";
+      if (status.state === "disconnected") return "Not connected";
+      if (status.state === "idle") return "Connected — nothing is playing";
+      if (status.state === "playing") {
+        const queued = status.queued_tts_count ? ` (${status.queued_tts_count} TTS queued)` : "";
+        return `Playing: ${status.label || "audio"}${queued}`;
+      }
+      return "Voice status unavailable";
+    }
+
+    function updateActivityIndicator(state) {
+      activityMessage.classList.toggle("active", state === "idle" || state === "playing");
+      activityMessage.classList.toggle("error", state === "unavailable");
+    }
+
+    async function pollActivity() {
+      const channelId = voiceChannel.value.trim();
+      if (!channelId) return;
+      try {
+        const response = await fetch(`/say/status?voice_channel_id=${encodeURIComponent(channelId)}`, { cache: "no-store" });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `Status request failed (${response.status})`);
+        activityMessage.textContent = describeActivity(status);
+        updateActivityIndicator(status.state);
+        activityError.textContent = "";
+      } catch (error) {
+        activityMessage.classList.remove("active");
+        activityMessage.classList.add("error");
+        activityError.textContent = `Could not refresh activity: ${error.message}`;
+      } finally {
+        scheduleNextActivityPoll();
+      }
+    }
+
+    function scheduleActivityPoll() {
+      window.clearTimeout(activityTimer);
+      activityTimer = window.setTimeout(pollActivity, 250);
+    }
+
+    function scheduleNextActivityPoll() {
+      window.clearTimeout(activityTimer);
+      if (!document.hidden) activityTimer = window.setTimeout(pollActivity, 3000);
+    }
+
+    voiceChannel.addEventListener("input", () => {
+      uploadVoiceChannel.value = voiceChannel.value;
+      relayChannel.textContent = voiceChannel.value || "None";
+      scheduleActivityPoll();
+      scheduleTalkPoll();
+    });
+    uploadVoiceChannel.addEventListener("input", () => {
+      voiceChannel.value = uploadVoiceChannel.value;
+      relayChannel.textContent = uploadVoiceChannel.value || "None";
+      scheduleActivityPoll();
+      scheduleTalkPoll();
+    });
+    pollActivity();
+    pollTalkStatus();
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        window.clearTimeout(activityTimer);
+        window.clearTimeout(talkTimer);
+      } else {
+        pollActivity();
+        pollTalkStatus();
+      }
+    });
+
+    function ensureListenAudioPipeline() {
+      if (listenAudioContext) return;
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) throw new Error("This browser cannot play live call audio.");
+      listenAudioContext = new AudioContext({ sampleRate: listenConfig.sampleRate });
+      listenGainNode = listenAudioContext.createGain();
+      listenGainNode.connect(listenAudioContext.destination);
+    }
+
+    function setListenVolume() {
+      if (listenGainNode) listenGainNode.gain.value = Number(listenVolume.value) / 100;
+    }
+
+    listenVolume.addEventListener("input", setListenVolume);
+    setListenVolume();
+
+    function setRelayState(state, live) {
+      relayState.textContent = state;
+      captureIndicator.textContent = live ? "Live audio" : "Not listening";
+      captureIndicator.classList.toggle("live", live);
+      captureIndicator.classList.toggle("error", /failed|disconnected/i.test(state));
+    }
+
+    function updateRelayDebug(status) {
+      framesReceived.textContent = String(status.frames_received || 0);
+      bytesReceived.textContent = String(status.bytes_received || 0);
+      lastFrameSize.textContent = String(status.last_frame_size || 0);
+      framesQueued.textContent = String(status.frames_queued || 0);
+      activeSpeakers.textContent = String(status.active_speakers || 0);
+    }
+
+    async function pollRelayDebug() {
+      try {
+        const response = await fetch("/say/audio-status", { cache: "no-store" });
+        if (!response.ok) return;
+        const status = await response.json();
+        updateRelayDebug(status);
+      } catch {
+        // Audio playback remains usable while the optional diagnostic request retries.
+      }
+    }
+
+    function scheduleRelayDebug() {
+      window.clearInterval(relayTimer);
+      relayTimer = window.setInterval(pollRelayDebug, 1000);
+      pollRelayDebug();
+    }
+
+    function base64ToBytes(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      return bytes;
+    }
+
+    function pcm16StereoToBuffer(frame) {
+      const sampleCount = Math.floor(frame.length / (listenConfig.channels * listenConfig.sampleBytes));
+      const audioBuffer = listenAudioContext.createBuffer(listenConfig.channels, sampleCount, listenConfig.sampleRate);
+      const channels = Array.from({ length: listenConfig.channels }, (_, index) => audioBuffer.getChannelData(index));
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        const frameOffset = sampleIndex * listenConfig.channels * listenConfig.sampleBytes;
+        for (let channelIndex = 0; channelIndex < listenConfig.channels; channelIndex += 1) {
+          const offset = frameOffset + channelIndex * listenConfig.sampleBytes;
+          const raw = frame[offset] | (frame[offset + 1] << 8);
+          channels[channelIndex][sampleIndex] = (raw > 32767 ? raw - 65536 : raw) / 32768;
+        }
+      }
+      return audioBuffer;
+    }
+
+    function queueFrameForSpeaker(userId, frame) {
+      const source = listenAudioContext.createBufferSource();
+      source.buffer = pcm16StereoToBuffer(frame);
+      source.connect(listenGainNode);
+      const now = listenAudioContext.currentTime;
+      const previous = speakerPlayback.get(userId) || 0;
+      const startAt = previous > now ? previous : now + 0.03;
+      source.start(startAt);
+      speakerPlayback.set(userId, startAt + source.buffer.duration);
+      source.onended = () => {
+        if ((speakerPlayback.get(userId) || 0) <= listenAudioContext.currentTime + 0.01) {
+          speakerPlayback.delete(userId);
+          framesQueued.textContent = String(speakerPlayback.size);
+        }
+      };
+      framesQueued.textContent = String(speakerPlayback.size);
+    }
+
+    function setTalkState(state, active) {
+      talkState.textContent = state;
+      talkIndicator.textContent = active ? "Live mic" : "Not talking";
+      talkIndicator.classList.toggle("live", active);
+      talkIndicator.classList.toggle("error", /failed|disconnected|error/i.test(state));
+    }
+
+    function updateTalkDebug(status) {
+      talkChunksReceived.textContent = String(status.chunks_received || 0);
+      talkBytesReceived.textContent = String(status.bytes_received || 0);
+      talkLastChunkSize.textContent = String(status.last_chunk_size || 0);
+      talkSessionId.textContent = status.session_id || "-";
+      talkChannelName.textContent = status.voice_channel_name || "-";
+    }
+
+    async function pollTalkStatus() {
+      try {
+        const response = await fetch("/say/talk-status", { cache: "no-store" });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || `Status request failed (${response.status})`);
+        const active = status.state === "recording";
+        setTalkState(
+          status.state === "recording"
+            ? "Recording microphone"
+            : status.state === "stopping"
+              ? "Stopping microphone"
+              : "Stopped",
+          active
+        );
+        updateTalkDebug(status);
+      } catch (error) {
+        setTalkState(`Talk status unavailable`, false);
+      } finally {
+        scheduleNextTalkPoll();
+      }
+    }
+
+    function scheduleTalkPoll() {
+      window.clearTimeout(talkTimer);
+      talkTimer = window.setTimeout(pollTalkStatus, 250);
+    }
+
+    function scheduleNextTalkPoll() {
+      window.clearTimeout(talkTimer);
+      if (!document.hidden) talkTimer = window.setTimeout(pollTalkStatus, 3000);
+    }
+
+    function resetBrowserTalk(state = "Stopped") {
+      talkRecorder = null;
+      talkStream = null;
+      talkSessionToken = "";
+      talkMimeType = "";
+      talkSendChain = Promise.resolve();
+      if (talkStopResolver) {
+        talkStopResolver();
+        talkStopResolver = undefined;
+      }
+      stopBrowserTalk.disabled = true;
+      startBrowserTalk.disabled = false;
+      setTalkState(state, false);
+    }
+
+    async function stopBrowserTalkSession() {
+      const sessionId = talkSessionToken;
+      const stopPromise = talkRecorder && talkRecorder.state !== "inactive"
+        ? new Promise((resolve) => {
+            talkStopResolver = resolve;
+          })
+        : Promise.resolve();
+
+      if (talkRecorder && talkRecorder.state !== "inactive") {
+        talkRecorder.stop();
+      }
+
+      try {
+        await talkSendChain.catch(() => {});
+        if (sessionId) {
+          const response = await fetch("/say/talk/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || `Stop request failed (${response.status})`);
+        }
+        await stopPromise;
+      } finally {
+        if (talkStream) {
+          talkStream.getTracks().forEach((track) => track.stop());
+        }
+        resetBrowserTalk();
+        scheduleTalkPoll();
+      }
+    }
+
+    async function startBrowserTalkSession() {
+      if (!voiceChannel.checkValidity()) {
+        voiceChannel.reportValidity();
+        return;
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This browser cannot access the microphone.");
+      }
+      if (!window.MediaRecorder) {
+        throw new Error("This browser does not support microphone recording.");
+      }
+
+      startBrowserTalk.disabled = true;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      const mimeCandidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+        "audio/ogg",
+      ];
+      talkMimeType = mimeCandidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) || "";
+      try {
+        const response = await fetch("/say/talk/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            voice_channel_id: voiceChannel.value,
+            mime_type: talkMimeType,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `Start request failed (${response.status})`);
+        talkSessionToken = payload.session_id;
+        talkStream = stream;
+        talkRecorder = new MediaRecorder(stream, talkMimeType ? { mimeType: talkMimeType } : undefined);
+        talkSendChain = Promise.resolve();
+        talkStopResolver = undefined;
+        talkRecorder.addEventListener("dataavailable", (event) => {
+          if (!talkSessionToken || !event.data || !event.data.size) return;
+          const chunk = event.data;
+          talkSendChain = talkSendChain.then(async () => {
+            const chunkResponse = await fetch(`/say/talk/chunk/${encodeURIComponent(talkSessionToken)}`, {
+              method: "POST",
+              headers: {
+                "Content-Type": chunk.type || "application/octet-stream",
+              },
+              body: chunk,
+            });
+            if (!chunkResponse.ok) {
+              const payload = await chunkResponse.json().catch(() => ({}));
+              throw new Error(payload.error || `Chunk upload failed (${chunkResponse.status})`);
+            }
+          }).catch((error) => {
+            showControlStatus(error.message, true);
+            stopBrowserTalkSession().catch(() => {});
+          });
+        });
+        talkRecorder.addEventListener("stop", async () => {
+          try {
+            await talkSendChain.catch(() => {});
+          } catch {
+            // The status message already reflects the chunk failure.
+          } finally {
+            if (talkStopResolver) {
+              talkStopResolver();
+              talkStopResolver = undefined;
+            }
+          }
+        });
+        talkRecorder.start(250);
+        talkState.textContent = "Recording microphone";
+        talkIndicator.textContent = "Live mic";
+        talkIndicator.classList.add("live");
+        talkIndicator.classList.remove("error");
+        talkChunksReceived.textContent = "0";
+        talkBytesReceived.textContent = "0";
+        talkLastChunkSize.textContent = "0";
+        talkSessionId.textContent = talkSessionToken;
+        talkChannelName.textContent = voiceChannel.value || "-";
+        stopBrowserTalk.disabled = false;
+        scheduleTalkPoll();
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (talkSessionToken) {
+          await fetch("/say/talk/stop", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: talkSessionToken }),
+          }).catch(() => {});
+        }
+        talkStream = null;
+        talkRecorder = null;
+        talkSessionToken = "";
+        talkMimeType = "";
+        startBrowserTalk.disabled = false;
+        throw error;
+      }
+    }
+
+    async function playTestTone() {
+      ensureListenAudioPipeline();
+      if (listenAudioContext.state === "suspended") await listenAudioContext.resume();
+      const oscillator = listenAudioContext.createOscillator();
+      const gain = listenAudioContext.createGain();
+      oscillator.frequency.value = 440;
+      oscillator.type = "sine";
+      gain.gain.value = Math.max(0.01, Number(listenVolume.value) / 100 * 0.08);
+      oscillator.connect(gain);
+      gain.connect(listenGainNode);
+      oscillator.start();
+      oscillator.stop(listenAudioContext.currentTime + 0.5);
+    }
+
+    function resetListening(state = "Stopped") {
+      if (listenSocket) {
+        listenSocket.close();
+        listenSocket = undefined;
+      }
+      speakerPlayback.clear();
+      startListening.disabled = false;
+      stopListening.disabled = true;
+      window.clearInterval(relayTimer);
+      setRelayState(state, false);
+    }
+
+    startListening.addEventListener("click", async () => {
+      if (!voiceChannel.checkValidity()) {
+        voiceChannel.reportValidity();
+        return;
+      }
+      try {
+        ensureListenAudioPipeline();
+        if (listenAudioContext.state === "suspended") await listenAudioContext.resume();
+        if (listenSocket && listenSocket.readyState <= WebSocket.OPEN) return;
+        startListening.disabled = true;
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        listenSocket = new WebSocket(`${protocol}://${window.location.host}/say/listen?voice_channel_id=${encodeURIComponent(voiceChannel.value)}`);
+        listenSocket.onopen = () => {
+          stopListening.disabled = false;
+          setListenVolume();
+          setRelayState("Connected to audio relay. Waiting for Discord voice packets.", false);
+          scheduleRelayDebug();
+        };
+        listenSocket.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload.type === "hello") {
+            listenConfig = {
+              sampleRate: payload.sample_rate,
+              channels: payload.channels,
+              sampleBytes: payload.sample_bytes,
+            };
+            return;
+          }
+          if (payload.type === "error") {
+            resetListening(payload.error || "Audio relay failed");
+            showControlStatus(payload.error || "Audio relay failed", true);
+            return;
+          }
+          if (payload.type !== "audio") return;
+          const frame = base64ToBytes(payload.pcm);
+          listenFramesReceived += 1;
+          listenBytesReceived += frame.byteLength;
+          queueFrameForSpeaker(payload.user_id, frame);
+          framesReceived.textContent = String(listenFramesReceived);
+          bytesReceived.textContent = String(listenBytesReceived);
+          lastFrameSize.textContent = String(frame.byteLength);
+          setRelayState("Receiving live Discord audio", true);
+        };
+        listenSocket.onerror = () => resetListening("Audio WebSocket error");
+        listenSocket.onclose = () => {
+          if (listenSocket) resetListening("Audio relay disconnected");
+        };
+      } catch (error) {
+        resetListening("Connection failed");
+        showControlStatus(error.message, true);
+      }
+    });
+
+    stopListening.addEventListener("click", () => resetListening());
+
+    testTone.addEventListener("click", () => {
+      playTestTone().catch((error) => showControlStatus(error.message, true));
+    });
+
+    startBrowserTalk.addEventListener("click", async () => {
+      try {
+        await startBrowserTalkSession();
+      } catch (error) {
+        showControlStatus(error.message, true);
+        startBrowserTalk.disabled = false;
+      }
+    });
+
+    stopBrowserTalk.addEventListener("click", () => {
+      stopBrowserTalkSession().catch((error) => showControlStatus(error.message, true));
+    });
+
+    document.querySelectorAll(".ping-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const mention = button.dataset.mention;
+        const start = message.selectionStart;
+        const end = message.selectionEnd;
+        const before = message.value.slice(0, start);
+        const after = message.value.slice(end);
+        const prefix = before && !before.endsWith(" ") ? " " : "";
+        const suffix = after && !after.startsWith(" ") ? " " : "";
+        const insertion = `${prefix}${mention}${suffix}`;
+        if (before.length + insertion.length + after.length > message.maxLength) return;
+        message.setRangeText(insertion, start, end, "end");
+        message.focus();
+      });
+    });
+
+    document.querySelectorAll(".copy-button").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(button.dataset.mention);
+          button.textContent = "Copied";
+          button.classList.add("copied");
+          window.setTimeout(() => {
+            button.textContent = "Copy";
+            button.classList.remove("copied");
+          }, 1500);
+        } catch (error) {
+          window.prompt("Copy this Discord mention:", button.dataset.mention);
+        }
+      });
+    });
+  </script>
+</body>
+</html>
