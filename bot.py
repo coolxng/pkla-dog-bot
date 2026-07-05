@@ -23,6 +23,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import discord
 from ddgs import DDGS
 from discord import app_commands
@@ -3269,10 +3270,38 @@ async def on_voice_state_update(member, before, after):
         )
 
 
+async def post_message_to_poke(message) -> None:
+    poke_ingest_url = os.environ.get("POKE_INGEST_URL", "").strip()
+    if not poke_ingest_url:
+        return
+
+    payload = {
+        "messageId": str(message.id),
+        "channelId": str(message.channel.id),
+        "content": message.content,
+        "author": str(message.author),
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(poke_ingest_url, json=payload) as response:
+                if response.status >= 400:
+                    logger.warning(
+                        "Poke ingest failed with HTTP status %s for message %s",
+                        response.status,
+                        message.id,
+                    )
+    except aiohttp.ClientError as error:
+        logger.warning("Could not POST message %s to Poke: %s", message.id, error)
+
+
+
 @client.event
 async def on_message(message):
-    if message.author == client.user:
+    if getattr(message.author, "bot", False) or message.author == client.user:
         return
+
+    await post_message_to_poke(message)
 
     content = message.content.strip()
     if not content:
