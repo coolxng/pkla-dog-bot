@@ -1,5 +1,6 @@
 # Pinned for reproducible deploys; verify current compatible versions before deploy.
 discord.py[voice]==2.7.1
+aiohttp==3.13.2
 # Adds inbound VoiceRecvClient/AudioSink support missing from discord.py.
 # Pin the stabilized DAVE receive pipeline required by Discord's March 2026 rollout.
 discord-ext-voice-recv @ https://github.com/vocolboy/discord-ext-voice-recv/archive/ee160c0f36516927b6214bc9d6babe524016770f.zip

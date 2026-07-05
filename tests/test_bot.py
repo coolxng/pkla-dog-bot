@@ -793,6 +793,53 @@ class DeleteDmMessagesTests(unittest.IsolatedAsyncioTestCase):
         call_model.assert_not_awaited()
 
 
+class PokeIngestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_post_message_to_poke_sends_discord_message_payload(self):
+        class FakeAuthor:
+            def __str__(self):
+                return "Tester#0001"
+
+        post_context = AsyncMock()
+        post_context.__aenter__.return_value = SimpleNamespace(status=204)
+        session = AsyncMock()
+        session.__aenter__.return_value.post = Mock(return_value=post_context)
+        message = SimpleNamespace(
+            id=123,
+            channel=SimpleNamespace(id=456),
+            content="hello poke",
+            author=FakeAuthor(),
+        )
+
+        with (
+            patch.dict(bot.os.environ, {"POKE_INGEST_URL": "https://poke.example/ingest"}),
+            patch.object(bot.aiohttp, "ClientSession", return_value=session),
+        ):
+            await bot.post_message_to_poke(message)
+
+        session.__aenter__.return_value.post.assert_called_once_with(
+            "https://poke.example/ingest",
+            json={
+                "messageId": "123",
+                "channelId": "456",
+                "content": "hello poke",
+                "author": str(message.author),
+            },
+        )
+
+    async def test_on_message_ignores_bot_authors_without_posting_to_poke(self):
+        message = SimpleNamespace(
+            id=123,
+            author=SimpleNamespace(bot=True),
+            channel=SimpleNamespace(id=456, send=AsyncMock()),
+            content="hello",
+        )
+
+        with patch.object(bot, "post_message_to_poke", new_callable=AsyncMock) as post_to_poke:
+            await bot.on_message(message)
+
+        post_to_poke.assert_not_awaited()
+
+
 class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
     def test_bark_audio_file_exists(self):
         self.assertTrue(bot.BARK_AUDIO_PATH.is_file())
