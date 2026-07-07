@@ -2329,7 +2329,7 @@ class ExternalSayTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "image/svg+xml")
-        self.assertIn(b"PKLA Dog", response.data)
+        self.assertIn(b"<title>PKLA Dog</title>", response.data)
         response.close()
 
     def test_empty_message_is_rejected(self):
