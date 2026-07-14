@@ -158,7 +158,6 @@ DEFAULT_TARGET_CHANNEL_IDS = {1490364935996182669, 1491165529837277355, 14980224
 DEFAULT_OWNER_ID = 575057023046123520
 RYAN_BIRTHDAY_CHANNEL_ID = 1491165529837277355
 COOLDOWN_SECONDS = 2
-BARK_INTERVAL_SECONDS = 5 * 60
 BARK_COMMAND_COOLDOWN_SECONDS = 5
 PINGDEAF_COOLDOWN_SECONDS = 60
 PINGDEAF_INTERVAL_SECONDS = 2
@@ -561,7 +560,7 @@ SYSTEM_PROMPT = f"""You are pkla dog, a helpful assistant in a Discord server.
 - If asked who you are, say: I'm pkla dog.
 - Know that "pkla" is versatile slang for something high-quality, cool, great, fire, clean, or for someone with effortless confidence and undeniable swag. Use it naturally when relevant.
 - Server history may label messages as Name: message. Universal memory is unverified shared context; use it only when directly relevant.
-- `!join` joins voice, barks immediately, and barks every five minutes. Joining never starts recording.
+- `!join` joins voice and barks once immediately. Joining never starts recording.
 - `!bark`, `!tts <message>`, `!leave`, `!search <query>`, and the memory/reset commands work as named.
 - The external `/say` web page can message, control voice, play {SOUND_CLIP_LABELS}, use TTS, and listen to live call audio in the browser.
 - A normal AI reply does not itself execute commands or web controls. Explain the exact command/control instead of claiming an action succeeded."""
@@ -2191,7 +2190,6 @@ async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) 
 
 
 
-bark_tasks: dict[int, asyncio.Task] = {}
 last_command_bark_at: dict[int, float] = {}
 last_tts_at: dict[int, float] = {}
 chat_tts_queues: dict[int, asyncio.Queue] = {}
@@ -2467,39 +2465,6 @@ def bark_on_command(message) -> str:
     return "woof"
 
 
-async def bark_periodically(guild) -> None:
-    while True:
-        await asyncio.sleep(BARK_INTERVAL_SECONDS)
-        voice_client = guild.voice_client
-        if not voice_client or not voice_client.is_connected():
-            return
-        try:
-            play_bark(voice_client)
-        except discord.DiscordException as error:
-            print(f"Bark playback error: {error}")
-
-
-def start_bark_task(guild) -> None:
-    current_task = bark_tasks.get(guild.id)
-    if current_task and not current_task.done():
-        return
-
-    task = asyncio.create_task(bark_periodically(guild))
-    bark_tasks[guild.id] = task
-
-    def remove_finished_task(finished_task):
-        if bark_tasks.get(guild.id) is finished_task:
-            bark_tasks.pop(guild.id, None)
-
-    task.add_done_callback(remove_finished_task)
-
-
-def stop_bark_task(guild_id: int) -> None:
-    task = bark_tasks.pop(guild_id, None)
-    if task and not task.done():
-        task.cancel()
-
-
 async def join_voice_channel(voice_channel, guild=None) -> str:
     guild = guild or voice_channel.guild
     voice_client = guild.voice_client
@@ -2553,7 +2518,6 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
         )
 
     set_voice_idle(guild, voice_channel)
-    start_bark_task(guild)
     await asyncio.sleep(BARK_JOIN_DELAY_SECONDS)
     try:
         play_bark(voice_client)
@@ -2592,7 +2556,6 @@ async def leave_guild_voice(guild) -> str:
         print(f"Voice disconnect error: {error}")
         return "couldn't leave the voice channel; try again"
 
-    stop_bark_task(guild.id)
     last_command_bark_at.pop(guild.id, None)
     set_voice_disconnected(guild, voice_channel)
     return "left the voice channel"

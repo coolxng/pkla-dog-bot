@@ -900,25 +900,6 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(audio_path.exists())
 
 
-    async def test_periodic_task_waits_then_plays_bark(self):
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        guild = SimpleNamespace(voice_client=voice_client)
-
-        with (
-            patch.object(
-                bot.asyncio,
-                "sleep",
-                new=AsyncMock(side_effect=[None, asyncio.CancelledError]),
-            ) as sleep,
-            patch.object(bot, "play_bark") as play_bark,
-        ):
-            with self.assertRaises(asyncio.CancelledError):
-                await bot.bark_periodically(guild)
-
-        sleep.assert_any_await(bot.BARK_INTERVAL_SECONDS)
-        play_bark.assert_called_once_with(voice_client)
-
-
 class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.last_command_bark_at.clear()
@@ -1016,14 +997,12 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(bot, "start_bark_task") as start_bark_task,
             patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
             patch.object(bot, "play_bark", return_value=True) as play_bark,
         ):
             response = await bot.join_author_voice(message)
 
         voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
-        start_bark_task.assert_called_once_with(message.guild)
         sleep.assert_awaited_once_with(bot.BARK_JOIN_DELAY_SECONDS)
         play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #General")
@@ -1048,7 +1027,6 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
             patch.object(bot, "env_bool", return_value=True),
             patch.object(bot, "voice_receive_client_class", return_value=object),
-            patch.object(bot, "start_bark_task") as start_bark_task,
             patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
             patch.object(bot, "play_bark", return_value=True) as play_bark,
         ):
@@ -1061,7 +1039,6 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
                 call(self_deaf=False, self_mute=False),
             ]
         )
-        start_bark_task.assert_called_once_with(message.guild)
         sleep.assert_awaited_once_with(bot.BARK_JOIN_DELAY_SECONDS)
         play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #General")
@@ -1077,7 +1054,6 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(bot, "start_bark_task"),
             patch.object(bot.asyncio, "sleep", new=AsyncMock()),
         ):
             response = await bot.join_author_voice(message)
@@ -1109,14 +1085,12 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch.object(bot, "start_bark_task") as start_bark_task,
             patch.object(bot.asyncio, "sleep", new=AsyncMock()),
             patch.object(bot, "play_bark", return_value=True) as play_bark,
         ):
             response = await bot.join_author_voice(message)
 
         voice_client.move_to.assert_awaited_once_with(new_channel)
-        start_bark_task.assert_called_once_with(message.guild)
         play_bark.assert_called_once_with(voice_client)
         self.assertEqual(response, "joined #New")
 
@@ -1141,14 +1115,12 @@ class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-            patch.object(bot, "start_bark_task") as start_bark_task,
             patch.object(bot.asyncio, "sleep", new=AsyncMock()),
             patch.object(bot, "play_bark", return_value=True) as play_bark,
         ):
             await bot.on_message(message)
 
         voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
-        start_bark_task.assert_called_once_with(message.guild)
         play_bark.assert_called_once_with(voice_client)
         text_channel.send.assert_awaited_once_with("joined #General")
         call_model.assert_not_awaited()
@@ -1706,11 +1678,9 @@ class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
         message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=voice_client))
         bot.last_command_bark_at[456] = 100.0
 
-        with patch.object(bot, "stop_bark_task") as stop_bark_task:
-            response = await bot.leave_voice(message)
+        response = await bot.leave_voice(message)
 
         voice_client.disconnect.assert_awaited_once_with()
-        stop_bark_task.assert_called_once_with(456)
         self.assertNotIn(456, bot.last_command_bark_at)
         self.assertEqual(response, "left the voice channel")
 
@@ -1732,14 +1702,10 @@ class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
             guild=SimpleNamespace(id=456, voice_client=voice_client),
         )
 
-        with (
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-            patch.object(bot, "stop_bark_task") as stop_bark_task,
-        ):
+        with patch.object(bot, "call_model", new_callable=AsyncMock) as call_model:
             await bot.on_message(message)
 
         voice_client.disconnect.assert_awaited_once_with()
-        stop_bark_task.assert_called_once_with(456)
         text_channel.send.assert_awaited_once_with("left the voice channel")
         call_model.assert_not_awaited()
 
@@ -2120,7 +2086,7 @@ class GroqConfigTests(unittest.TestCase):
 
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
         self.assertIn("`!join`", bot.SYSTEM_PROMPT)
-        self.assertIn("every five minutes", bot.SYSTEM_PROMPT)
+        self.assertIn("barks once immediately", bot.SYSTEM_PROMPT)
         self.assertIn("Joining never starts recording", bot.SYSTEM_PROMPT)
         self.assertIn("listen to live call audio in the browser", bot.SYSTEM_PROMPT)
         self.assertNotIn("transcription", bot.SYSTEM_PROMPT.lower())
@@ -3160,7 +3126,6 @@ class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
         channel.connect = AsyncMock(return_value=voice_client)
 
         with (
-            patch.object(bot, "start_bark_task"),
             patch.object(bot.asyncio, "sleep", new=AsyncMock()),
             patch.object(bot, "play_bark", return_value=False),
         ):
@@ -3170,8 +3135,7 @@ class VoiceActivityTransitionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(bot.voice_activity_by_guild[guild.id]["activity_type"])
 
         guild.voice_client = voice_client
-        with patch.object(bot, "stop_bark_task"):
-            await bot.leave_guild_voice(guild)
+        await bot.leave_guild_voice(guild)
 
         activity = bot.voice_activity_by_guild[guild.id]
         self.assertEqual(activity["connection_state"], "disconnected")

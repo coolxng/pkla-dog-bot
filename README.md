@@ -99,10 +99,10 @@ Set these in your hosting provider's secret/environment variable UI. Do not comm
 | `!status` | Shows in-memory TTS, API-call, and listen-in status. |
 | `!forget` | Owner-only command that clears shared memory. |
 | `!deletedms` | Available only in DMs from `OWNER_ID`; deletes past messages sent by this bot across every DM conversation available to the connected bot and reacts to the command with the result. |
-| `!join` | Joins your current voice channel, barks once immediately, and continues barking every five minutes. Incoming audio is received only while a browser listener is connected. |
+| `!join` | Joins your current voice channel and barks once immediately. Incoming audio is received only while a browser listener is connected. |
 | `!bark` | Plays a bark immediately while the bot is connected. Has a five-second server-wide cooldown. |
 | `!tts <message>` | When enabled from `/say`, queues up to 500 characters to be read with the configured OpenAI voice in the connected voice channel. Multiple `!tts` messages play in order without overlapping. |
-| `!leave` | Stops scheduled barking and disconnects the bot from its current voice channel. |
+| `!leave` | Disconnects the bot from its current voice channel. |
 | `/birthdayryan` | Posts a public birthday message for Ryan with a rich embed and the bundled Base64-encoded birthday-card image. |
 | `/pingdeaf user:@member` | DMs a deafened voice member every two seconds until they undeafen. The sender sees a live count of reminder DMs sent, both people get a stop button, the sender is notified if the receiver stops the reminders, and the bot deletes its reminder DMs two minutes after the reminders stop. |
 
