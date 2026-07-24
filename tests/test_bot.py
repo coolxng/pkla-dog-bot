@@ -1286,7 +1286,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
             patch.object(bot, "join_voice_channel", new=AsyncMock(return_value="joined #General")) as join_voice,
         ):
-            response = await bot.control_external_voice("join", 1447148315312521256)
+            response = await bot.control_external_voice("join", 1401382324326760672)
 
         self.assertEqual(response, "joined #General")
         join_voice.assert_awaited_once_with(channel)
@@ -1303,7 +1303,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
             patch.object(bot, "leave_guild_voice", new=AsyncMock(return_value="left the voice channel")) as leave_voice,
         ):
-            response = await bot.control_external_voice("leave", 1447148315312521256)
+            response = await bot.control_external_voice("leave", 1401382324326760672)
 
         self.assertEqual(response, "left the voice channel")
         leave_voice.assert_awaited_once_with(guild)
@@ -1324,7 +1324,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
-            response = await bot.control_external_voice("stop", 1447148315312521256)
+            response = await bot.control_external_voice("stop", 1401382324326760672)
 
         self.assertEqual(response, "stopped audio in #General")
         voice_client.stop.assert_called_once_with()
@@ -1345,7 +1345,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: channel)),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
-            response = await bot.control_external_voice("stop", 1447148315312521256)
+            response = await bot.control_external_voice("stop", 1401382324326760672)
 
         self.assertEqual(response, "nothing is playing")
         voice_client.stop.assert_not_called()
@@ -1361,7 +1361,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
             with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
-                await bot.control_external_voice("stop", 1447148315312521256)
+                await bot.control_external_voice("stop", 1401382324326760672)
 
     async def test_external_stop_requires_selected_voice_channel_connection(self):
         class FakeVoiceChannel:
@@ -1380,7 +1380,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
             with self.assertRaisesRegex(RuntimeError, "different voice channel"):
-                await bot.control_external_voice("stop", 1447148315312521256)
+                await bot.control_external_voice("stop", 1401382324326760672)
 
         voice_client.stop.assert_not_called()
 
@@ -1400,7 +1400,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
             response = await bot.control_external_voice(
-                "server_mute", 1447148315312521256
+                "server_mute", 1401382324326760672
             )
 
         self.assertEqual(response, "server mute enabled")
@@ -1422,7 +1422,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
             response = await bot.control_external_voice(
-                "server_deafen", 1447148315312521256
+                "server_deafen", 1401382324326760672
             )
 
         self.assertEqual(response, "server deafen disabled")
@@ -1449,7 +1449,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
         ):
             response = await bot.control_external_member_voice(
-                "server_deafen_member", 1447148315312521256, 42
+                "server_deafen_member", 1401382324326760672, 42
             )
 
         self.assertEqual(response, "server deafened Coolxng")
@@ -1477,7 +1477,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(ValueError, "not in the selected voice channel"):
                 await bot.control_external_member_voice(
-                    "server_mute_member", 1447148315312521256, 42
+                    "server_mute_member", 1401382324326760672, 42
                 )
 
     async def test_external_sound_plays_selected_audio(self):
@@ -1493,7 +1493,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "play_audio", return_value=True) as play_audio,
         ):
             response = await bot.control_external_voice(
-                "play_sound", 1447148315312521256, "minecraft"
+                "play_sound", 1401382324326760672, "minecraft"
             )
 
         self.assertEqual(response, "playing Minecraft bark")
@@ -1516,7 +1516,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "Join the voice call"):
                 await bot.control_external_voice(
-                    "play_sound", 1447148315312521256, "wolf"
+                    "play_sound", 1401382324326760672, "wolf"
                 )
 
     async def test_external_speech_requires_joined_voice_client(self):
@@ -1531,7 +1531,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "Join the selected voice call"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "onyx"
+                    1401382324326760672, "hello", "onyx"
                 )
 
     async def test_external_speech_synthesizes_off_loop_and_plays_temporary_audio(self):
@@ -1554,7 +1554,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "play_audio", return_value=True) as play_audio,
         ):
             response = await bot.control_external_speech(
-                1447148315312521256, "hello", "onyx"
+                1401382324326760672, "hello", "onyx"
             )
 
         self.assertEqual(response, "speaking in #General")
@@ -1588,7 +1588,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "speech failed"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "onyx"
+                    1401382324326760672, "hello", "onyx"
                 )
 
         self.assertNotIn(456, bot.last_tts_at)
@@ -1613,7 +1613,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(asyncio.CancelledError):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "onyx"
+                    1401382324326760672, "hello", "onyx"
                 )
 
         self.assertNotIn(456, bot.last_tts_at)
@@ -1639,7 +1639,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
             patch.object(bot, "play_audio", return_value=True),
         ):
             await bot.control_external_speech(
-                1447148315312521256, "hello", "onyx"
+                1401382324326760672, "hello", "onyx"
             )
 
         to_thread.assert_awaited_once_with(bot.synthesize_speech, "hello", "onyx")
@@ -1661,7 +1661,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "already playing"):
                 await bot.control_external_speech(
-                    1447148315312521256, "hello", "onyx"
+                    1401382324326760672, "hello", "onyx"
                 )
 
         to_thread.assert_not_awaited()
@@ -1669,7 +1669,7 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_external_voice_rejects_unavailable_channel(self):
         with patch.object(bot, "client", SimpleNamespace(get_channel=lambda channel_id: None)):
             with self.assertRaisesRegex(RuntimeError, "voice channel is unavailable"):
-                await bot.control_external_voice("join", 1447148315312521256)
+                await bot.control_external_voice("join", 1401382324326760672)
 
 
 class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
@@ -2174,7 +2174,7 @@ class ExternalSayTests(unittest.TestCase):
             b'value="server_deafen_member">Server Deafen Member', response.data
         )
         self.assertIn(
-            b'value="1447148315312521256"',
+            b'value="1401382324326760672"',
             response.data,
         )
 
@@ -2309,7 +2309,7 @@ class ExternalSayTests(unittest.TestCase):
             "/say",
             data={
                 "action": "speak",
-                "voice_channel_id": "1447148315312521256",
+                "voice_channel_id": "1401382324326760672",
                 "speech_text": "   ",
                 "voice": "onyx",
             },
@@ -2323,7 +2323,7 @@ class ExternalSayTests(unittest.TestCase):
             "/say",
             data={
                 "action": "speak",
-                "voice_channel_id": "1447148315312521256",
+                "voice_channel_id": "1401382324326760672",
                 "speech_text": "x" * (bot.TTS_TEXT_LIMIT + 1),
                 "voice": "onyx",
             },
@@ -2337,7 +2337,7 @@ class ExternalSayTests(unittest.TestCase):
             "/say",
             data={
                 "action": "speak",
-                "voice_channel_id": "1447148315312521256",
+                "voice_channel_id": "1401382324326760672",
                 "speech_text": "hello",
                 "voice": "arbitrary",
             },
@@ -2351,7 +2351,7 @@ class ExternalSayTests(unittest.TestCase):
             "/say",
             data={
                 "action": "speak",
-                "voice_channel_id": "1447148315312521256",
+                "voice_channel_id": "1401382324326760672",
                 "speech_text": "hello",
                 "voice": "default",
             },
@@ -2368,7 +2368,7 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "speak",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                     "speech_text": "  hello there  ",
                     "voice": "onyx",
                 },
@@ -2377,7 +2377,7 @@ class ExternalSayTests(unittest.TestCase):
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=speaking+in+%23General", response.headers["Location"])
         submit_speech.assert_called_once_with(
-            1447148315312521256, "hello there", "onyx"
+            1401382324326760672, "hello there", "onyx"
         )
 
     def test_join_voice_form_uses_selected_channel(self):
@@ -2390,13 +2390,13 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "join",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=joined+General", response.headers["Location"])
-        submit_voice.assert_called_once_with("join", 1447148315312521256)
+        submit_voice.assert_called_once_with("join", 1401382324326760672)
 
     def test_stop_audio_form_uses_selected_channel(self):
         with patch.object(
@@ -2408,13 +2408,13 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "stop",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=stopped+audio+in+%23General", response.headers["Location"])
-        submit_voice.assert_called_once_with("stop", 1447148315312521256)
+        submit_voice.assert_called_once_with("stop", 1401382324326760672)
 
     def test_server_mute_form_uses_selected_channel(self):
         with patch.object(
@@ -2426,12 +2426,12 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "server_mute",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
-        submit_voice.assert_called_once_with("server_mute", 1447148315312521256)
+        submit_voice.assert_called_once_with("server_mute", 1401382324326760672)
 
     def test_server_deafen_form_uses_selected_channel(self):
         with patch.object(
@@ -2443,12 +2443,12 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "server_deafen",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
-        submit_voice.assert_called_once_with("server_deafen", 1447148315312521256)
+        submit_voice.assert_called_once_with("server_deafen", 1401382324326760672)
 
     def test_member_mute_form_uses_selected_channel_and_target_user(self):
         with patch.object(
@@ -2460,14 +2460,14 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "server_mute_member",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                     "target_user_id": "575057023046123520",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
         submit_member_voice.assert_called_once_with(
-            "server_mute_member", 1447148315312521256, 575057023046123520
+            "server_mute_member", 1401382324326760672, 575057023046123520
         )
 
     def test_member_mute_form_requires_numeric_user_id(self):
@@ -2475,7 +2475,7 @@ class ExternalSayTests(unittest.TestCase):
             "/say",
             data={
                 "action": "server_mute_member",
-                "voice_channel_id": "1447148315312521256",
+                "voice_channel_id": "1401382324326760672",
                 "target_user_id": "not-a-user",
             },
         )
@@ -2494,14 +2494,14 @@ class ExternalSayTests(unittest.TestCase):
                 data={
                     "action": "play_sound",
                     "sound": "wolf",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
         self.assertIn("status=playing+Wolf+bark", response.headers["Location"])
         submit_voice.assert_called_once_with(
-            "play_sound", 1447148315312521256, "wolf"
+            "play_sound", 1401382324326760672, "wolf"
         )
 
     def test_unknown_sound_is_rejected(self):
@@ -2510,7 +2510,7 @@ class ExternalSayTests(unittest.TestCase):
             data={
                 "action": "play_sound",
                 "sound": "unknown",
-                "voice_channel_id": "1447148315312521256",
+                "voice_channel_id": "1401382324326760672",
             },
         )
 
@@ -2527,12 +2527,12 @@ class ExternalSayTests(unittest.TestCase):
                 "/say",
                 data={
                     "action": "leave",
-                    "voice_channel_id": "1447148315312521256",
+                    "voice_channel_id": "1401382324326760672",
                 },
             )
 
         self.assertEqual(response.status_code, 303)
-        submit_voice.assert_called_once_with("leave", 1447148315312521256)
+        submit_voice.assert_called_once_with("leave", 1401382324326760672)
 
     def test_voice_form_rejects_non_numeric_channel_id(self):
         response = self.client.post(
