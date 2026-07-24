@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix "Audio WebSocket error" / listen-in never connecting: the gevent
+  `WSGIServer` + `WebSocketHandler` path was never monkey-patched, so blocking
+  `queue.Queue.get()` calls in `/say/listen` and `/say/audio` starved the
+  entire event loop under load. `USE_PRODUCTION_WEB_SERVER` now defaults to
+  `false`, and the fallback Flask dev server runs with `threaded=True` so
+  each browser listener gets its own OS thread.
+
 - Fix `!deletedms` to honor `OWNER_ID` instead of the hardcoded default owner.
 - Add Ruff and mypy to CI and `requirements-dev.txt`.
 - Remove stale `ENABLE_TRANSCRIPTION` and Piper TTS entries from `.env.example`.

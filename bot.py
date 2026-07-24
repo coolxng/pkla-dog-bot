@@ -90,13 +90,36 @@ def health():
 
 def run_web_server():
     port = int(os.environ.get("PORT", 3000))
-    use_production_server = env_bool("USE_PRODUCTION_WEB_SERVER", True)
+    # NOTE: gevent's pywsgi.WSGIServer + WebSocketHandler only schedules
+    # cooperatively if gevent.monkey.patch_all() ran before anything else in
+    # the process (queue, threading, socket, ssl). This process also runs the
+    # discord.py asyncio event loop, and patching that late (from inside this
+    # background thread, after asyncio/aiohttp/ssl are already imported and
+    # the bot is connected) does not reliably take effect, and patching it at
+    # the top of the file risks breaking discord.py's own socket/SSL usage.
+    # Without patching, every blocking queue.Queue.get() in the /say/listen
+    # and /say/audio routes stalls gevent's single-threaded event loop, which
+    # freezes every other connection on that server (including this
+    # websocket's own keepalive) until the next PCM frame arrives. That's the
+    # "Audio WebSocket error" browser listeners see even though the relay's
+    # own debug counters (frames_received etc.) keep climbing fine, since
+    # those come from the separate asyncio thread. Use the threaded Werkzeug
+    # dev server instead: it hands each connection a real OS thread, so a
+    # listener blocked on queue.Queue.get() can't stall anything else. It's
+    # not a "production" WSGI server, but it's the correct tool here given a
+    # handful of concurrent browser listeners.
+    use_production_server = env_bool("USE_PRODUCTION_WEB_SERVER", False)
     if use_production_server:
         try:
             from gevent import pywsgi
             from geventwebsocket.handler import WebSocketHandler
 
-            logger.info("Starting gevent web server on port %s", port)
+            logger.warning(
+                "USE_PRODUCTION_WEB_SERVER is set but gevent is not monkey-patched; "
+                "the /say/listen and /say/audio routes WILL stall under concurrent "
+                "load. Leave this unset unless you've verified gevent.monkey.patch_all() "
+                "is safe with this bot's asyncio/Discord connection."
+            )
             server = pywsgi.WSGIServer(
                 ("0.0.0.0", port), app, handler_class=WebSocketHandler
             )
@@ -106,8 +129,8 @@ def run_web_server():
             logger.warning(
                 "gevent/gevent-websocket not installed; falling back to Flask dev server"
             )
-    logger.info("Starting Flask dev server on port %s", port)
-    app.run(host="0.0.0.0", port=port)
+    logger.info("Starting threaded Flask dev server on port %s", port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
 
 
 def start_web_server():
