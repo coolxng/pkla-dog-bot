@@ -646,7 +646,18 @@ state_store = default_state_store()
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-client = discord.Client(intents=intents)
+member_cache_flags = discord.MemberCacheFlags.none()
+member_cache_flags.voice = True
+client = discord.Client(
+    intents=intents,
+    # Event payloads provide the messages this bot handles, so retaining
+    # discord.py's separate 1,000-message cache only increases steady-state RAM.
+    max_messages=None,
+    # Keep voice participants available for voice controls and /pingdeaf without
+    # retaining every member from every connected guild.
+    member_cache_flags=member_cache_flags,
+    chunk_guilds_at_startup=False,
+)
 command_tree = app_commands.CommandTree(client)
 slash_commands_synced = False
 discord_event_loop: asyncio.AbstractEventLoop | None = None

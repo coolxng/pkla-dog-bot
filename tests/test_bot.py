@@ -102,6 +102,14 @@ class DiscordIntentTests(unittest.TestCase):
         self.assertTrue(bot.intents.members)
         self.assertTrue(bot.intents.message_content)
 
+    def test_discord_caches_are_limited_to_voice_members(self):
+        connection = bot.client._connection
+
+        self.assertIsNone(connection.max_messages)
+        self.assertTrue(connection.member_cache_flags.voice)
+        self.assertFalse(connection.member_cache_flags.joined)
+        self.assertFalse(connection._chunk_guilds)
+
 
 class BirthdayRyanCommandTests(unittest.IsolatedAsyncioTestCase):
     def test_command_is_registered(self):
