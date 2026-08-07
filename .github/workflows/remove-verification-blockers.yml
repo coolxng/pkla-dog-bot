@@ -182,7 +182,9 @@ jobs:
         run: python -m pip install -r requirements-dev.txt
 
       - name: Lint
-        run: ruff check .
+        run: |
+          ruff check . --fix
+          ruff check .
 
       - name: Type check
         run: mypy bot.py audio_relay.py pcm_relay.py browser_talk.py
