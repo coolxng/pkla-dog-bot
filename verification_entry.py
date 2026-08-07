@@ -9,6 +9,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from flask import Response
+from markupsafe import escape
+
 # These must be set before importing bot.py because the state store and client
 # configuration are created at import time.
 os.environ["PERSIST_STATE"] = "false"
@@ -20,8 +23,6 @@ os.environ["ENABLE_LISTEN_IN"] = "false"
 os.environ.pop("POKE_INGEST_URL", None)
 
 import bot  # noqa: E402  (environment must be locked before this import)
-from flask import Response  # noqa: E402
-from markupsafe import escape  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 
