@@ -20,14 +20,23 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Remove final stale reference
+      - name: Remove final stale references
         shell: python
         run: |
           from pathlib import Path
-          path = Path("bot.py")
-          text = path.read_text(encoding="utf-8")
-          text = text.replace(" /pingdeaf", "")
-          path.write_text(text, encoding="utf-8")
+
+          bot_path = Path("bot.py")
+          bot = bot_path.read_text(encoding="utf-8")
+          bot_path.write_text(bot.replace(" /pingdeaf", ""), encoding="utf-8")
+
+          stale_terms = ("pingdeaf", "poke_ingest_url", "poke ingest")
+          for path in Path(".").glob("*.md"):
+              lines = path.read_text(encoding="utf-8").splitlines()
+              cleaned = [
+                  line for line in lines
+                  if not any(term in line.lower() for term in stale_terms)
+              ]
+              path.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
 
       - name: Verify removed behavior and references are gone
         run: |
@@ -58,6 +67,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm .github/workflows/final-verification-cleanup.yml
-          git add bot.py
+          git add bot.py *.md
           git commit -m "chore: finish verification source cleanup"
           git push origin HEAD:remove-poke-pingdeaf
