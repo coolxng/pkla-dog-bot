@@ -1,181 +1,77 @@
 # pkla dog Discord Bot
 
-A Python Discord bot with Groq-backed chat responses, optional OpenAI web search and text to speech, voice playback, authenticated browser controls, lightweight conversation context, and utility commands.
-
-The default production deployment now uses **verification-safe mode** through `verification_entry.py`.
+A Python Discord bot with slash-command AI chat, web search, voice playback/TTS, authenticated browser controls, and verification-focused privacy defaults.
 
 - [Terms of Service](./TERMS.md)
 - [Privacy Policy](./PRIVACY.md)
-- [Support and privacy requests](./SUPPORT.md)
-- [Discord verification checklist](./VERIFICATION.md)
+- [Support and reports](./SUPPORT.md)
+- [Verification checklist](./VERIFICATION.md)
 
-## Verification-safe public deployment
+## Discord verification posture
 
-The repository `Procfile` starts:
+The public deployment uses `python verification_entry.py` and does not request **Message Content Intent** or **Server Members Intent**. Ordinary server messages are not used for AI chat; use `/chat`.
 
-```text
-python verification_entry.py
-```
+There is no persistent conversation database and no shared/universal memory. Chat context is in-memory only and scoped to the invoking user plus the current guild/DM context.
 
-That entrypoint intentionally disables features that should not be exposed by the public/verified bot without another policy review:
-
-- browser voice listen-in / inbound voice relay;
-- persistent SQLite conversation storage;
-- automatic memory extraction.
-
-It also serves the legal and support documents at:
-
-```text
-/terms
-/privacy
-/support
-```
-
-After deployment, use the public HTTPS `/terms` and `/privacy` URLs in the Discord Developer Portal.
-
-## Required environment variables
-
-Set secrets in your hosting provider's environment-variable UI. Do not commit real secrets.
-
-| Variable | Required | Description |
-| --- | --- | --- |
-| `DISCORD_TOKEN` | Yes | Discord bot token used by `discord.py`. |
-| `GROQ_API_KEY` | Yes | Groq API key used for normal AI chat responses. |
-| `OPENAI_API_KEY` | For OpenAI features | Used for explicitly enabled OpenAI web search, optional chat fallback, and text to speech. |
-| `TARGET_CHANNEL_IDS` | Recommended | Comma-separated channel IDs where the bot should respond. |
-| `OWNER_ID` | Recommended | Discord user ID allowed to DM the bot and run owner-only commands. |
-| `PING_MEMBERS_JSON` | Recommended | JSON object mapping configured ping trigger names to Discord user IDs. |
-| `EXTERNAL_CHANNEL_ID` | For `/say` text posting | Discord channel ID prefilled for the authenticated external control page. |
-
-## Optional environment variables
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `GROQ_CHAT_MODEL` | `llama-3.1-8b-instant` | Model used for normal AI chat. |
-| `OPENAI_CHAT_FALLBACK` | `false` | Allows normal chat to fall back to OpenAI when explicitly enabled. |
-| `OPENAI_CHAT_MODEL` | `gpt-4o-mini` | OpenAI model used by optional chat fallback. |
-| `ENABLE_OPENAI_WEB_SEARCH` | `false` | Enables the OpenAI web-search provider. |
-| `OPENAI_SEARCH_MODEL` | `chat-latest` | OpenAI model used for web search. |
-| `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | OpenAI model used for text to speech. |
-| `OPENAI_TTS_VOICE` | `alloy` | Default `/say` page TTS voice. |
-| `TAVILY_API_KEY` | unset | Optional search-provider key. |
-| `BRAVE_SEARCH_API_KEY` | unset | Optional search-provider key. |
-| `SERPAPI_API_KEY` | unset | Optional search-provider key. |
-| `EXTERNAL_VOICE_CHANNEL_ID` | configured ID | Voice channel prefilled on `/say`. |
-| `EXTERNAL_SAY_CONTROL_TOKEN` | unset | Secret protecting `/say` controls. Set a strong value before exposing controls. |
-| `PORT` | `3000` | Flask web server port. |
-| `LOG_LEVEL` | `INFO` | Runtime log level. |
-| `USE_PRODUCTION_WEB_SERVER` | `false` | Leave false unless the gevent/asyncio interaction has been explicitly validated. |
-
-The following values are shown in `.env.example` for clarity, but `verification_entry.py` forces them off in the public deployment:
-
-```text
-ENABLE_LISTEN_IN=false
-PERSIST_STATE=false
-AUTO_MEMORY_ENABLED=false
-```
-
-## Railway deploy steps
-
-1. Create or connect a Railway service to this repository.
-2. Add `DISCORD_TOKEN`, `GROQ_API_KEY`, `TARGET_CHANNEL_IDS`, and `OWNER_ID` under **Variables**. Add `OPENAI_API_KEY` only if you use OpenAI-backed features.
-3. Confirm the start command is `python verification_entry.py`. The repository `Procfile` already sets this. If Railway has a manual start-command override, update or remove the override.
-4. Deploy the service.
-5. In the [Discord Developer Portal](https://discord.com/developers/applications), enable the privileged intents currently requested by the code: **Server Members Intent** and **Message Content Intent**. Privileged-intent review at scale is separate from basic App Verification.
-6. Invite the bot with only the Discord permissions needed for the features you actually use. Voice playback normally needs **View Channel**, **Connect**, and **Speak**. Moderation actions need their corresponding moderation permissions and role hierarchy.
-7. Keep FFmpeg and the dependencies in `requirements.txt` available to the deployment.
-8. Set a strong `EXTERNAL_SAY_CONTROL_TOKEN` before using `/say` controls over a public domain.
-9. Open `/health` to confirm the Discord client is connected.
-10. Confirm `/terms`, `/privacy`, and `/support` load over HTTPS, then complete the steps in [VERIFICATION.md](./VERIFICATION.md).
-
-## Bot commands
+## Commands
 
 | Command | Description |
 | --- | --- |
-| `ping <configured name>` | Mentions the configured Discord member. |
-| `!reset` or `!clear` | Clears active conversation history for the current context. |
-| `!remember <fact>` | Adds a shared in-memory memory fact manually. |
-| `!memory` | Shows current shared in-memory memory facts. |
-| `!forget` | Owner-only command that clears shared memory. |
-| `!search <query>` | Runs a live web search and returns a concise answer. |
-| `!help` | Shows a concise command list. |
-| `!uptime` | Shows process uptime. |
-| `!coinflip` | Flips a coin. |
-| `!roll [NdM]` | Rolls dice, such as `d20` or `2d6`. |
-| `!status` | Shows TTS, API-call, and listen-in status. |
-| `!deletedms` | Owner-only DM cleanup command for messages sent by this bot. |
-| `!join` | Joins the invoking user's voice channel and barks once. |
-| `!bark` | Plays the bundled bark sound while connected. |
-| `!tts <message>` | Queues up to 500 characters for OpenAI text-to-speech playback. |
-| `!leave` | Disconnects the bot from its current voice channel. |
-| `/birthdayryan` | Posts the bundled birthday message and image. |
+| `/chat <prompt>` | Chat with pkla dog. |
+| `/search <query>` | Search the web and get a concise answer. |
+| `/reset` | Clear your current chat context. |
+| `/delete-data` | Delete all in-memory data associated with your Discord user ID. |
+| `/join` | Join your current voice channel and bark once. |
+| `/leave` | Leave the current voice channel. |
+| `/bark` | Play the bundled bark sound. |
+| `/tts <message>` | Queue text-to-speech in voice. |
+| `/ping <target> [message]` | Mention a configured member without sending a DM. |
+| `/uptime` | Show process uptime. |
+| `/coinflip` | Flip a coin. |
+| `/roll [expression]` | Roll dice such as `d20` or `2d6`. |
+| `/status` | Show runtime feature status. |
+| `/listen-consent` | Explicitly consent to optional live browser voice relay in your current voice channel. |
+| `/listen-revoke` | Revoke voice relay consent; an active relay stops. |
+| `/support` | Show support, privacy, Terms, and reporting links. |
+| `/birthdayryan` | Send the bundled birthday embed. |
 
+The old `!` message-command handler, shared memory commands, `/pingdeaf`, and Poke ingest are removed.
 
+## Voice listen-in consent
 
-Do not re-enable the repeated-DM implementation for a verified/public bot without redesigning it around explicit recipient consent and re-checking Discord's current Developer Policy.
+`ENABLE_LISTEN_IN` defaults to `false`. Even if an operator intentionally sets it to `true`, the browser receive path refuses to start unless **every current human participant** in the selected voice channel has run `/listen-consent`. A visible message is posted when listen-in starts and when it stops because consent changes. Incoming audio is relayed live and is not intentionally stored.
 
-## Authenticated `/say` controls
+## Data deletion
 
-The web service includes an operator control page at `/say`.
+`/delete-data` clears every in-memory chat context associated with the invoking Discord user ID and removes that user's voice consent state. The application no longer uses the old plaintext SQLite conversation persistence layer.
 
-Set a strong `EXTERNAL_SAY_CONTROL_TOKEN` before exposing it. If the token is unset, the page can load as a setup page but control requests are rejected.
+## Required environment variables
 
-Authorized operators can use supported controls for:
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | Yes | Discord bot token. |
+| `GROQ_API_KEY` | Yes for AI chat | Groq key for normal `/chat` responses. |
+| `OPENAI_API_KEY` | For OpenAI features | Optional chat fallback, search, and TTS. |
+| `PING_MEMBERS_JSON` | Optional | JSON mapping `/ping` target names to Discord user IDs. |
+| `EXTERNAL_SAY_CONTROL_TOKEN` | Required for `/say` controls | Secret protecting the operator web UI. |
+| `EXTERNAL_CHANNEL_ID` | Optional | Default text channel for `/say`. |
+| `EXTERNAL_VOICE_CHANNEL_ID` | Optional | Default voice channel for `/say`. |
+| `PUBLIC_BASE_URL` | Optional | Public policy/support base URL. Defaults to `https://pkladog.up.railway.app`. |
 
-- posting a message to an available Discord text channel;
-- joining and leaving a Discord voice channel;
-- playing bundled sounds;
-- stopping current audio;
-- text-to-speech playback;
-- uploading small MP3/MP4 audio for playback;
-- server mute/deafen controls when Discord permissions allow;
-- browser microphone talk into the connected Discord voice channel.
+## Optional settings
 
-Uploads are limited to 8 MiB and are validated before playback. Temporary files are removed after failure or playback completion when normal cleanup runs.
+`ENABLE_LISTEN_IN=false` is the safe default. Set it to `true` only if you intentionally want the consent-gated browser voice relay. Other optional provider/model settings remain documented in `.env.example`.
 
-### Browser listen-in
+## Railway
 
-The repository contains inbound voice receive code and a DAVE-compatible `discord-ext-voice-recv` dependency. The **verification-safe public deployment forces `ENABLE_LISTEN_IN=false`**, so incoming Discord call audio is not relayed to browser listeners.
+The `Procfile` starts `python verification_entry.py`. If Railway has a manual Start Command override, set it to the same command. After deployment verify:
 
-Do not enable inbound voice relay for a public deployment without reviewing participant consent, Discord policy, applicable law, and the Privacy Policy first.
+- https://pkladog.up.railway.app/terms
+- https://pkladog.up.railway.app/privacy
+- https://pkladog.up.railway.app/support
 
-## Conversation data
+Use the Terms and Privacy URLs in Discord's Developer Portal. The Team owner must complete Discord Identity Verification manually.
 
-The public verification deployment keeps normal conversation context in process memory and forces persistent SQLite storage off.
+## `/say` operator page
 
-- Context is bounded by the bot's in-memory caps.
-- There is no separate time-based expiry for ordinary conversation history.
-- Context is removed on process restart and may be removed earlier by cache eviction or `!reset` / `!clear`.
-- Automatic memory extraction is forced off.
-- The legacy external Poke message-ingest path is disabled.
-
-See [PRIVACY.md](./PRIVACY.md) for the complete public-facing data description and deletion-request process.
-
-## API providers
-
-Groq handles normal AI chat. OpenAI can provide explicitly enabled chat fallback, web search, and text to speech. Search fallback support also exists for Tavily, Brave Search, SerpApi, and DDGS depending on configuration.
-
-Deterministic Discord actions such as configured mentions remain handled by bot code.
-
-## Voice dependency
-
-`discord.py==2.7.1` provides outbound voice playback and DAVE session handling. The project also pins a DAVE-compatible `discord-ext-voice-recv` revision for the legacy inbound receive pipeline. Discord voice changes can break that receive path independently of normal outbound playback.
-
-The inbound receive path is disabled by `verification_entry.py` for the public deployment.
-
-## Discord verification
-
-See [VERIFICATION.md](./VERIFICATION.md) for the post-merge checklist, including:
-
-- public Terms of Service URL;
-- public Privacy Policy URL;
-- Team Owner Identity Verification;
-- verification-qualification checks;
-- privileged-intent notes.
-
-## Known limitations
-
-- Server-channel AI history is shared by channel, while DM history is per user.
-- In-memory history is not shared across multiple bot replicas.
-- Live search quality depends on provider availability.
-- Global text-command behavior still requires Message Content Intent. Migrating user actions to slash commands would reduce privileged message access and is recommended before large-scale distribution.
+`/say` remains an authenticated operator control surface for posting messages, voice join/leave, audio playback, TTS, uploads, and configured moderation controls. Keep `EXTERNAL_SAY_CONTROL_TOKEN` secret. Browser incoming-audio relay is separately protected by the consent gate described above.

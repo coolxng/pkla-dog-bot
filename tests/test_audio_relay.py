@@ -412,8 +412,11 @@ class ReceiveSessionTests(unittest.IsolatedAsyncioTestCase):
             is_playing=lambda: False,
         )
         channel.guild = SimpleNamespace(id=9, voice_client=voice_client)
+        channel.members = [SimpleNamespace(id=42, bot=False)]
+        bot.voice_listen_consents[(9, 123)] = {42}
         sink = object()
         with (
+            patch.dict(bot.os.environ, {"ENABLE_LISTEN_IN": "true"}, clear=False),
             patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
             patch.object(bot.discord, "VoiceChannel", FakeVoiceChannel),
             patch.object(bot.client, "get_channel", return_value=channel),

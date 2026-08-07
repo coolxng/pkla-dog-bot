@@ -41,7 +41,6 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from audio_relay import AudioRelay, RelayError
 from browser_talk import BrowserTalkSession, BrowserTalkState
 from pcm_relay import PcmRelay
-from storage import default_state_store
 
 _voice_recv_spec = importlib.util.find_spec("discord.ext.voice_recv")
 voice_recv = (
@@ -79,7 +78,7 @@ def health():
         discord_user=str(client.user) if client.user else None,
         uptime_seconds=round(time.monotonic() - BOT_STARTED_AT, 1),
         voice_receive_available=voice_recv is not None,
-        listen_in_enabled=env_bool("ENABLE_LISTEN_IN", True),
+        listen_in_enabled=env_bool("ENABLE_LISTEN_IN", False),
         active_receive_channel_id=active_receive_channel_id,
         pcm_listener_count=relay_state.listener_count,
         ai_api_calls_enabled=ai_api_calls_enabled,
@@ -171,6 +170,7 @@ MAX_EXTERNAL_SAY_REQUEST_BYTES = MAX_UPLOADED_AUDIO_BYTES + (1024 * 1024)
 BROWSER_TALK_START_TIMEOUT_SECONDS = 30
 EXTERNAL_SAY_CONTROL_TOKEN = os.environ.get("EXTERNAL_SAY_CONTROL_TOKEN", "").strip()
 EXTERNAL_SAY_AUTH_COOKIE = "external_say_auth"
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://pkladog.up.railway.app").rstrip("/")
 chat_tts_command_enabled = True
 ai_api_calls_enabled = True
 BOT_STARTED_AT = time.monotonic()
@@ -188,7 +188,7 @@ VOICE_CONNECT_RETRY_ATTEMPTS = 3
 VOICE_CONNECT_RETRY_DELAY_SECONDS = 1
 BARK_AUDIO_PATH = Path(__file__).with_name("pkla-dog-bark.mp3")
 RYAN_BIRTHDAY_IMAGE_BASE64_PATH = (
-    Path(__file__).with_name("assets") / "ryan-birthday.png.b64"
+    Path(__file__).with_name("static") / "favicon.png.b64"
 )
 EXTERNAL_BARK_SOUNDS = {
     "wolf": {"label": "Wolf bark", "path": Path(__file__).with_name("wolf-bark.mp3")},
@@ -279,9 +279,9 @@ def command_help_text() -> str:
     except OSError as error:
         print(f"Could not read README command list: {error}")
         return (
-            "Commands: !join, !leave, !bark, !tts <message>, !reset, "
-            "!memory, !search <query>, !help, !uptime, !coinflip, "
-            "!roll, !status"
+            "Commands: /join, /leave, /bark, /tts <message>, /reset, "
+            "/search <query>, /help, /uptime, /coinflip, "
+            "/roll, /status"
         )
 
     in_commands = False
@@ -303,16 +303,16 @@ def command_help_text() -> str:
         "**Commands from README**\n"
         f"{command_list}\n"
         "**Simple extras**\n"
-        "!help, !uptime, !coinflip, !roll [NdM], !status"
+        "/help, /uptime, /coinflip, /roll [NdM], /status"
     )
     return text if len(text) <= 2000 else text[:1997] + "..."
 
 
 def roll_dice_command(content: str) -> str:
-    expression = content[len("!roll"):].strip().lower() or "1d6"
+    expression = content[len("/roll"):].strip().lower() or "1d6"
     match = re.fullmatch(r"(?:(\d{1,2})?d)?(\d{1,3})", expression)
     if not match:
-        return "use `!roll`, `!roll d20`, or `!roll 2d6`"
+        return "use `/roll`, `/roll d20`, or `/roll 2d6`"
 
     dice_count = int(match.group(1) or 1)
     sides = int(match.group(2))
@@ -327,7 +327,7 @@ def roll_dice_command(content: str) -> str:
 
 
 def status_command_text() -> str:
-    listen_enabled = env_bool("ENABLE_LISTEN_IN", True)
+    listen_enabled = env_bool("ENABLE_LISTEN_IN", False)
     relay_state = browser_audio_relay.state()
     listen_state = "enabled" if listen_enabled else "disabled"
     if listen_enabled and active_receive_channel_id is not None:
@@ -577,10 +577,10 @@ SYSTEM_PROMPT = f"""You are pkla dog, a helpful assistant in a Discord server.
 - For yes/no questions, lead with Yes. or No. Never use em dashes.
 - If asked who you are, say: I'm pkla dog.
 - Know that "pkla" is versatile slang for something high-quality, cool, great, fire, clean, or for someone with effortless confidence and undeniable swag. Use it naturally when relevant.
-- Server history may label messages as Name: message. Universal memory is unverified shared context; use it only when directly relevant.
-- `!join` joins voice and barks once immediately. Joining never starts recording.
-- `!bark`, `!tts <message>`, `!leave`, `!search <query>`, and the memory/reset commands work as named.
-- The external `/say` web page can message, control voice, play {SOUND_CLIP_LABELS}, use TTS, and listen to live call audio in the browser.
+- Conversation context is scoped to the invoking user and server and exists only in process memory. Never treat another user's context as this user's context.
+- `/join` joins voice and barks once immediately. Joining never starts recording.
+- `/chat`, `/bark`, `/tts`, `/leave`, `/search`, `/reset`, and the other slash commands work as named. Shared memory commands do not exist.
+- The external `/say` web page can message, control voice, play {SOUND_CLIP_LABELS}, and use TTS. Browser listen-in is disabled by default and requires every current human participant to consent with `/listen-consent` before it can start.
 - A normal AI reply does not itself execute commands or web controls. Explain the exact command/control instead of claiming an action succeeded."""
 
 SEARCH_KEYWORDS = [
@@ -616,21 +616,17 @@ SEARCH_PROVIDER_ENV_VARS = (
     "SERPAPI_API_KEY",
 )
 
-# DM conversation history is keyed by user ID and wiped on restart.
-conversation_history: OrderedDict = OrderedDict()
-# Channel conversation history is keyed by Discord channel ID and shared by everyone in that channel.
-channel_conversation_history: OrderedDict = OrderedDict()
-# Users/channels evicted by these LRU caps lose their conversation silently; no time-based expiry exists.
-MAX_USERS = 500
-MAX_CHANNELS = 100
+# Slash-command conversation history is kept only in process memory and is scoped
+# to the invoking Discord user plus the current guild (or DM context).
+conversation_history: OrderedDict[tuple[int | None, int], list[dict]] = OrderedDict()
+MAX_CONVERSATIONS = 500
 last_message_at: dict[int, datetime] = {}
-# Universal memory is persisted to SQLite when PERSIST_STATE=true.
-universal_memory: list[str] = []
-MAX_UNIVERSAL_MEMORIES = 50
-state_store = default_state_store()
+# Explicit consent for optional browser voice listen-in is kept only in memory.
+voice_listen_consents: dict[tuple[int, int], set[int]] = {}
+voice_listen_notice_channels: dict[tuple[int, int], int] = {}
 
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = False
 intents.members = False
 member_cache_flags = discord.MemberCacheFlags.none()
 member_cache_flags.voice = True
@@ -1256,7 +1252,7 @@ def external_say():
         action = request.form.get("action", "send")
         if action == "toggle_tts_command":
             chat_tts_command_enabled = not chat_tts_command_enabled
-            status = f"!tts command {'enabled' if chat_tts_command_enabled else 'disabled'}."
+            status = f"/tts command {'enabled' if chat_tts_command_enabled else 'disabled'}."
             if fetch_request:
                 return jsonify(
                     status=status,
@@ -1565,7 +1561,7 @@ def current_time_reply() -> str:
 
 def clean_search_query(text: str) -> str:
     query = text.strip()
-    query = re.sub(r"^!search\s+", "", query, flags=re.IGNORECASE).strip()
+    query = re.sub(r"^/search\s+", "", query, flags=re.IGNORECASE).strip()
     query = re.sub(r"^search\s+(?:for\s+)?(?:it|that)\s*", "", query, flags=re.IGNORECASE).strip()
     query = re.sub(r"^(?:go\s+)?(?:look|check)\s+(?:on|up|for)?\s*", "", query, flags=re.IGNORECASE).strip()
     return query[:300]
@@ -1893,96 +1889,44 @@ def ddgs_search(query: str, *, recent: bool) -> list[dict]:
         return list(ddgs.text(query, **text_kwargs))
 
 
-def format_user_history_content(display_name: str, content: str) -> str:
-    return f"{display_name}: {content}"
+def conversation_key(guild_id: int | None, user_id: int) -> tuple[int | None, int]:
+    return guild_id, user_id
 
 
-def _add_to_history(user_id: int, role: str, content: str) -> None:
-    if user_id not in conversation_history:
-        if len(conversation_history) >= MAX_USERS:
-            evicted_user_id, _ = conversation_history.popitem(last=False)
-            state_store.delete_dm_history(evicted_user_id)
-        conversation_history[user_id] = []
-    conversation_history[user_id].append({"role": role, "content": content})
-    if len(conversation_history[user_id]) > 20:
-        conversation_history[user_id] = conversation_history[user_id][-20:]
-    state_store.save_dm_history(user_id, conversation_history[user_id])
+def get_user_history(guild_id: int | None, user_id: int) -> list[dict]:
+    return conversation_history.get(conversation_key(guild_id, user_id), []).copy()
 
 
-def _add_to_channel_history(channel_id: int, role: str, content: str, display_name: str | None = None) -> None:
-    if channel_id not in channel_conversation_history:
-        if len(channel_conversation_history) >= MAX_CHANNELS:
-            evicted_channel_id, _ = channel_conversation_history.popitem(last=False)
-            state_store.delete_channel_history(evicted_channel_id)
-        channel_conversation_history[channel_id] = []
-
-    if role == "user" and display_name:
-        content = format_user_history_content(display_name, content)
-
-    channel_conversation_history[channel_id].append({"role": role, "content": content})
-    if len(channel_conversation_history[channel_id]) > 20:
-        channel_conversation_history[channel_id] = channel_conversation_history[channel_id][-20:]
-    state_store.save_channel_history(
-        channel_id, channel_conversation_history[channel_id]
-    )
+def add_user_history(guild_id: int | None, user_id: int, role: str, content: str) -> None:
+    key = conversation_key(guild_id, user_id)
+    if key not in conversation_history:
+        if len(conversation_history) >= MAX_CONVERSATIONS:
+            conversation_history.popitem(last=False)
+        conversation_history[key] = []
+    conversation_history[key].append({"role": role, "content": content})
+    if len(conversation_history[key]) > 20:
+        conversation_history[key] = conversation_history[key][-20:]
+    conversation_history.move_to_end(key)
 
 
-def get_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> list:
-    if is_dm:
-        return conversation_history.get(user_id, []).copy()
-    return channel_conversation_history.get(channel_id, []).copy()
-
-
-def add_to_active_history(
-    channel_id: int,
-    user_id: int,
-    role: str,
-    content: str,
-    *,
-    is_dm: bool,
-    display_name: str | None = None,
-) -> None:
-    if is_dm:
-        _add_to_history(user_id, role, content)
-    else:
-        _add_to_channel_history(channel_id, role, content, display_name)
-
-
-def clear_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
-    if is_dm:
-        conversation_history.pop(user_id, None)
-        state_store.delete_dm_history(user_id)
-    else:
-        channel_conversation_history.pop(channel_id, None)
-        state_store.delete_channel_history(channel_id)
-
-
-def record_command_exchange(message, response: str, *, is_dm: bool) -> None:
-    add_to_active_history(
-        message.channel.id,
-        message.author.id,
-        "user",
-        message.content.strip(),
-        is_dm=is_dm,
-        display_name=message.author.display_name,
-    )
-    add_to_active_history(
-        message.channel.id,
-        message.author.id,
-        "assistant",
-        response,
-        is_dm=is_dm,
-    )
-
-
-def pop_last_active_history(channel_id: int, user_id: int, *, is_dm: bool) -> None:
-    history = conversation_history.get(user_id) if is_dm else channel_conversation_history.get(channel_id)
+def pop_user_history(guild_id: int | None, user_id: int) -> None:
+    history = conversation_history.get(conversation_key(guild_id, user_id))
     if history:
         history.pop()
-        if is_dm:
-            state_store.save_dm_history(user_id, history)
-        else:
-            state_store.save_channel_history(channel_id, history)
+
+
+def clear_user_context(guild_id: int | None, user_id: int) -> None:
+    conversation_history.pop(conversation_key(guild_id, user_id), None)
+
+
+def delete_all_user_data(user_id: int) -> int:
+    keys = [key for key in conversation_history if key[1] == user_id]
+    for key in keys:
+        conversation_history.pop(key, None)
+    last_message_at.pop(user_id, None)
+    for consented_users in voice_listen_consents.values():
+        consented_users.discard(user_id)
+    return len(keys)
 
 
 def clean_reply(reply: str) -> str:
@@ -2007,44 +1951,6 @@ def build_search_context(results: str, query: str) -> str:
         "For current facts, do not rely on older conversation memory over these search results.\n\n"
         f"{results}"
     )
-
-
-def normalize_memory_fact(fact: str) -> str:
-    return re.sub(r"\W+", " ", fact.lower()).strip()
-
-
-def memory_fact_exists(fact: str) -> bool:
-    normalized = normalize_memory_fact(fact)
-    if not normalized:
-        return True
-    return any(
-        normalized in normalize_memory_fact(existing)
-        or normalize_memory_fact(existing) in normalized
-        for existing in universal_memory
-    )
-
-
-def add_universal_memory(fact: str) -> bool:
-    fact = fact.strip()
-    if not fact or memory_fact_exists(fact):
-        return False
-    universal_memory.append(fact)
-    if len(universal_memory) > MAX_UNIVERSAL_MEMORIES:
-        universal_memory.pop(0)
-    state_store.save_universal_memory(universal_memory)
-    return True
-
-
-def load_persisted_state() -> None:
-    if not state_store.enabled:
-        return
-    loaded_memory = state_store.load_universal_memory()
-    if loaded_memory:
-        universal_memory[:] = loaded_memory[-MAX_UNIVERSAL_MEMORIES:]
-    for user_id, messages in state_store.load_dm_histories().items():
-        conversation_history[user_id] = messages[-20:]
-    for channel_id, messages in state_store.load_channel_histories().items():
-        channel_conversation_history[channel_id] = messages[-20:]
 
 
 def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:
@@ -2158,14 +2064,10 @@ async def call_model(
 
     def do_call():
         system_content = SYSTEM_PROMPT
-        if universal_memory:
-            facts = "\n".join(f"- {fact}" for fact in universal_memory)
-            system_content += f"\n\n[UNIVERSAL MEMORY — shared context about this server and its members]:\n{facts}"
-
         now = current_datetime_text()
         system_content += f"\n\nCurrent date and time in Central Time: {now}."
         if display_name:
-            system_content += f"\nThe current Discord speaker is {display_name}. Recent channel messages may include other speakers as 'Name: message'."
+            system_content += f"\nThe current Discord speaker is {display_name}. Conversation context belongs only to this user in this server context."
         messages = (
             [{"role": "system", "content": system_content}]
             + history
@@ -2173,41 +2075,6 @@ async def call_model(
         )
         return create_chat_completion(messages, max_tokens=max_tokens)
     return await loop.run_in_executor(None, do_call)
-
-
-async def auto_extract_memory(display_name: str, user_msg: str, bot_reply: str) -> None:
-    """Background task: extract notable server-wide facts from a conversation exchange."""
-    if not env_bool("AUTO_MEMORY_ENABLED", False):
-        return
-
-    loop = asyncio.get_running_loop()
-
-    def do_extract():
-        prompt = (
-            f"Analyze this Discord exchange and decide if it contains a fact worth remembering for ALL future conversations with any server member.\n\n"
-            f"User ({display_name}): {user_msg}\n"
-            f"Bot: {bot_reply}\n\n"
-            f"Only remember facts explicitly stated by the USER. Never remember guesses or claims introduced only by the bot.\n"
-            f"Worth remembering: plans, events, who's looking for who, personal facts someone shared, ongoing situations.\n"
-            f"NOT worth remembering: casual small talk, questions with no context, generic chat, bot assumptions.\n\n"
-            f"If yes, write ONE short fact (max 15 words) without the person's name.\n"
-            f"If no, reply with exactly: NO"
-        )
-        try:
-            result = create_chat_completion(
-                [{"role": "user", "content": prompt}],
-                max_tokens=40
-            ).strip()
-            if result and result.upper() != "NO" and len(result) < 120:
-                return f"{display_name}: {result}"
-        except Exception as e:
-            print(f"Memory extraction error: {e}")
-        return None
-
-    fact = await loop.run_in_executor(None, do_extract)
-    if fact and add_universal_memory(fact):
-        print(f"[universal memory] stored: {fact}")
-
 
 
 last_command_bark_at: dict[int, float] = {}
@@ -2326,11 +2193,49 @@ def create_browser_audio_sink(voice_client):
     return SharedReceiveSink()
 
 
+def voice_consent_key(voice_channel) -> tuple[int, int]:
+    return voice_channel.guild.id, voice_channel.id
+
+
+def voice_channel_participant_ids(voice_channel) -> set[int]:
+    return {
+        member.id
+        for member in getattr(voice_channel, "members", [])
+        if not getattr(member, "bot", False)
+    }
+
+
+def voice_channel_has_full_consent(voice_channel) -> bool:
+    participants = voice_channel_participant_ids(voice_channel)
+    if not participants:
+        return False
+    return participants.issubset(voice_listen_consents.get(voice_consent_key(voice_channel), set()))
+
+
+async def notify_voice_listen(voice_channel, message: str) -> None:
+    try:
+        key = voice_consent_key(voice_channel)
+    except AttributeError:
+        return
+    channel_id = voice_listen_notice_channels.get(key)
+    if channel_id is None:
+        return
+    channel = client.get_channel(channel_id)
+    if channel is None or not hasattr(channel, "send"):
+        return
+    try:
+        await channel.send(message)
+    except discord.HTTPException as error:
+        logger.warning("Could not send voice listen-in notice: %s", error)
+
+
 async def ensure_receive_session(voice_channel) -> None:
     global active_receive_channel_id, active_receive_sink
-    if not env_bool("ENABLE_LISTEN_IN", True):
+    if not env_bool("ENABLE_LISTEN_IN", False):
         raise RuntimeError("Browser listen-in is disabled by ENABLE_LISTEN_IN")
     channel_id = voice_channel.id
+    if not voice_channel_has_full_consent(voice_channel):
+        raise RuntimeError("Every current human participant must run /listen-consent before listen-in can start")
     voice_client = voice_channel.guild.voice_client
     if not voice_client or not voice_client.is_connected():
         raise RuntimeError("Join the selected voice call before listening")
@@ -2346,6 +2251,11 @@ async def ensure_receive_session(voice_channel) -> None:
     elif active_receive_channel_id is None:
         raise RuntimeError("Discord audio is already being received by another feature")
     active_receive_channel_id = channel_id
+    voice_label = getattr(voice_channel, "mention", f"voice channel {voice_channel.id}")
+    await notify_voice_listen(
+        voice_channel,
+        f"🔊 Live browser listen-in started in {voice_label}. All current human participants explicitly consented. Audio is relayed live and is not stored.",
+    )
 
 
 async def start_browser_audio_session(channel_id: int) -> None:
@@ -2371,6 +2281,8 @@ async def stop_receive_session_if_idle() -> None:
         return
     voice_channel = client.get_channel(channel_id)
     voice_client = getattr(getattr(voice_channel, "guild", None), "voice_client", None)
+    if voice_channel is not None:
+        await notify_voice_listen(voice_channel, "🔇 Live browser listen-in stopped.")
     if voice_client and hasattr(voice_client, "is_listening") and voice_client.is_listening():
         voice_client.stop_listening()
 
@@ -2461,11 +2373,11 @@ def play_bark(voice_client) -> bool:
 
 def bark_on_command(message) -> str:
     if message.guild is None:
-        return "use !bark in the server"
+        return "use /bark in the server"
 
     voice_client = message.guild.voice_client
     if not voice_client or not voice_client.is_connected():
-        return "join me to a voice channel first with !join"
+        return "join me to a voice channel first with /join"
 
     now = time.monotonic()
     last_bark = last_command_bark_at.get(message.guild.id)
@@ -2502,7 +2414,7 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
         else:
             connect_options = {"self_deaf": False, "self_mute": False}
             receive_enabled = EXTERNAL_SAY_CONTROL_TOKEN and env_bool(
-                "ENABLE_LISTEN_IN", True
+                "ENABLE_LISTEN_IN", False
             )
             if receive_enabled:
                 connect_options["cls"] = voice_receive_client_class()
@@ -2551,12 +2463,12 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
 
 async def join_author_voice(message) -> str:
     if message.guild is None:
-        return "use !join in the server while you're in a voice channel"
+        return "use /join in the server while you're in a voice channel"
 
     voice_state = getattr(message.author, "voice", None)
     voice_channel = getattr(voice_state, "channel", None)
     if voice_channel is None:
-        return "join a voice channel first, then send !join"
+        return "join a voice channel first, then send /join"
 
     return await join_voice_channel(voice_channel, message.guild)
 
@@ -2583,7 +2495,7 @@ async def leave_guild_voice(guild) -> str:
 
 async def leave_voice(message) -> str:
     if message.guild is None:
-        return "use !leave in the server"
+        return "use /leave in the server"
     return await leave_guild_voice(message.guild)
 
 
@@ -2642,7 +2554,7 @@ async def speak_in_guild(
 async def play_chat_tts(guild, text: str) -> None:
     voice_client = guild.voice_client
     if not voice_client or not voice_client.is_connected():
-        raise RuntimeError("Join me to a voice channel first with !join")
+        raise RuntimeError("Join me to a voice channel first with /join")
 
     while voice_client.is_playing():
         await asyncio.sleep(0.1)
@@ -2715,17 +2627,17 @@ def enqueue_chat_tts(guild, text: str) -> None:
 
 async def speak_message(message, text: str) -> str | None:
     if not chat_tts_command_enabled:
-        return "!tts is currently disabled from the /say control page"
+        return "/tts is currently disabled from the /say control page"
     if message.guild is None:
-        return "use !tts in the server"
+        return "use /tts in the server"
     if not text:
-        return "add a message after !tts"
+        return "add a message after /tts"
     if len(text) > TTS_TEXT_LIMIT:
         return f"TTS messages cannot exceed {TTS_TEXT_LIMIT} characters"
 
     voice_client = message.guild.voice_client
     if not voice_client or not voice_client.is_connected():
-        return "Join me to a voice channel first with !join"
+        return "Join me to a voice channel first with /join"
 
     enqueue_chat_tts(message.guild, text)
     return None
@@ -2977,238 +2889,276 @@ async def on_ready():
 
 @client.event
 async def on_voice_state_update(member, before, after):
-    if client.user is None or member.id != client.user.id:
+    if client.user is not None and member.id == client.user.id:
+        if before.channel is not None and after.channel is None:
+            close_browser_talk_session("Discord voice connection closed")
+            await asyncio.to_thread(
+                close_receive_session, "Discord voice connection closed"
+            )
         return
-    if before.channel is not None and after.channel is None:
-        close_browser_talk_session("Discord voice connection closed")
-        await asyncio.to_thread(
-            close_receive_session, "Discord voice connection closed"
+
+    if before.channel is not None and before.channel != after.channel:
+        voice_listen_consents.get(voice_consent_key(before.channel), set()).discard(member.id)
+
+    checked_ids: set[int] = set()
+    for voice_channel in (before.channel, after.channel):
+        if voice_channel is None or voice_channel.id in checked_ids:
+            continue
+        checked_ids.add(voice_channel.id)
+        if active_receive_channel_id != voice_channel.id:
+            continue
+        if voice_channel_has_full_consent(voice_channel):
+            continue
+        close_receive_session("Participant consent changed")
+        await notify_voice_listen(
+            voice_channel,
+            "🔇 Live browser listen-in stopped because participant consent changed. Everyone currently in the voice channel must run `/listen-consent` before it can start again.",
         )
 
 
-@client.event
-async def on_message(message):
-    if getattr(message.author, "bot", False) or message.author == client.user:
+
+
+async def send_interaction_chunks(interaction: discord.Interaction, text: str, *, ephemeral: bool = False) -> None:
+    chunks = split_reply_chunks(text)
+    if not chunks:
+        chunks = ["done"]
+    if not interaction.response.is_done():
+        await interaction.response.send_message(chunks[0], ephemeral=ephemeral)
+        chunks = chunks[1:]
+    for chunk in chunks:
+        await interaction.followup.send(chunk, ephemeral=ephemeral)
+
+
+@command_tree.command(name="chat", description="Chat with pkla dog.")
+@app_commands.describe(prompt="What you want to say")
+async def chat(interaction: discord.Interaction, prompt: str) -> None:
+    prompt = prompt.strip()
+    if not prompt:
+        await interaction.response.send_message("add a message", ephemeral=True)
         return
-
-    content = message.content.strip()
-    if not content:
-        return
-
-    normalized_content = content.lower().strip()
-    if normalized_content == "!deletedms":
-        if (
-            isinstance(message.channel, discord.DMChannel)
-            and message.author.id == OWNER_ID
-        ):
-            await handle_delete_dms_command(message)
-        return
-
-    is_dm = isinstance(message.channel, discord.DMChannel) and message.author.id == OWNER_ID
-    is_target_channel = message.channel.id in TARGET_CHANNEL_IDS
-
-    if not is_dm and not is_target_channel:
-        return
-
-    user_id = message.author.id
-    display_name = message.author.display_name
-
-    if normalized_content == "!join":
-        response = await join_author_voice(message)
-        record_command_exchange(message, response, is_dm=is_dm)
-        await message.channel.send(response)
-        return
-
-    if normalized_content == "!leave":
-        response = await leave_voice(message)
-        record_command_exchange(message, response, is_dm=is_dm)
-        await message.channel.send(response)
-        return
-
-    if normalized_content == "!bark":
-        response = bark_on_command(message)
-        record_command_exchange(message, response, is_dm=is_dm)
-        await message.channel.send(response)
-        return
-
-    if normalized_content == "!tts" or (
-        normalized_content.startswith("!tts")
-        and len(content) > len("!tts")
-        and content[len("!tts")].isspace()
-    ):
-        response = await speak_message(message, content[len("!tts"):].strip())
-        if response:
-            record_command_exchange(message, response, is_dm=is_dm)
-            await message.channel.send(response)
-        return
-
-    ping_response = ping_response_for(content)
-    if ping_response:
-        add_to_active_history(
-            message.channel.id, user_id, "user", content, is_dm=is_dm, display_name=display_name
-        )
-        add_to_active_history(message.channel.id, user_id, "assistant", ping_response, is_dm=is_dm)
-        await message.channel.send(ping_response)
-        return
-
+    await interaction.response.defer(thinking=True)
+    user_id = interaction.user.id
+    guild_id = interaction.guild_id
     now = current_central_datetime()
     last_seen = last_message_at.get(user_id)
     if last_seen and (now - last_seen).total_seconds() < COOLDOWN_SECONDS:
-        await message.channel.send("slow down a sec")
+        await interaction.followup.send("slow down a sec", ephemeral=True)
         return
     last_message_at[user_id] = now
 
-    # !reset / !clear — wipe the active DM or channel conversation history.
-    if normalized_content in ("!reset", "!clear"):
-        clear_active_history(message.channel.id, user_id, is_dm=is_dm)
-        await message.channel.send("memory wiped, fresh start")
-        return
-
-    # !remember <fact> — manually add something to universal memory
-    if normalized_content.startswith("!remember "):
-        fact = content[len("!remember "):].strip()
-        if fact:
-            stored_fact = f"{display_name}: {fact}"
-            if add_universal_memory(stored_fact):
-                await message.channel.send(f"locked in: {fact}")
-            else:
-                await message.channel.send("already had that in memory")
-        return
-
-    # !memory — show current universal memory
-    if normalized_content == "!memory":
-        if not universal_memory:
-            await message.channel.send("nothing in the memory bank rn")
-        else:
-            lines = "\n".join(f"{i+1}. {fact}" for i, fact in enumerate(universal_memory))
-            msg = f"**universal memory:**\n{lines}"
-            if len(msg) > 2000:
-                msg = msg[:1997] + "..."
-            await message.channel.send(msg)
-        return
-
-    # !search <query> — run a direct web search and answer without dumping links
-    if normalized_content.startswith("!search "):
-        query = clean_search_query(content)
-        search_results = await web_search(query, recent=True)
-        if not search_results:
-            await message.channel.send("couldn't find clear web results for that")
-            return
-        search_context = build_search_context(search_results, query)
-        prompt = (
-            "Answer this using the live web context. Do not list links or sources."
-            f"\n\n{query}\n\n{search_context}"
-        )
-        async with message.channel.typing():
-            try:
-                reply = clean_reply(await call_model([], prompt))
-            except Exception as e:
-                print(f"Search answer error: {e}")
-                reply = error_reply(e, during_search=True)
-        for chunk in split_reply_chunks(reply):
-            await message.channel.send(chunk)
-        return
-
-    # !forget — owner only, clears universal memory
-    if normalized_content == "!forget":
-        if user_id == OWNER_ID:
-            universal_memory.clear()
-            state_store.clear_universal_memory()
-            await message.channel.send("universal memory cleared")
-        else:
-            await message.channel.send("nah you can't do that")
-        return
-
-    if normalized_content == "!help":
-        await message.channel.send(command_help_text())
-        return
-
-    if normalized_content == "!uptime":
-        await message.channel.send(
-            f"uptime: {format_elapsed_time(time.monotonic() - BOT_STARTED_AT)}"
-        )
-        return
-
-    if normalized_content == "!coinflip":
-        await message.channel.send(random.choice(("heads", "tails")))
-        return
-
-    if normalized_content == "!roll" or normalized_content.startswith("!roll "):
-        await message.channel.send(roll_dice_command(content))
-        return
-
-    if normalized_content == "!status":
-        await message.channel.send(status_command_text())
-        return
-
-    if is_current_time_question(content):
-        await message.channel.send(current_time_reply())
-        return
-
-    history_so_far = get_active_history(message.channel.id, user_id, is_dm=is_dm)
-    user_text = content if is_dm else format_user_history_content(display_name, content)
+    history_so_far = get_user_history(guild_id, user_id)
+    user_text = prompt
     context_parts = []
-    reply_style_guidance = short_casual_reply_guidance(content)
+    reply_style_guidance = short_casual_reply_guidance(prompt)
     if reply_style_guidance:
         context_parts.append(reply_style_guidance)
-
-    if needs_time_context(content):
+    if needs_time_context(prompt):
         context_parts.append(build_time_context())
-
-    if needs_search(content):
-        query = build_search_query(content, history_so_far)
-        search_results = await web_search(query, recent=needs_recent_search(content))
+    if needs_search(prompt):
+        query = build_search_query(prompt, history_so_far)
+        search_results = await web_search(query, recent=needs_recent_search(prompt))
         if search_results:
             context_parts.append(build_search_context(search_results, query))
-        elif any(
-            kw in normalized_content
-            for kw in (
-                "search", "look up", "lookup", "look on", "go look", "check",
-                "source", "sources", "latest", "current", "today", "news", "roblox"
-            )
-        ):
+        else:
             context_parts.append(
-                "Live web search was attempted but returned no usable results. "
-                "Tell the user you could not verify this clearly instead of guessing."
+                "Live web search was attempted but returned no usable results. Tell the user you could not verify the current fact instead of guessing."
             )
-
     if context_parts:
-        user_text = user_text + "\n\n" + "\n\n".join(context_parts)
+        user_text += "\n\n" + "\n\n".join(context_parts)
 
-    # Store original clean message in history (not the enriched version)
-    add_to_active_history(
-        message.channel.id, user_id, "user", content, is_dm=is_dm, display_name=display_name
+    add_user_history(guild_id, user_id, "user", prompt)
+    try:
+        max_tokens = 60 if reply_style_guidance else DEFAULT_CHAT_MAX_COMPLETION_TOKENS
+        reply = clean_reply(
+            await call_model(
+                history_so_far,
+                user_text,
+                max_tokens=max_tokens,
+                display_name=getattr(interaction.user, "display_name", interaction.user.name),
+            )
+        )
+        if reply_style_guidance:
+            reply = keep_first_reply_line(reply)
+        if not reply:
+            raise ValueError("Empty response")
+        add_user_history(guild_id, user_id, "assistant", reply)
+        await send_interaction_chunks(interaction, reply)
+    except Exception as error:
+        pop_user_history(guild_id, user_id)
+        logger.exception("Slash chat failed")
+        await interaction.followup.send(error_reply(error), ephemeral=True)
+
+
+@command_tree.command(name="search", description="Search the web and get a concise answer.")
+@app_commands.describe(query="What to search for")
+async def search_command(interaction: discord.Interaction, query: str) -> None:
+    await interaction.response.defer(thinking=True)
+    query = clean_search_query(query)
+    search_results = await web_search(query, recent=True)
+    if not search_results:
+        await interaction.followup.send("couldn't find clear web results for that", ephemeral=True)
+        return
+    prompt = (
+        "Answer this using the live web context. Do not list links or sources."
+        f"\n\n{query}\n\n{build_search_context(search_results, query)}"
+    )
+    try:
+        reply = clean_reply(await call_model([], prompt))
+    except Exception as error:
+        reply = error_reply(error, during_search=True)
+    await send_interaction_chunks(interaction, reply)
+
+
+@command_tree.command(name="reset", description="Clear your pkla dog chat context in this server.")
+async def reset_command(interaction: discord.Interaction) -> None:
+    clear_user_context(interaction.guild_id, interaction.user.id)
+    await interaction.response.send_message("chat context cleared", ephemeral=True)
+
+
+@command_tree.command(name="delete-data", description="Delete all in-memory data pkla dog has for you.")
+async def delete_data_command(interaction: discord.Interaction) -> None:
+    removed_contexts = delete_all_user_data(interaction.user.id)
+    await interaction.response.send_message(
+        f"deleted your in-memory pkla dog data across {removed_contexts} context(s). The bot does not persist conversation history to a database.",
+        ephemeral=True,
     )
 
-    async with message.channel.typing():
-        try:
-            max_tokens = 60 if reply_style_guidance else DEFAULT_CHAT_MAX_COMPLETION_TOKENS
-            reply = clean_reply(
-                await call_model(
-                    history_so_far,
-                    user_text,
-                    max_tokens=max_tokens,
-                    display_name=display_name,
-                )
-            )
-            if reply_style_guidance:
-                reply = keep_first_reply_line(reply)
-            if not reply:
-                raise ValueError("Empty response")
-            add_to_active_history(message.channel.id, user_id, "assistant", reply, is_dm=is_dm)
-            for chunk in split_reply_chunks(reply):
-                await message.channel.send(chunk)
-            # Auto-extract any notable facts in the background when explicitly enabled.
-            if env_bool("AUTO_MEMORY_ENABLED", False):
-                asyncio.create_task(auto_extract_memory(display_name, content, reply))
-        except Exception as e:
-            # Remove the user message we just added since we failed
-            pop_last_active_history(message.channel.id, user_id, is_dm=is_dm)
-            print(f"Error: {e}")
-            await message.channel.send(error_reply(e))
+
+@command_tree.command(name="join", description="Join your current voice channel and bark once.")
+async def join_command(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("use /join in a server", ephemeral=True)
+        return
+    voice_state = getattr(interaction.user, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        await interaction.response.send_message("join a voice channel first", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    await interaction.followup.send(await join_voice_channel(voice_channel, interaction.guild))
+
+
+@command_tree.command(name="leave", description="Disconnect pkla dog from voice.")
+async def leave_command(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("use /leave in a server", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    await interaction.followup.send(await leave_guild_voice(interaction.guild))
+
+
+@command_tree.command(name="bark", description="Play the bundled bark sound.")
+async def bark_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(bark_on_command(interaction))
+
+
+@command_tree.command(name="tts", description="Queue text-to-speech in the connected voice channel.")
+@app_commands.describe(message="Text to speak")
+async def tts_command(interaction: discord.Interaction, message: str) -> None:
+    response = await speak_message(interaction, message.strip())
+    await interaction.response.send_message(response or "queued")
+
+
+@command_tree.command(name="ping", description="Mention a configured member without sending DMs.")
+@app_commands.describe(target="Configured member name", message="Optional message after the mention")
+async def ping_command(interaction: discord.Interaction, target: str, message: str | None = None) -> None:
+    mention = PING_TARGETS.get(target.strip().lower())
+    if mention is None:
+        await interaction.response.send_message("unknown configured member", ephemeral=True)
+        return
+    suffix = f", {message.strip()}" if message and message.strip() else ""
+    await interaction.response.send_message(f"{mention}{suffix}")
+
+
+@command_tree.command(name="uptime", description="Show process uptime.")
+async def uptime_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        f"uptime: {format_elapsed_time(time.monotonic() - BOT_STARTED_AT)}"
+    )
+
+
+@command_tree.command(name="coinflip", description="Flip a coin.")
+async def coinflip_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(random.choice(("heads", "tails")))
+
+
+@command_tree.command(name="roll", description="Roll dice such as d20 or 2d6.")
+@app_commands.describe(expression="Dice expression, for example d20 or 2d6")
+async def roll_command(interaction: discord.Interaction, expression: str = "1d6") -> None:
+    await interaction.response.send_message(roll_dice_command(f"/roll {expression}"))
+
+
+@command_tree.command(name="status", description="Show bot runtime feature status.")
+async def status_slash_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(status_command_text(), ephemeral=True)
+
+
+@command_tree.command(name="help", description="Show pkla dog commands.")
+async def help_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "Commands: `/chat`, `/search`, `/reset`, `/delete-data`, `/join`, `/leave`, `/bark`, `/tts`, `/ping`, `/uptime`, `/coinflip`, `/roll`, `/status`, `/listen-consent`, `/listen-revoke`, `/support`, `/birthdayryan`",
+        ephemeral=True,
+    )
+
+
+@command_tree.command(name="support", description="Get support, privacy, and reporting links.")
+async def support_command(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        f"Support/report: {PUBLIC_BASE_URL}/support\nPrivacy: {PUBLIC_BASE_URL}/privacy\nTerms: {PUBLIC_BASE_URL}/terms",
+        ephemeral=True,
+    )
+
+
+@command_tree.command(name="listen-consent", description="Explicitly consent to optional live browser voice relay.")
+async def listen_consent_command(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("use this in a server", ephemeral=True)
+        return
+    voice_state = getattr(interaction.user, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        await interaction.response.send_message("join the voice channel you want to consent in first", ephemeral=True)
+        return
+    key = voice_consent_key(voice_channel)
+    voice_listen_consents.setdefault(key, set()).add(interaction.user.id)
+    if interaction.channel_id is not None:
+        voice_listen_notice_channels[key] = interaction.channel_id
+    participants = voice_channel_participant_ids(voice_channel)
+    consented = voice_listen_consents[key]
+    remaining = len(participants - consented)
+    if remaining:
+        message = f"{interaction.user.mention} explicitly consented to live browser listen-in for {voice_channel.mention}. {remaining} current participant(s) still need to run `/listen-consent`."
+    else:
+        message = f"{interaction.user.mention} explicitly consented to live browser listen-in for {voice_channel.mention}. All current human participants have consented."
+    await interaction.response.send_message(message)
+
+
+@command_tree.command(name="listen-revoke", description="Revoke your live browser voice relay consent.")
+async def listen_revoke_command(interaction: discord.Interaction) -> None:
+    if interaction.guild is None:
+        await interaction.response.send_message("use this in a server", ephemeral=True)
+        return
+    voice_state = getattr(interaction.user, "voice", None)
+    voice_channel = getattr(voice_state, "channel", None)
+    if voice_channel is None:
+        await interaction.response.send_message("join the voice channel first", ephemeral=True)
+        return
+    key = voice_consent_key(voice_channel)
+    voice_listen_consents.get(key, set()).discard(interaction.user.id)
+    if active_receive_channel_id == voice_channel.id:
+        close_receive_session("Participant revoked consent")
+        await notify_voice_listen(
+            voice_channel,
+            f"🔇 Live browser listen-in stopped because {interaction.user.mention} revoked consent.",
+        )
+    await interaction.response.send_message(
+        f"{interaction.user.mention} revoked live browser listen-in consent for {voice_channel.mention}."
+    )
 
 
 async def run_discord_client(token: str) -> None:
+
+
     retry_delay = DISCORD_LOGIN_RETRY_INITIAL_SECONDS
     try:
         while True:
