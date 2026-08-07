@@ -52,6 +52,10 @@ jobs:
               'async def notify_voice_listen(voice_channel, message: str) -> None:\n    channel_id = voice_listen_notice_channels.get(voice_consent_key(voice_channel))\n',
               'async def notify_voice_listen(voice_channel, message: str) -> None:\n    try:\n        key = voice_consent_key(voice_channel)\n    except AttributeError:\n        return\n    channel_id = voice_listen_notice_channels.get(key)\n',
           )
+          text = text.replace(
+              '    active_receive_channel_id = channel_id\n    await notify_voice_listen(\n        voice_channel,\n        f"🔊 Live browser listen-in started in {voice_channel.mention}. All current human participants explicitly consented. Audio is relayed live and is not stored.",\n    )\n',
+              '    active_receive_channel_id = channel_id\n    voice_label = getattr(voice_channel, "mention", f"voice channel {voice_channel.id}")\n    await notify_voice_listen(\n        voice_channel,\n        f"🔊 Live browser listen-in started in {voice_label}. All current human participants explicitly consented. Audio is relayed live and is not stored.",\n    )\n',
+          )
           bot_path.write_text(text, encoding="utf-8")
 
           audio_tests_path = Path("tests/test_audio_relay.py")
