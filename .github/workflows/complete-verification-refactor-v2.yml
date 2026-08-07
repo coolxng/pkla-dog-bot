@@ -29,18 +29,18 @@ jobs:
           from pathlib import Path
           path = Path("bot.py")
           text = path.read_text(encoding="utf-8")
-          text = text.replace(
-              "def clean_reply(reply: str) -> str:\ndef clean_reply(reply: str) -> str:\n",
+          for signature in (
               "def clean_reply(reply: str) -> str:\n",
-          )
-          text = text.replace(
-              "def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:\ndef split_reply_chunks(text: str, limit: int = 2000) -> list[str]:\n",
               "def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:\n",
-          )
-          text = text.replace(
-              "async def run_discord_client(token: str) -> None:\n\nasync def run_discord_client(token: str) -> None:\n",
               "async def run_discord_client(token: str) -> None:\n",
-          )
+          ):
+              while text.count(signature) > 1:
+                  first = text.find(signature)
+                  second = text.find(signature, first + len(signature))
+                  between = text[first + len(signature):second]
+                  if between.strip():
+                      break
+                  text = text[:second] + text[second + len(signature):]
           path.write_text(text, encoding="utf-8")
 
       - name: Remove plaintext persistence implementation
