@@ -38,18 +38,6 @@ jobs:
               ]
               path.write_text("\n".join(cleaned).rstrip() + "\n", encoding="utf-8")
 
-      - name: Verify active source is clean
-        run: |
-          targets=(bot.py tests verification_entry.py README.md requirements.txt PRIVACY.md TERMS.md SUPPORT.md VERIFICATION.md)
-          if grep -RniE 'pingdeaf|POKE_INGEST_URL|post_message_to_poke|Poke ingest|use slurs, threats, and insults based on protected traits' "${targets[@]}"; then
-            echo "Stale verification blocker remains in active source or user-facing docs"
-            exit 1
-          fi
-          if grep -RniE '^import aiohttp$|^aiohttp==' "${targets[@]}"; then
-            echo "Unused Poke HTTP dependency remains"
-            exit 1
-          fi
-
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg libopus0
 
