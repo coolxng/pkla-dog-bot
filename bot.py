@@ -280,7 +280,7 @@ def command_help_text() -> str:
         print(f"Could not read README command list: {error}")
         return (
             "Commands: /join, /leave, /bark, /tts <message>, /reset, "
-            "!memory, /search <query>, /help, /uptime, /coinflip, "
+            "/search <query>, /help, /uptime, /coinflip, "
             "/roll, /status"
         )
 
@@ -2414,7 +2414,7 @@ async def join_voice_channel(voice_channel, guild=None) -> str:
         else:
             connect_options = {"self_deaf": False, "self_mute": False}
             receive_enabled = EXTERNAL_SAY_CONTROL_TOKEN and env_bool(
-                "ENABLE_LISTEN_IN", True
+                "ENABLE_LISTEN_IN", False
             )
             if receive_enabled:
                 connect_options["cls"] = voice_receive_client_class()
