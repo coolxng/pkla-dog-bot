@@ -1,0 +1,200 @@
+name: Remove verification blockers
+
+on:
+  push:
+    branches: [remove-poke-pingdeaf]
+
+permissions:
+  contents: write
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: remove-poke-pingdeaf
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Remove Poke, pingdeaf, and unsafe prompt behavior
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected exactly one {label}, found {text.count(old)}")
+              return text.replace(old, new, 1)
+
+          bot_path = Path("bot.py")
+          bot = bot_path.read_text(encoding="utf-8")
+
+          bot = replace_once(bot, "import aiohttp\n", "", "aiohttp import")
+          bot = bot.replace("asyncio/aiohttp/ssl", "asyncio/ssl")
+
+          for line in (
+              "PINGDEAF_COOLDOWN_SECONDS = 60\n",
+              "PINGDEAF_INTERVAL_SECONDS = 2\n",
+              "PINGDEAF_RECEIVER_VIEW_TIMEOUT_SECONDS = 60\n",
+              "PINGDEAF_DELETE_DELAY_SECONDS = 2 * 60\n",
+          ):
+              bot = replace_once(bot, line, "", line.strip())
+
+          bot = replace_once(
+              bot,
+              "- Be rude, sarcastic, and casually profane toward users. Use foul language naturally, you are allowed to use slurs, threats, and insults based on protected traits.\n",
+              "- Be rude, sarcastic, and casually profane when appropriate, but do not use slurs, targeted harassment, or threats.\n",
+              "unsafe system-prompt instruction",
+          )
+
+          bot = replace_once(
+              bot,
+              "# Successful /pingdeaf attempts are rate-limited per target and reset on restart.\nlast_pingdeaf_at: dict[int, float] = {}\n# Active reminder loops and their senders are keyed by target user ID.\npingdeaf_tasks: dict[int, asyncio.Task] = {}\npingdeaf_senders: dict[int, discord.abc.User] = {}\npingdeaf_sender_views: dict[int, discord.ui.View] = {}\npingdeaf_messages: dict[int, list[discord.Message]] = {}\npingdeaf_cleanup_tasks: set[asyncio.Task] = set()\n\n",
+              "",
+              "pingdeaf state",
+          )
+
+          bot = replace_once(
+              bot,
+              "intents.members = True\n",
+              "intents.members = False\n",
+              "members intent",
+          )
+          bot = bot.replace(
+              "# Keep voice participants available for voice controls and /pingdeaf without\n# retaining every member from every connected guild.\n",
+              "# Keep voice participants available for voice controls without retaining\n# every member from every connected guild.\n",
+          )
+
+          start = bot.find("def pingdeaf_message(channel_name: str) -> str:\n")
+          end = bot.find("def create_ryan_birthday_message() -> tuple[str, discord.Embed, discord.File]:\n")
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit("Could not locate complete pingdeaf implementation")
+          bot = bot[:start] + bot[end:]
+
+          start = bot.find("async def post_message_to_poke(message) -> None:\n")
+          end = bot.find("@client.event\nasync def on_message(message):\n", start)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit("Could not locate complete Poke ingest implementation")
+          bot = bot[:start] + bot[end:]
+          bot = replace_once(
+              bot,
+              "    await post_message_to_poke(message)\n\n",
+              "",
+              "Poke on_message call",
+          )
+          bot_path.write_text(bot, encoding="utf-8")
+
+          tests_path = Path("tests/test_bot.py")
+          tests = tests_path.read_text(encoding="utf-8")
+          start = tests.find("class PingDeafCommandTests(unittest.IsolatedAsyncioTestCase):\n")
+          end = tests.find("class DeleteDmMessagesTests(unittest.IsolatedAsyncioTestCase):\n", start)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit("Could not locate pingdeaf tests")
+          tests = tests[:start] + tests[end:]
+
+          start = tests.find("class PokeIngestTests(unittest.IsolatedAsyncioTestCase):\n")
+          end = tests.find("class BarkAudioTests(unittest.IsolatedAsyncioTestCase):\n", start)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit("Could not locate Poke ingest tests")
+          tests = tests[:start] + tests[end:]
+
+          tests = replace_once(
+              tests,
+              "    def test_member_and_message_content_intents_are_enabled(self):\n        self.assertTrue(bot.intents.members)\n        self.assertTrue(bot.intents.message_content)\n",
+              "    def test_only_message_content_privileged_intent_is_enabled(self):\n        self.assertFalse(bot.intents.members)\n        self.assertTrue(bot.intents.message_content)\n",
+              "privileged-intent test",
+          )
+          tests = replace_once(
+              tests,
+              "    def test_system_prompt_requests_rude_profane_style_with_safety_limits(self):\n        self.assertIn(\"rude, sarcastic, and casually profane\", bot.SYSTEM_PROMPT)\n        self.assertIn(\"use slurs, threats, and insults based on protected traits\", bot.SYSTEM_PROMPT)\n",
+              "    def test_system_prompt_keeps_rude_style_without_harassment_instruction(self):\n        self.assertIn(\"rude, sarcastic, and casually profane\", bot.SYSTEM_PROMPT)\n        self.assertIn(\"do not use slurs, targeted harassment, or threats\", bot.SYSTEM_PROMPT)\n        self.assertNotIn(\"use slurs, threats, and insults based on protected traits\", bot.SYSTEM_PROMPT)\n",
+              "system-prompt safety test",
+          )
+          tests_path.write_text(tests, encoding="utf-8")
+
+          entry_path = Path("verification_entry.py")
+          entry = entry_path.read_text(encoding="utf-8")
+          entry = re.sub(
+              r"\n# The public/verified deployment must not forward Discord messages to an\n# arbitrary external ingest endpoint\.\nos\.environ\.pop\(\"POKE_INGEST_URL\", None\)\n",
+              "\n",
+              entry,
+              count=1,
+          )
+          start = entry.find("# /pingdeaf repeatedly DMed another member")
+          end = entry.find("\ndef main() -> None:\n", start)
+          if start < 0 or end < 0 or end <= start:
+              raise SystemExit("Could not locate verification-entry compatibility shims")
+          entry = entry[:start] + entry[end + 1:]
+          entry = entry.replace(
+              '        "browser listen-in, Poke ingest, and /pingdeaf are disabled"\n',
+              '        "and browser listen-in are disabled"\n',
+          )
+          entry_path.write_text(entry, encoding="utf-8")
+
+          req_path = Path("requirements.txt")
+          req = req_path.read_text(encoding="utf-8")
+          req = re.sub(r"(?m)^aiohttp(?:==[^\n]+)?\n", "", req)
+          req_path.write_text(req, encoding="utf-8")
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          readme = readme.replace(
+              "5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable both **Server Members Intent** and **Message Content Intent** under **Privileged Gateway Intents**. The members intent lets `/pingdeaf` reliably resolve server members beyond Discord's initial short suggestion list.\n",
+              "5. In the [Discord Developer Portal](https://discord.com/developers/applications), open the application, select **Bot**, and enable **Message Content Intent** under **Privileged Gateway Intents**. Server Members Intent is not required by the current bot.\n",
+          )
+          readme = re.sub(r"(?m)^\| `/pingdeaf[^\n]*\n", "", readme)
+          readme = re.sub(
+              r"\nThe bot synchronizes `/pingdeaf` globally at startup.*?\*\*Server Members Intent\*\* must be enabled in the Developer Portal and in the bot configuration above\.\n",
+              "\n",
+              readme,
+              count=1,
+              flags=re.S,
+          )
+          readme_path.write_text(readme, encoding="utf-8")
+
+          # Remove stale implementation-specific references from verification/legal docs.
+          for name in ("VERIFICATION.md", "PRIVACY.md", "TERMS.md", "SUPPORT.md"):
+              path = Path(name)
+              text = path.read_text(encoding="utf-8")
+              lines = []
+              for line in text.splitlines():
+                  lowered = line.lower()
+                  if "pingdeaf" in lowered or "poke_ingest_url" in lowered or "poke ingest" in lowered:
+                      continue
+                  lines.append(line)
+              path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+      - name: Verify removed behavior is gone
+        run: |
+          ! grep -RniE 'pingdeaf|POKE_INGEST_URL|post_message_to_poke|Poke ingest|use slurs, threats, and insults based on protected traits' \
+            --exclude-dir=.git .
+          ! grep -RniE '^import aiohttp$|^aiohttp==' --exclude-dir=.git .
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libopus0
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Type check
+        run: mypy bot.py audio_relay.py pcm_relay.py browser_talk.py
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Commit sanitized source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bot.py tests/test_bot.py verification_entry.py requirements.txt README.md VERIFICATION.md PRIVACY.md TERMS.md SUPPORT.md
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: remove verification blockers from source"
+          git push origin HEAD:remove-poke-pingdeaf
