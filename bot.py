@@ -23,7 +23,6 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-import aiohttp
 import discord
 from ddgs import DDGS
 from discord import app_commands
@@ -94,7 +93,7 @@ def run_web_server():
     # cooperatively if gevent.monkey.patch_all() ran before anything else in
     # the process (queue, threading, socket, ssl). This process also runs the
     # discord.py asyncio event loop, and patching that late (from inside this
-    # background thread, after asyncio/aiohttp/ssl are already imported and
+    # background thread, after asyncio/ssl are already imported and
     # the bot is connected) does not reliably take effect, and patching it at
     # the top of the file risks breaking discord.py's own socket/SSL usage.
     # Without patching, every blocking queue.Queue.get() in the /say/listen
@@ -182,10 +181,6 @@ DEFAULT_OWNER_ID = 575057023046123520
 RYAN_BIRTHDAY_CHANNEL_ID = 1491165529837277355
 COOLDOWN_SECONDS = 2
 BARK_COMMAND_COOLDOWN_SECONDS = 5
-PINGDEAF_COOLDOWN_SECONDS = 60
-PINGDEAF_INTERVAL_SECONDS = 2
-PINGDEAF_RECEIVER_VIEW_TIMEOUT_SECONDS = 60
-PINGDEAF_DELETE_DELAY_SECONDS = 2 * 60
 DISCORD_LOGIN_RETRY_INITIAL_SECONDS = 60
 DISCORD_LOGIN_RETRY_MAX_SECONDS = 15 * 60
 BARK_JOIN_DELAY_SECONDS = 0.25
@@ -573,7 +568,7 @@ SOUND_CLIP_LABELS = ", ".join(sound["label"] for sound in EXTERNAL_BARK_SOUNDS.v
 SYSTEM_PROMPT = f"""You are pkla dog, a helpful assistant in a Discord server.
 
 - Respond like a real person participating in a Discord conversation. Be natural, clear, and concise.
-- Be rude, sarcastic, and casually profane toward users. Use foul language naturally, you are allowed to use slurs, threats, and insults based on protected traits.
+- Be rude, sarcastic, and casually profane when appropriate, but do not use slurs, targeted harassment, or threats.
 - For casual messages, usually reply with one short sentence. Use recent messages for context, not as a template for your wording.
 - Do not write like a meme account or a viral post. Do not merely echo the user's words and add a scripted punchline.
 - Treat emoji-only messages like a person would. Use emojis sparingly; Usually use zero or one.
@@ -629,15 +624,6 @@ channel_conversation_history: OrderedDict = OrderedDict()
 MAX_USERS = 500
 MAX_CHANNELS = 100
 last_message_at: dict[int, datetime] = {}
-# Successful /pingdeaf attempts are rate-limited per target and reset on restart.
-last_pingdeaf_at: dict[int, float] = {}
-# Active reminder loops and their senders are keyed by target user ID.
-pingdeaf_tasks: dict[int, asyncio.Task] = {}
-pingdeaf_senders: dict[int, discord.abc.User] = {}
-pingdeaf_sender_views: dict[int, discord.ui.View] = {}
-pingdeaf_messages: dict[int, list[discord.Message]] = {}
-pingdeaf_cleanup_tasks: set[asyncio.Task] = set()
-
 # Universal memory is persisted to SQLite when PERSIST_STATE=true.
 universal_memory: list[str] = []
 MAX_UNIVERSAL_MEMORIES = 50
@@ -645,7 +631,7 @@ state_store = default_state_store()
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members = False
 member_cache_flags = discord.MemberCacheFlags.none()
 member_cache_flags.voice = True
 client = discord.Client(
@@ -2857,273 +2843,6 @@ async def control_external_member_voice(
     return f"{label} {member.display_name}"
 
 
-def pingdeaf_message(channel_name: str) -> str:
-    return (
-        f"🔇 People are trying to talk to you in **{channel_name}**. "
-        "Undeafen RIGHT NOW 😠. I won't stop DMing you until you undeafen."
-    )
-
-
-def pingdeaf_sender_status(user: discord.Member, sent_count: int) -> str:
-    return (
-        f"DMing {user.mention} every 2 seconds until they undeafen.\n"
-        f"Messages sent: **{sent_count}**"
-    )
-
-
-async def delete_pingdeaf_messages(messages: list[discord.Message]) -> None:
-    await asyncio.sleep(PINGDEAF_DELETE_DELAY_SECONDS)
-    for message in messages:
-        try:
-            await message.delete()
-        except discord.HTTPException as error:
-            print(f"Could not delete /pingdeaf DM {message.id}: {error}")
-
-
-def schedule_pingdeaf_message_cleanup(messages: list[discord.Message]) -> None:
-    if not messages:
-        return
-    task = asyncio.create_task(delete_pingdeaf_messages(messages))
-    pingdeaf_cleanup_tasks.add(task)
-    task.add_done_callback(pingdeaf_cleanup_tasks.discard)
-
-
-def stop_pingdeaf(target_id: int) -> discord.abc.User | None:
-    task = pingdeaf_tasks.pop(target_id, None)
-    sender = pingdeaf_senders.pop(target_id, None)
-    sender_view = pingdeaf_sender_views.pop(target_id, None)
-    if sender_view is not None:
-        sender_view.stop()
-    if task is None or task.done():
-        return None
-    task.cancel()
-    return sender
-
-
-class PingDeafSenderView(discord.ui.View):
-    def __init__(
-        self, target: discord.Member, sender_id: int, messages: list[discord.Message]
-    ):
-        super().__init__(timeout=None)
-        self.target = target
-        self.sender_id = sender_id
-        self.messages = messages
-
-    @discord.ui.button(
-        label="Stop", style=discord.ButtonStyle.danger, custom_id="pingdeaf:sender-stop"
-    )
-    async def stop_button(
-        self, interaction: discord.Interaction, _button: discord.ui.Button
-    ) -> None:
-        if interaction.user.id != self.sender_id:
-            await interaction.response.send_message(
-                "Only the person who started this can use this button.", ephemeral=True
-            )
-            return
-
-        sent_count = len(self.messages)
-        if stop_pingdeaf(self.target.id) is None:
-            await interaction.response.edit_message(
-                content=(
-                    f"The DM reminders for {self.target.mention} already stopped.\n"
-                    f"Messages sent: **{sent_count}**"
-                ),
-                view=None,
-            )
-            return
-
-        await interaction.response.edit_message(
-            content=(
-                f"Stopped DMing {self.target.mention}.\n"
-                f"Messages sent: **{sent_count}**"
-            ),
-            view=None,
-        )
-
-
-class PingDeafReceiverView(discord.ui.View):
-    def __init__(self, target: discord.Member):
-        super().__init__(timeout=PINGDEAF_RECEIVER_VIEW_TIMEOUT_SECONDS)
-        self.target = target
-
-    @discord.ui.button(
-        label="Stop the spam",
-        style=discord.ButtonStyle.danger,
-        custom_id="pingdeaf:receiver-stop",
-    )
-    async def stop_button(
-        self, interaction: discord.Interaction, _button: discord.ui.Button
-    ) -> None:
-        if interaction.user.id != self.target.id:
-            await interaction.response.send_message(
-                "Only the person receiving these DMs can use this button.",
-                ephemeral=True,
-            )
-            return
-
-        messages = pingdeaf_messages.get(self.target.id)
-        sent_count = len(messages) if messages is not None else 0
-        sender = stop_pingdeaf(self.target.id)
-        if sender is None:
-            await interaction.response.edit_message(
-                content="These DM reminders already stopped.", view=None
-            )
-            return
-
-        await interaction.response.edit_message(
-            content="You stopped the undeafen DM reminders.", view=None
-        )
-        try:
-            notification = await sender.send(
-                f"{self.target.mention} used **Stop the spam**, so the undeafen DMs stopped. "
-                f"Messages sent: **{sent_count}**"
-            )
-            if messages is not None:
-                messages.append(notification)
-        except discord.HTTPException as error:
-            print(
-                f"Could not notify /pingdeaf sender {sender.id} that "
-                f"user {self.target.id} stopped the DMs: {error}"
-            )
-
-
-async def pingdeaf_until_undeafened(
-    user: discord.Member,
-    messages: list[discord.Message] | None = None,
-    sender_interaction: discord.Interaction | None = None,
-    sender_view: PingDeafSenderView | None = None,
-) -> None:
-    if messages is None:
-        messages = []
-    try:
-        while True:
-            await asyncio.sleep(PINGDEAF_INTERVAL_SECONDS)
-            voice_state = user.voice
-            if (
-                voice_state is None
-                or voice_state.channel is None
-                or not (voice_state.self_deaf or voice_state.deaf)
-            ):
-                return
-
-            try:
-                message = await user.send(
-                    pingdeaf_message(voice_state.channel.name),
-                    view=PingDeafReceiverView(user),
-                )
-                messages.append(message)
-                if sender_interaction is not None:
-                    try:
-                        await sender_interaction.edit_original_response(
-                            content=pingdeaf_sender_status(user, len(messages)),
-                            view=sender_view,
-                        )
-                    except discord.HTTPException as error:
-                        print(
-                            f"Could not update /pingdeaf count for user {user.id}: {error}"
-                        )
-                        sender_interaction = None
-            except discord.HTTPException as error:
-                print(f"Could not continue /pingdeaf DMs to user {user.id}: {error}")
-                return
-    finally:
-        current_task = asyncio.current_task()
-        if pingdeaf_tasks.get(user.id) is current_task:
-            pingdeaf_tasks.pop(user.id, None)
-            pingdeaf_senders.pop(user.id, None)
-            sender_view = pingdeaf_sender_views.pop(user.id, None)
-            if sender_view is not None:
-                sender_view.stop()
-        if pingdeaf_messages.get(user.id) is messages:
-            pingdeaf_messages.pop(user.id, None)
-        schedule_pingdeaf_message_cleanup(messages)
-
-
-async def handle_pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
-    permissions = getattr(interaction.user, "guild_permissions", None)
-    if permissions is not None and not (
-        getattr(permissions, "mute_members", False)
-        or getattr(permissions, "administrator", False)
-    ):
-        await interaction.response.send_message(
-            "You need the Mute Members permission to use /pingdeaf.",
-            ephemeral=True,
-        )
-        return
-
-    voice_state = user.voice
-    if voice_state is None or voice_state.channel is None:
-        await interaction.response.send_message(
-            "That user is not in a voice channel.", ephemeral=True
-        )
-        return
-
-    if not (voice_state.self_deaf or voice_state.deaf):
-        await interaction.response.send_message(
-            "That user is not deafened.", ephemeral=True
-        )
-        return
-
-    active_task = pingdeaf_tasks.get(user.id)
-    if active_task is not None and not active_task.done():
-        await interaction.response.send_message(
-            f"{user.mention} is already being DM'd every 2 seconds.", ephemeral=True
-        )
-        return
-
-    now = time.monotonic()
-    last_pinged_at = last_pingdeaf_at.get(user.id)
-    if last_pinged_at is not None:
-        elapsed = now - last_pinged_at
-        if elapsed < PINGDEAF_COOLDOWN_SECONDS:
-            seconds = math.ceil(PINGDEAF_COOLDOWN_SECONDS - elapsed)
-            await interaction.response.send_message(
-                f"{user.mention} was already pinged recently. Try again in {seconds}s.",
-                ephemeral=True,
-            )
-            return
-        last_pingdeaf_at.pop(user.id, None)
-
-    # Reserve the cooldown before awaiting the DM so concurrent commands cannot send duplicates.
-    last_pingdeaf_at[user.id] = now
-    receiver_view = PingDeafReceiverView(user)
-    try:
-        first_message = await user.send(
-            pingdeaf_message(voice_state.channel.name), view=receiver_view
-        )
-    except discord.HTTPException:
-        if last_pingdeaf_at.get(user.id) == now:
-            last_pingdeaf_at.pop(user.id, None)
-        await interaction.response.send_message(
-            "I could not DM that user. Their DMs may be closed.", ephemeral=True
-        )
-        return
-
-    messages = [first_message]
-    sender_view = PingDeafSenderView(user, interaction.user.id, messages)
-    pingdeaf_senders[user.id] = interaction.user
-    pingdeaf_sender_views[user.id] = sender_view
-    pingdeaf_messages[user.id] = messages
-    pingdeaf_tasks[user.id] = asyncio.create_task(
-        pingdeaf_until_undeafened(
-            user, messages, sender_interaction=interaction, sender_view=sender_view
-        )
-    )
-    await interaction.response.send_message(
-        pingdeaf_sender_status(user, len(messages)),
-        ephemeral=True,
-        view=sender_view,
-    )
-
-
-@command_tree.command(name="pingdeaf", description="DM a deafened voice member to undeafen.")
-@app_commands.describe(user="The deafened member to ping")
-@app_commands.default_permissions(mute_members=True)
-@app_commands.guild_only()
-async def pingdeaf(interaction: discord.Interaction, user: discord.Member) -> None:
-    await handle_pingdeaf(interaction, user)
-
-
 def create_ryan_birthday_message() -> tuple[str, discord.Embed, discord.File]:
     encoded_birthday_image = b"".join(
         RYAN_BIRTHDAY_IMAGE_BASE64_PATH.read_bytes().split()
@@ -3267,38 +2986,10 @@ async def on_voice_state_update(member, before, after):
         )
 
 
-async def post_message_to_poke(message) -> None:
-    poke_ingest_url = os.environ.get("POKE_INGEST_URL", "").strip()
-    if not poke_ingest_url:
-        return
-
-    payload = {
-        "messageId": str(message.id),
-        "channelId": str(message.channel.id),
-        "content": message.content,
-        "author": str(message.author),
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(poke_ingest_url, json=payload) as response:
-                if response.status >= 400:
-                    logger.warning(
-                        "Poke ingest failed with HTTP status %s for message %s",
-                        response.status,
-                        message.id,
-                    )
-    except aiohttp.ClientError as error:
-        logger.warning("Could not POST message %s to Poke: %s", message.id, error)
-
-
-
 @client.event
 async def on_message(message):
     if getattr(message.author, "bot", False) or message.author == client.user:
         return
-
-    await post_message_to_poke(message)
 
     content = message.content.strip()
     if not content:

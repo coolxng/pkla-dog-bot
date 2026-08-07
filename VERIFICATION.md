@@ -9,7 +9,6 @@ This document tracks the repository-side work needed to prepare pkla dog for Dis
 - Adds a support/privacy-request path.
 - Serves the legal documents from the deployed bot at `/terms`, `/privacy`, and `/support`.
 - Changes the default production start command to `python verification_entry.py`.
-- Disables the repeated-DM `/pingdeaf` command in the public deployment.
 - Disables the legacy external Discord-message ingest path in the public deployment.
 - Disables browser voice listen-in in the public deployment.
 - Disables persistent SQLite conversation storage in the public deployment.
@@ -71,9 +70,7 @@ The remaining Developer Portal qualification shown as **Team owner must complete
 
 After the policy URLs are saved and identity verification is complete, re-open the Verification page and confirm all listed qualifications are green.
 
-### 5. Confirm `/pingdeaf` is gone
 
-On startup, `verification_entry.py` removes `/pingdeaf` from the global command tree before Discord command synchronization runs. After Discord finishes propagating global command changes, `/pingdeaf` should no longer appear.
 
 Do not re-enable the old repeated-DM implementation for the public bot. Discord's Developer Policy requires explicit permission before an application contacts users, and repeated unsolicited DMs create a clear policy risk.
 
@@ -92,8 +89,6 @@ The verification entrypoint intentionally disables:
 - `PERSIST_STATE`
 - `AUTO_MEMORY_ENABLED`
 - `ENABLE_LISTEN_IN`
-- `POKE_INGEST_URL`
-- `/pingdeaf`
 
 If any of these are reintroduced for a public deployment, review Discord's current Developer Terms and Developer Policy again and update the Privacy Policy to match the actual data flow before enabling them.
 

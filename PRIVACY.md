@@ -22,7 +22,6 @@ The Bot processes only data needed to provide enabled features. Depending on how
 
 When the Bot is configured to respond in a channel, it may process the content of messages in that configured channel in order to respond, maintain short conversation context, run requested commands, or provide AI-assisted features.
 
-The verification-ready deployment does **not** forward every visible Discord message to an external ingest endpoint. The legacy `POKE_INGEST_URL` forwarding path is disabled by the verification deployment entrypoint.
 
 ### Conversation context and memory
 

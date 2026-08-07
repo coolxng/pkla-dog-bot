@@ -18,9 +18,6 @@ os.environ["PERSIST_STATE"] = "false"
 os.environ["AUTO_MEMORY_ENABLED"] = "false"
 os.environ["ENABLE_LISTEN_IN"] = "false"
 
-# The public/verified deployment must not forward Discord messages to an
-# arbitrary external ingest endpoint.
-os.environ.pop("POKE_INGEST_URL", None)
 
 import bot  # noqa: E402  (environment must be locked before this import)
 
@@ -87,29 +84,10 @@ def support_page() -> Response:
     return _legal_page("SUPPORT.md", "pkla dog Support")
 
 
-# /pingdeaf repeatedly DMed another member without that member first opting in.
-# Discord's Developer Policy requires explicit permission before contacting users,
-# so the public deployment does not register or sync this command.
-removed_pingdeaf = bot.command_tree.remove_command("pingdeaf")
-if removed_pingdeaf is not None:
-    bot.logger.info("Verification mode: /pingdeaf removed from the global command tree")
-
-
-async def _disabled_external_message_ingest(_message) -> None:
-    """Prevent the legacy Poke ingest path from transmitting Discord messages."""
-
-    return None
-
-
-# on_message resolves this module global at call time, so replacing the function
-# here prevents forwarding even if POKE_INGEST_URL is added to the process later.
-bot.post_message_to_poke = _disabled_external_message_ingest
-
-
 def main() -> None:
     bot.logger.info(
         "Starting verification-safe deployment: persistence, auto-memory, "
-        "browser listen-in, Poke ingest, and /pingdeaf are disabled"
+        "and browser listen-in are disabled"
     )
     bot.main()
 
