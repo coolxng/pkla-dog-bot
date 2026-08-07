@@ -23,12 +23,13 @@ jobs:
       - name: Apply verification refactor
         run: python tools/complete_verification_refactor.py
 
-      - name: Fix refactor marker duplication
+      - name: Finalize generated source and tests
         shell: python
         run: |
           from pathlib import Path
-          path = Path("bot.py")
-          text = path.read_text(encoding="utf-8")
+
+          bot_path = Path("bot.py")
+          text = bot_path.read_text(encoding="utf-8")
           for signature in (
               "def clean_reply(reply: str) -> str:\n",
               "def split_reply_chunks(text: str, limit: int = 2000) -> list[str]:\n",
@@ -42,7 +43,33 @@ jobs:
                   if between.strip():
                       break
                   text = text[:second] + text[second + len(signature):]
-          path.write_text(text, encoding="utf-8")
+
+          text = text.replace(
+              '    Path(__file__).with_name("assets") / "ryan-birthday.png.b64"\n',
+              '    Path(__file__).with_name("static") / "favicon.png.b64"\n',
+          )
+          text = text.replace(
+              'async def notify_voice_listen(voice_channel, message: str) -> None:\n    channel_id = voice_listen_notice_channels.get(voice_consent_key(voice_channel))\n',
+              'async def notify_voice_listen(voice_channel, message: str) -> None:\n    try:\n        key = voice_consent_key(voice_channel)\n    except AttributeError:\n        return\n    channel_id = voice_listen_notice_channels.get(key)\n',
+          )
+          bot_path.write_text(text, encoding="utf-8")
+
+          audio_tests_path = Path("tests/test_audio_relay.py")
+          audio_tests = audio_tests_path.read_text(encoding="utf-8")
+          audio_tests = audio_tests.replace(
+              '        channel.guild = SimpleNamespace(id=9, voice_client=voice_client)\n        sink = object()\n        with (\n            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),\n',
+              '        channel.guild = SimpleNamespace(id=9, voice_client=voice_client)\n        channel.members = [SimpleNamespace(id=42, bot=False)]\n        bot.voice_listen_consents[(9, 123)] = {42}\n        sink = object()\n        with (\n            patch.dict(bot.os.environ, {"ENABLE_LISTEN_IN": "true"}, clear=False),\n            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),\n',
+              1,
+          )
+          audio_tests_path.write_text(audio_tests, encoding="utf-8")
+
+          bot_tests_path = Path("tests/test_bot.py")
+          bot_tests = bot_tests_path.read_text(encoding="utf-8")
+          bot_tests = bot_tests.replace(
+              '        self.assertIn("listen to live call audio in the browser", bot.SYSTEM_PROMPT)\n',
+              '        self.assertIn("Browser listen-in is disabled by default", bot.SYSTEM_PROMPT)\n        self.assertIn("/listen-consent", bot.SYSTEM_PROMPT)\n',
+          )
+          bot_tests_path.write_text(bot_tests, encoding="utf-8")
 
       - name: Remove plaintext persistence implementation
         run: rm -f storage.py tests/test_storage.py
