@@ -12,10 +12,7 @@ from pathlib import Path
 from flask import Response
 from markupsafe import escape
 
-# These must be set before importing bot.py because the state store and client
-# configuration are created at import time.
-os.environ["PERSIST_STATE"] = "false"
-os.environ["AUTO_MEMORY_ENABLED"] = "false"
+# Browser voice receive is opt-in and stays off for the public deployment.
 os.environ["ENABLE_LISTEN_IN"] = "false"
 
 
@@ -86,8 +83,8 @@ def support_page() -> Response:
 
 def main() -> None:
     bot.logger.info(
-        "Starting verification-safe deployment: persistence, auto-memory, "
-        "and browser listen-in are disabled"
+        "Starting verification-safe deployment: no persistent chat database, "
+        "no shared memory, no privileged message/member intents, and browser listen-in disabled by default"
     )
     bot.main()
 

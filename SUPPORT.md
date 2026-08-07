@@ -1,21 +1,20 @@
-# pkla dog Support
+# pkla dog Support and Reports
 
-For bugs, feature problems, policy questions, abuse reports, or privacy requests, use the project's GitHub issue tracker:
+Use this page for support, abuse reports, security reports, or privacy requests involving pkla dog.
 
-**https://github.com/coolxng/pkla-dog-bot/issues**
+## Fastest options
 
-## Privacy and data requests
+- Use `/delete-data` in Discord to immediately clear all user-specific data retained in the running bot process.
+- Use `/reset` to clear only your current server/DM chat context.
+- Open an issue at https://github.com/coolxng/pkla-dog-bot/issues for a support, privacy, or abuse request that needs maintainer action.
 
-If you want data associated with your use of pkla dog corrected or deleted, open an issue with a short description such as `Privacy request`.
+For security reports, describe the problem without publishing secrets, access tokens, private message contents, or exploit details that would put users at risk. Ask for private follow-up if sensitive evidence is required.
 
-Do **not** post passwords, API keys, bot tokens, authentication cookies, private message contents, financial information, or other sensitive information in a public issue. Provide only enough information to identify the request and ask for private follow-up if additional details are required.
+## Voice consent
 
-Users can clear active conversation context themselves with `!reset` or `!clear` in a configured bot chat.
+Use `/listen-consent` only when you knowingly agree to the optional live browser voice relay for the voice channel you are currently in. Use `/listen-revoke` at any time to withdraw consent; an active relay stops when consent changes.
 
-## Security reports
+Public policy pages:
 
-Do not publish secrets or working exploit details in an issue if doing so would put users at risk. Instead, open a minimal issue asking for private follow-up.
-
-## Discord abuse
-
-Server administrators can remove pkla dog from their server using Discord's normal integration controls. Misuse of the Bot may also be reported to Discord through Discord's standard application-reporting tools.
+- https://pkladog.up.railway.app/privacy
+- https://pkladog.up.railway.app/terms

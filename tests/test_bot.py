@@ -100,7 +100,7 @@ class VoiceReceiveDependencyTests(unittest.TestCase):
 class DiscordIntentTests(unittest.TestCase):
     def test_only_message_content_privileged_intent_is_enabled(self):
         self.assertFalse(bot.intents.members)
-        self.assertTrue(bot.intents.message_content)
+        self.assertFalse(bot.intents.message_content)
 
     def test_discord_caches_are_limited_to_voice_members(self):
         connection = bot.client._connection
@@ -256,179 +256,6 @@ class DiscordStartupTests(unittest.IsolatedAsyncioTestCase):
         close.assert_not_awaited()
 
 
-class DeleteDmMessagesTests(unittest.IsolatedAsyncioTestCase):
-    class FakeDMChannel:
-        def __init__(self, channel_id, messages):
-            self.id = channel_id
-            self._messages = messages
-
-        def history(self, *, limit):
-            if limit is not None:
-                raise AssertionError("DM cleanup must request the complete history")
-
-            async def iterate_messages():
-                for message in self._messages:
-                    yield message
-
-            return iterate_messages()
-
-    async def test_deletes_bot_messages_from_all_dm_channels(self):
-        first_bot_message = SimpleNamespace(
-            id=1, author=SimpleNamespace(id=999), delete=AsyncMock()
-        )
-        user_message = SimpleNamespace(
-            id=2, author=SimpleNamespace(id=123), delete=AsyncMock()
-        )
-        second_bot_message = SimpleNamespace(
-            id=3, author=SimpleNamespace(id=999), delete=AsyncMock()
-        )
-        channels = [
-            self.FakeDMChannel(10, [first_bot_message, user_message]),
-            self.FakeDMChannel(20, [second_bot_message]),
-        ]
-
-        result = await bot.delete_bot_dm_messages(channels, 999)
-
-        self.assertEqual(result, (2, 0, 0))
-        first_bot_message.delete.assert_awaited_once_with()
-        second_bot_message.delete.assert_awaited_once_with()
-        user_message.delete.assert_not_awaited()
-
-    async def test_continues_after_message_and_channel_failures(self):
-        failed_message = SimpleNamespace(
-            id=1, author=SimpleNamespace(id=999), delete=AsyncMock()
-        )
-        failed_message.delete.side_effect = bot.discord.Forbidden(
-            Mock(status=403, reason="Forbidden"),
-            {"message": "Cannot delete", "code": 50013},
-        )
-        remaining_message = SimpleNamespace(
-            id=2, author=SimpleNamespace(id=999), delete=AsyncMock()
-        )
-        failed_channel = self.FakeDMChannel(20, [])
-        failed_channel.history = Mock(
-            side_effect=bot.discord.Forbidden(
-                Mock(status=403, reason="Forbidden"),
-                {"message": "Cannot read", "code": 50013},
-            )
-        )
-        channels = [
-            self.FakeDMChannel(10, [failed_message]),
-            failed_channel,
-            self.FakeDMChannel(30, [remaining_message]),
-        ]
-
-        result = await bot.delete_bot_dm_messages(channels, 999)
-
-        self.assertEqual(result, (1, 1, 1))
-        remaining_message.delete.assert_awaited_once_with()
-
-    def test_cleanup_channels_include_all_cached_dms_and_invoking_dm_once(self):
-        invoking_channel = self.FakeDMChannel(10, [])
-        another_channel = self.FakeDMChannel(20, [])
-
-        with (
-            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
-            patch.object(
-                type(bot.client),
-                "private_channels",
-                new_callable=PropertyMock,
-                return_value=[invoking_channel, another_channel, SimpleNamespace(id=30)],
-            ),
-        ):
-            channels = bot.dm_channels_for_cleanup(invoking_channel)
-
-        self.assertEqual(channels, [invoking_channel, another_channel])
-
-    async def test_authorized_user_cleans_all_available_dms(self):
-        channel = self.FakeDMChannel(10, [])
-        other_channel = self.FakeDMChannel(20, [])
-        message = SimpleNamespace(
-            author=SimpleNamespace(
-                id=bot.DEFAULT_OWNER_ID,
-                display_name="Owner",
-            ),
-            channel=channel,
-            content="!deletedms",
-            add_reaction=AsyncMock(),
-        )
-
-        with (
-            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
-            patch.object(bot.client._connection, "user", SimpleNamespace(id=999)),
-            patch.object(
-                bot,
-                "dm_channels_for_cleanup",
-                return_value=[channel, other_channel],
-            ),
-            patch.object(
-                bot,
-                "delete_bot_dm_messages",
-                new=AsyncMock(return_value=(25, 0, 0)),
-            ) as delete_messages,
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-        ):
-            await bot.on_message(message)
-
-        delete_messages.assert_awaited_once_with([channel, other_channel], 999)
-        message.add_reaction.assert_awaited_once_with("✅")
-        call_model.assert_not_awaited()
-
-    async def test_delete_command_is_ignored_for_every_other_user(self):
-        channel = self.FakeDMChannel(10, [])
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=123, display_name="Other"),
-            channel=channel,
-            content="!deletedms",
-            add_reaction=AsyncMock(),
-        )
-
-        with (
-            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
-            patch.object(
-                bot, "delete_bot_dm_messages", new_callable=AsyncMock
-            ) as delete_messages,
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-        ):
-            await bot.on_message(message)
-
-        delete_messages.assert_not_awaited()
-        message.add_reaction.assert_not_awaited()
-        call_model.assert_not_awaited()
-
-    async def test_delete_command_respects_configured_owner_id(self):
-        channel = self.FakeDMChannel(10, [])
-        custom_owner_id = 424242424242424242
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=custom_owner_id, display_name="Owner"),
-            channel=channel,
-            content="!deletedms",
-            add_reaction=AsyncMock(),
-        )
-
-        with (
-            patch.object(bot, "OWNER_ID", custom_owner_id),
-            patch.object(bot.discord, "DMChannel", self.FakeDMChannel),
-            patch.object(bot.client._connection, "user", SimpleNamespace(id=999)),
-            patch.object(
-                bot,
-                "dm_channels_for_cleanup",
-                return_value=[channel],
-            ),
-            patch.object(
-                bot,
-                "delete_bot_dm_messages",
-                new=AsyncMock(return_value=(3, 0, 0)),
-            ) as delete_messages,
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-        ):
-            await bot.on_message(message)
-
-        delete_messages.assert_awaited_once_with([channel], 999)
-        message.add_reaction.assert_awaited_once_with("✅")
-        call_model.assert_not_awaited()
-
-
 class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
     def test_bark_audio_file_exists(self):
         self.assertTrue(bot.BARK_AUDIO_PATH.is_file())
@@ -487,378 +314,6 @@ class BarkAudioTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(played)
             self.assertFalse(audio_path.exists())
-
-
-class BarkCommandTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        bot.last_command_bark_at.clear()
-
-    def test_bark_requires_an_active_voice_connection(self):
-        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=None))
-
-        response = bot.bark_on_command(message)
-
-        self.assertEqual(response, "join me to a voice channel first with !join")
-
-    def test_bark_plays_immediately_and_starts_cooldown(self):
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=voice_client))
-
-        with (
-            patch.object(bot.time, "monotonic", return_value=100.0),
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            response = bot.bark_on_command(message)
-
-        self.assertEqual(response, "woof")
-        play_bark.assert_called_once_with(voice_client)
-        self.assertEqual(bot.last_command_bark_at[456], 100.0)
-
-    def test_bark_has_five_second_server_cooldown(self):
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=voice_client))
-        bot.last_command_bark_at[456] = 100.0
-
-        with (
-            patch.object(bot.time, "monotonic", return_value=101.2),
-            patch.object(bot, "play_bark") as play_bark,
-        ):
-            response = bot.bark_on_command(message)
-
-        self.assertEqual(response, "bark cooldown — wait 4 seconds")
-        play_bark.assert_not_called()
-
-    def test_bark_can_play_again_after_five_seconds(self):
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=voice_client))
-        bot.last_command_bark_at[456] = 100.0
-
-        with (
-            patch.object(bot.time, "monotonic", return_value=105.0),
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            response = bot.bark_on_command(message)
-
-        self.assertEqual(response, "woof")
-        play_bark.assert_called_once_with(voice_client)
-
-    async def test_bark_command_is_handled_without_calling_chat_model(self):
-        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        bot.channel_conversation_history.pop(channel_id, None)
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=123, display_name="Tester"),
-            channel=text_channel,
-            content="!bark",
-            guild=SimpleNamespace(id=456, voice_client=voice_client),
-        )
-
-        with (
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-            patch.object(bot.time, "monotonic", return_value=100.0),
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            await bot.on_message(message)
-
-        play_bark.assert_called_once_with(voice_client)
-        text_channel.send.assert_awaited_once_with("woof")
-        call_model.assert_not_awaited()
-        self.assertEqual(
-            bot.get_active_history(channel_id, 123, is_dm=False),
-            [
-                {"role": "user", "content": "Tester: !bark"},
-                {"role": "assistant", "content": "woof"},
-            ],
-        )
-
-
-class VoiceJoinTests(unittest.IsolatedAsyncioTestCase):
-    async def test_join_connects_and_barks_immediately(self):
-        voice_client = SimpleNamespace()
-        voice_channel = SimpleNamespace(
-            mention="#General",
-            connect=AsyncMock(return_value=voice_client),
-        )
-        message = SimpleNamespace(
-            guild=SimpleNamespace(voice_client=None),
-            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
-        )
-
-        with (
-            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            response = await bot.join_author_voice(message)
-
-        voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
-        sleep.assert_awaited_once_with(bot.BARK_JOIN_DELAY_SECONDS)
-        play_bark.assert_called_once_with(voice_client)
-        self.assertEqual(response, "joined #General")
-
-    async def test_join_falls_back_when_receive_enabled_connect_fails(self):
-        voice_client = SimpleNamespace()
-        voice_channel = SimpleNamespace(
-            mention="#General",
-            connect=AsyncMock(
-                side_effect=[
-                    bot.discord.DiscordException("receive failed"),
-                    voice_client,
-                ]
-            ),
-        )
-        message = SimpleNamespace(
-            guild=SimpleNamespace(voice_client=None),
-            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
-        )
-
-        with (
-            patch.object(bot, "EXTERNAL_SAY_CONTROL_TOKEN", "secret"),
-            patch.object(bot, "env_bool", return_value=True),
-            patch.object(bot, "voice_receive_client_class", return_value=object),
-            patch.object(bot.asyncio, "sleep", new=AsyncMock()) as sleep,
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            response = await bot.join_author_voice(message)
-
-        self.assertEqual(voice_channel.connect.await_count, 2)
-        voice_channel.connect.assert_has_awaits(
-            [
-                call(self_deaf=False, self_mute=False, cls=object),
-                call(self_deaf=False, self_mute=False),
-            ]
-        )
-        sleep.assert_awaited_once_with(bot.BARK_JOIN_DELAY_SECONDS)
-        play_bark.assert_called_once_with(voice_client)
-        self.assertEqual(response, "joined #General")
-
-    async def test_join_reports_the_discord_connection_failure(self):
-        voice_channel = SimpleNamespace(
-            mention="#General",
-            connect=AsyncMock(side_effect=bot.discord.DiscordException("voice gateway blocked")),
-        )
-        message = SimpleNamespace(
-            guild=SimpleNamespace(voice_client=None),
-            author=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
-        )
-
-        with (
-            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
-        ):
-            response = await bot.join_author_voice(message)
-
-        self.assertIn("voice gateway blocked", response)
-        self.assertIn("UDP connectivity", response)
-
-    async def test_join_requires_the_user_to_be_in_voice(self):
-        message = SimpleNamespace(
-            guild=SimpleNamespace(voice_client=None),
-            author=SimpleNamespace(voice=None),
-        )
-
-        response = await bot.join_author_voice(message)
-
-        self.assertEqual(response, "join a voice channel first, then send !join")
-
-    async def test_join_moves_an_existing_voice_connection(self):
-        old_channel = SimpleNamespace(mention="#Old")
-        new_channel = SimpleNamespace(mention="#New")
-        voice_client = SimpleNamespace(
-            channel=old_channel,
-            is_connected=lambda: True,
-            move_to=AsyncMock(),
-        )
-        message = SimpleNamespace(
-            guild=SimpleNamespace(voice_client=voice_client),
-            author=SimpleNamespace(voice=SimpleNamespace(channel=new_channel)),
-        )
-
-        with (
-            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            response = await bot.join_author_voice(message)
-
-        voice_client.move_to.assert_awaited_once_with(new_channel)
-        play_bark.assert_called_once_with(voice_client)
-        self.assertEqual(response, "joined #New")
-
-    async def test_join_command_is_handled_without_calling_chat_model(self):
-        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        voice_client = SimpleNamespace()
-        voice_channel = SimpleNamespace(
-            mention="#General",
-            connect=AsyncMock(return_value=voice_client),
-        )
-        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
-        message = SimpleNamespace(
-            author=SimpleNamespace(
-                id=123,
-                display_name="Tester",
-                voice=SimpleNamespace(channel=voice_channel),
-            ),
-            channel=text_channel,
-            content="!join",
-            guild=SimpleNamespace(voice_client=None),
-        )
-
-        with (
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-            patch.object(bot.asyncio, "sleep", new=AsyncMock()),
-            patch.object(bot, "play_bark", return_value=True) as play_bark,
-        ):
-            await bot.on_message(message)
-
-        voice_channel.connect.assert_awaited_once_with(self_deaf=False, self_mute=False)
-        play_bark.assert_called_once_with(voice_client)
-        text_channel.send.assert_awaited_once_with("joined #General")
-        call_model.assert_not_awaited()
-
-
-class VoiceTextToSpeechCommandTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        bot.last_tts_at.clear()
-        bot.chat_tts_queues.clear()
-        bot.chat_tts_tasks.clear()
-        bot.chat_tts_command_enabled = True
-
-    async def test_tts_command_queues_following_message(self):
-        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
-        guild = SimpleNamespace(id=456, voice_client=voice_client)
-        bot.last_tts_at[guild.id] = 100.0
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=123, display_name="Tester"),
-            channel=text_channel,
-            content="!tts Hello from Discord",
-            guild=guild,
-        )
-
-        with (
-            patch.object(bot, "call_model", new_callable=AsyncMock) as call_model,
-            patch.object(bot, "enqueue_chat_tts") as enqueue_chat_tts,
-        ):
-            await bot.on_message(message)
-
-        enqueue_chat_tts.assert_called_once_with(guild, "Hello from Discord")
-        text_channel.send.assert_not_awaited()
-        call_model.assert_not_awaited()
-        self.assertEqual(bot.last_tts_at[guild.id], 100.0)
-
-    async def test_chat_tts_queue_processes_messages_without_overlap(self):
-        voice_client = SimpleNamespace(is_connected=lambda: True)
-        guild = SimpleNamespace(id=456, voice_client=voice_client)
-        first_started = asyncio.Event()
-        allow_first_to_finish = asyncio.Event()
-        playback_order = []
-
-        async def play_speech(_guild, text):
-            playback_order.append(f"start:{text}")
-            if text == "first":
-                first_started.set()
-                await allow_first_to_finish.wait()
-            playback_order.append(f"finish:{text}")
-
-        with patch.object(bot, "play_chat_tts", side_effect=play_speech):
-            bot.enqueue_chat_tts(guild, "first")
-            queue = bot.chat_tts_queues[guild.id]
-            await first_started.wait()
-            bot.enqueue_chat_tts(guild, "second")
-            await asyncio.sleep(0)
-
-            self.assertEqual(playback_order, ["start:first"])
-
-            allow_first_to_finish.set()
-            await queue.join()
-
-        self.assertEqual(
-            playback_order,
-            ["start:first", "finish:first", "start:second", "finish:second"],
-        )
-
-    async def test_chat_tts_waits_for_discord_playback_to_finish(self):
-        callbacks = []
-        voice_client = SimpleNamespace(
-            is_connected=lambda: True,
-            is_playing=lambda: False,
-        )
-        guild = SimpleNamespace(id=456, voice_client=voice_client)
-        speech_path = Path("generated-speech.mp3")
-
-        def start_playback(*args, **kwargs):
-            callbacks.append(kwargs["after"])
-            return True
-
-        with (
-            patch.object(
-                bot.asyncio, "to_thread", new=AsyncMock(return_value=speech_path)
-            ) as to_thread,
-            patch.object(bot, "play_audio", side_effect=start_playback),
-        ):
-            playback = asyncio.create_task(bot.play_chat_tts(guild, "hello"))
-            await asyncio.sleep(0)
-            self.assertFalse(playback.done())
-            to_thread.assert_awaited_once_with(
-                bot.synthesize_speech, "hello", "onyx"
-            )
-
-            callbacks[0](None)
-            await playback
-
-    async def test_disabled_tts_command_does_not_queue_speech(self):
-        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
-        guild = SimpleNamespace(id=456, voice_client=SimpleNamespace(is_connected=lambda: True))
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=123, display_name="Tester"),
-            channel=text_channel,
-            content="!tts This should not play",
-            guild=guild,
-        )
-        bot.chat_tts_command_enabled = False
-
-        with patch.object(bot, "enqueue_chat_tts") as enqueue_chat_tts:
-            await bot.on_message(message)
-
-        enqueue_chat_tts.assert_not_called()
-        text_channel.send.assert_awaited_once_with(
-            "!tts is currently disabled from the /say control page"
-        )
-
-    async def test_tts_command_requires_message_text(self):
-        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=123, display_name="Tester"),
-            channel=text_channel,
-            content="!tts",
-            guild=SimpleNamespace(id=456, voice_client=None),
-        )
-
-        with patch.object(bot, "enqueue_chat_tts") as enqueue_chat_tts:
-            await bot.on_message(message)
-
-        enqueue_chat_tts.assert_not_called()
-        text_channel.send.assert_awaited_once_with("add a message after !tts")
-
-    async def test_tts_command_reports_when_bot_is_not_connected(self):
-        message = SimpleNamespace(
-            guild=SimpleNamespace(id=456, voice_client=None),
-        )
-
-        response = await bot.speak_message(message, "hello")
-
-        self.assertEqual(response, "Join me to a voice channel first with !join")
-
-    async def test_tts_command_rejects_overlong_text(self):
-        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=None))
-
-        response = await bot.speak_message(message, "x" * (bot.TTS_TEXT_LIMIT + 1))
-
-        self.assertEqual(
-            response, f"TTS messages cannot exceed {bot.TTS_TEXT_LIMIT} characters"
-        )
 
 
 class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
@@ -1261,122 +716,6 @@ class ExternalVoiceControlTests(unittest.IsolatedAsyncioTestCase):
                 await bot.control_external_voice("join", 1401382324326760672)
 
 
-class VoiceLeaveTests(unittest.IsolatedAsyncioTestCase):
-    async def test_leave_disconnects_voice_client(self):
-        voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
-        message = SimpleNamespace(guild=SimpleNamespace(id=456, voice_client=voice_client))
-        bot.last_command_bark_at[456] = 100.0
-
-        response = await bot.leave_voice(message)
-
-        voice_client.disconnect.assert_awaited_once_with()
-        self.assertNotIn(456, bot.last_command_bark_at)
-        self.assertEqual(response, "left the voice channel")
-
-    async def test_leave_reports_when_not_connected(self):
-        message = SimpleNamespace(guild=SimpleNamespace(voice_client=None))
-
-        response = await bot.leave_voice(message)
-
-        self.assertEqual(response, "i'm not in a voice channel")
-
-    async def test_leave_command_is_handled_without_calling_chat_model(self):
-        channel_id = next(iter(bot.TARGET_CHANNEL_IDS))
-        voice_client = SimpleNamespace(is_connected=lambda: True, disconnect=AsyncMock())
-        text_channel = SimpleNamespace(id=channel_id, send=AsyncMock())
-        message = SimpleNamespace(
-            author=SimpleNamespace(id=123, display_name="Tester"),
-            channel=text_channel,
-            content="!leave",
-            guild=SimpleNamespace(id=456, voice_client=voice_client),
-        )
-
-        with patch.object(bot, "call_model", new_callable=AsyncMock) as call_model:
-            await bot.on_message(message)
-
-        voice_client.disconnect.assert_awaited_once_with()
-        text_channel.send.assert_awaited_once_with("left the voice channel")
-        call_model.assert_not_awaited()
-
-
-class ConversationHistoryTests(unittest.TestCase):
-    def setUp(self):
-        bot.conversation_history.clear()
-        bot.channel_conversation_history.clear()
-        self.disabled_store = bot.state_store.__class__(
-            bot.state_store.db_path, enabled=False
-        )
-        self.store_patch = patch.object(bot, "state_store", self.disabled_store)
-        self.store_patch.start()
-        self.addCleanup(self.store_patch.stop)
-
-    def test_channel_history_is_shared_and_labels_speakers(self):
-        bot.add_to_active_history(123, 1, "user", "remember this", is_dm=False, display_name="Alice")
-        bot.add_to_active_history(123, 1, "assistant", "got it", is_dm=False)
-
-        history = bot.get_active_history(123, 2, is_dm=False)
-
-        self.assertEqual(
-            history,
-            [
-                {"role": "user", "content": "Alice: remember this"},
-                {"role": "assistant", "content": "got it"},
-            ],
-        )
-
-    def test_dm_history_stays_per_user_without_speaker_label(self):
-        bot.add_to_active_history(999, 1, "user", "private context", is_dm=True, display_name="Alice")
-
-        self.assertEqual(
-            bot.get_active_history(999, 1, is_dm=True),
-            [{"role": "user", "content": "private context"}],
-        )
-        self.assertEqual(bot.get_active_history(999, 2, is_dm=True), [])
-
-    def test_clear_active_history_clears_only_current_channel(self):
-        bot.add_to_active_history(123, 1, "user", "first", is_dm=False, display_name="Alice")
-        bot.add_to_active_history(456, 2, "user", "second", is_dm=False, display_name="Bob")
-
-        bot.clear_active_history(123, 1, is_dm=False)
-
-        self.assertEqual(bot.get_active_history(123, 1, is_dm=False), [])
-        self.assertEqual(
-            bot.get_active_history(456, 2, is_dm=False),
-            [{"role": "user", "content": "Bob: second"}],
-        )
-
-    def test_load_persisted_state_restores_saved_history_and_memory(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "state.db"
-            enabled_store = bot.state_store.__class__(db_path, enabled=True)
-            enabled_store.save_universal_memory(["shared fact"])
-            enabled_store.save_channel_history(
-                123,
-                [{"role": "user", "content": "Alice: hello"}],
-            )
-            enabled_store.save_dm_history(
-                7,
-                [{"role": "user", "content": "private"}],
-            )
-
-            bot.universal_memory.clear()
-            bot.conversation_history.clear()
-            bot.channel_conversation_history.clear()
-
-            with patch.object(bot, "state_store", enabled_store):
-                bot.load_persisted_state()
-
-            self.assertEqual(bot.universal_memory, ["shared fact"])
-            self.assertEqual(
-                bot.channel_conversation_history[123],
-                [{"role": "user", "content": "Alice: hello"}],
-            )
-            self.assertEqual(
-                bot.conversation_history[7],
-                [{"role": "user", "content": "private"}],
-            )
-
-
 class TextToSpeechTests(unittest.TestCase):
     def test_disabled_api_calls_block_tts_before_openai_request(self):
         with (
@@ -1675,10 +1014,11 @@ class GroqConfigTests(unittest.TestCase):
         self.assertIn("Usually use zero or one", bot.SYSTEM_PROMPT)
 
     def test_system_prompt_describes_current_bot_capabilities_without_overstating_them(self):
-        self.assertIn("`!join`", bot.SYSTEM_PROMPT)
+        self.assertIn("`/join`", bot.SYSTEM_PROMPT)
         self.assertIn("barks once immediately", bot.SYSTEM_PROMPT)
         self.assertIn("Joining never starts recording", bot.SYSTEM_PROMPT)
-        self.assertIn("listen to live call audio in the browser", bot.SYSTEM_PROMPT)
+        self.assertIn("Browser listen-in is disabled by default", bot.SYSTEM_PROMPT)
+        self.assertIn("/listen-consent", bot.SYSTEM_PROMPT)
         self.assertNotIn("transcription", bot.SYSTEM_PROMPT.lower())
         self.assertIn("external `/say` web page", bot.SYSTEM_PROMPT)
         self.assertIn("Wolf bark", bot.SYSTEM_PROMPT)
@@ -2552,7 +1892,7 @@ class ExternalVoiceStatusRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.get_json(),
-            {"status": "!tts command disabled.", "tts_command_enabled": False},
+            {"status": "/tts command disabled.", "tts_command_enabled": False},
         )
         self.assertFalse(bot.chat_tts_command_enabled)
 
@@ -2908,3 +2248,40 @@ class ExternalListeningFeatureTests(unittest.TestCase):
         response = self.client.get("/say/transcript?voice_channel_id=123")
 
         self.assertEqual(response.status_code, 404)
+
+
+class VerificationReadyArchitectureTests(unittest.TestCase):
+    def test_no_privileged_message_or_member_intents(self):
+        self.assertFalse(bot.intents.message_content)
+        self.assertFalse(bot.intents.members)
+
+    def test_message_event_handler_is_removed(self):
+        self.assertFalse(hasattr(bot, "on_message"))
+
+    def test_required_slash_commands_are_registered(self):
+        names = {command.name for command in bot.command_tree.get_commands()}
+        expected = {
+            "chat", "search", "reset", "delete-data", "join", "leave", "bark",
+            "tts", "ping", "uptime", "coinflip", "roll", "status", "help",
+            "support", "listen-consent", "listen-revoke", "birthdayryan",
+        }
+        self.assertTrue(expected.issubset(names))
+
+    def test_user_data_is_scoped_and_deletable(self):
+        bot.conversation_history.clear()
+        bot.voice_listen_consents.clear()
+        bot.add_user_history(10, 123, "user", "hello")
+        bot.add_user_history(20, 123, "assistant", "yo")
+        bot.add_user_history(10, 456, "user", "other")
+        bot.voice_listen_consents[(10, 99)] = {123, 456}
+        removed = bot.delete_all_user_data(123)
+        self.assertEqual(removed, 2)
+        self.assertEqual(bot.get_user_history(10, 123), [])
+        self.assertEqual(bot.get_user_history(20, 123), [])
+        self.assertEqual(bot.get_user_history(10, 456), [{"role": "user", "content": "other"}])
+        self.assertEqual(bot.voice_listen_consents[(10, 99)], {456})
+
+    def test_listen_in_default_is_off(self):
+        with patch.dict(bot.os.environ, {}, clear=False):
+            bot.os.environ.pop("ENABLE_LISTEN_IN", None)
+            self.assertFalse(bot.env_bool("ENABLE_LISTEN_IN", False))
