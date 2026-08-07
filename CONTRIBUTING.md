@@ -19,4 +19,3 @@ FFmpeg and libopus must be available for voice-related runtime behavior. Unit te
 - Add or update tests for command behavior, external `/say` controls, uploads, and voice state changes.
 - Do not commit real tokens, API keys, `.env` files, logs, virtualenvs, or generated caches.
 - Keep `EXTERNAL_SAY_CONTROL_TOKEN` configured for any public deployment.
-

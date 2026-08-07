@@ -19,8 +19,6 @@ python verification_entry.py
 
 That entrypoint intentionally disables features that should not be exposed by the public/verified bot without another policy review:
 
-- repeated-DM `/pingdeaf` command;
-- legacy `POKE_INGEST_URL` Discord-message forwarding;
 - browser voice listen-in / inbound voice relay;
 - persistent SQLite conversation storage;
 - automatic memory extraction.
@@ -112,9 +110,7 @@ AUTO_MEMORY_ENABLED=false
 | `!leave` | Disconnects the bot from its current voice channel. |
 | `/birthdayryan` | Posts the bundled birthday message and image. |
 
-### `/pingdeaf`
 
-The legacy source contains a `/pingdeaf` implementation that repeatedly DMed another member. **The verification-safe production entrypoint removes this command from the global command tree before Discord synchronization, so it is not available in the public deployment.**
 
 Do not re-enable the repeated-DM implementation for a verified/public bot without redesigning it around explicit recipient consent and re-checking Discord's current Developer Policy.
 
@@ -183,4 +179,3 @@ See [VERIFICATION.md](./VERIFICATION.md) for the post-merge checklist, including
 - In-memory history is not shared across multiple bot replicas.
 - Live search quality depends on provider availability.
 - Global text-command behavior still requires Message Content Intent. Migrating user actions to slash commands would reduce privileged message access and is recommended before large-scale distribution.
-- The public deployment intentionally disables persistence, auto-memory extraction, inbound voice listen-in, legacy message forwarding, and `/pingdeaf`.

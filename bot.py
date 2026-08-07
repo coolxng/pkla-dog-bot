@@ -639,7 +639,7 @@ client = discord.Client(
     # Event payloads provide the messages this bot handles, so retaining
     # discord.py's separate 1,000-message cache only increases steady-state RAM.
     max_messages=None,
-    # Keep voice participants available for voice controls and /pingdeaf without
+    # Keep voice participants available for voice controls and without
     # retaining every member from every connected guild.
     member_cache_flags=member_cache_flags,
     chunk_guilds_at_startup=False,
