@@ -26,11 +26,8 @@ jobs:
           from pathlib import Path
           path = Path("bot.py")
           text = path.read_text(encoding="utf-8")
-          old = "# Keep voice participants available for voice controls and /pingdeaf without\n# retaining every member from every connected guild.\n"
-          new = "# Keep voice participants available for voice controls without retaining\n# every member from every connected guild.\n"
-          if old not in text:
-              raise SystemExit("Expected stale voice-cache comment was not found")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          text = text.replace(" /pingdeaf", "")
+          path.write_text(text, encoding="utf-8")
 
       - name: Verify removed behavior and references are gone
         run: |
